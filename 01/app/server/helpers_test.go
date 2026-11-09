@@ -148,6 +148,12 @@ type testEnv struct {
 // broadcaster, marked started (as Run does after listening).
 func newEnv(t *testing.T, cfg config.Config, pool *pgxpool.Pool) *testEnv {
 	t.Helper()
+	return newEnvHooks(t, cfg, pool, hooks.Noop{})
+}
+
+// newEnvHooks is newEnv with the given pause points.
+func newEnvHooks(t *testing.T, cfg config.Config, pool *pgxpool.Pool, hk hooks.Point) *testEnv {
+	t.Helper()
 	if pool == nil {
 		pool = testdb.New(t)
 	}
@@ -160,7 +166,7 @@ func newEnv(t *testing.T, cfg config.Config, pool *pgxpool.Pool) *testEnv {
 	case <-time.After(waitTimeout):
 		t.Fatal("broadcaster not ready")
 	}
-	s := New(cfg, Deps{Pool: pool, Broadcaster: b, Log: log, Hooks: hooks.Noop{}})
+	s := New(cfg, Deps{Pool: pool, Broadcaster: b, Log: log, Hooks: hk})
 	s.started.Store(true)
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)

@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"koupa/app/applog"
+	"koupa/app/hooks"
 )
 
 // ErrConflict means the client_ref was already used for a different
@@ -45,6 +46,10 @@ type PlaceOptions struct {
 	// extra order is inserted in the same transaction, bypassing
 	// idempotency_keys.
 	DuplicateOrder func(clientRef string) bool
+	// Hooks is the test pause point (order.before_commit); nil means none.
+	Hooks hooks.Point
+	// AttemptID is the request's X-Koupa-Attempt, passed to Hooks.
+	AttemptID string
 }
 
 // PlaceResult is the order a request ended with. Replayed means it was
@@ -91,7 +96,7 @@ func PlaceOrder(ctx context.Context, pool *pgxpool.Pool, req OrderRequest, opts 
 			if res.Order, err = createOrder(c, tx, req, opts); err != nil {
 				return err
 			}
-			return runHookBeforeCommit(c, tx)
+			return runHookBeforeCommit(c, tx, opts)
 		})
 		if err != nil {
 			return PlaceResult{}, txr, err
@@ -125,7 +130,7 @@ func PlaceOrder(ctx context.Context, pool *pgxpool.Pool, req OrderRequest, opts 
 					return err
 				}
 				res.Order = o
-				return runHookBeforeCommit(c, tx)
+				return runHookBeforeCommit(c, tx, opts)
 			case errors.Is(err, pgx.ErrNoRows):
 				res.Order, err = readKey(c, tx, req.ClientRef, hash)
 				res.Replayed = err == nil
@@ -188,7 +193,10 @@ func createOrder(ctx context.Context, tx pgx.Tx, req OrderRequest, opts PlaceOpt
 	return o, nil
 }
 
-func runHookBeforeCommit(ctx context.Context, tx pgx.Tx) error {
+func runHookBeforeCommit(ctx context.Context, tx pgx.Tx, opts PlaceOptions) error {
+	if opts.Hooks != nil {
+		opts.Hooks.Pause(ctx, hooks.OrderBeforeCommit, opts.AttemptID)
+	}
 	if hookBeforeCommit == nil {
 		return nil
 	}

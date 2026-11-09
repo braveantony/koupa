@@ -38,6 +38,7 @@ type Config struct {
 	TestHooks        bool
 	TestMutation     Mutation
 	ListenAddr       string // LISTEN_ADDR, default ":8080"
+	HooksAddr        string // HOOKS_ADDR, default ":9090"; used only with TestHooks
 }
 
 // Load reads the configuration through getenv (usually os.Getenv).
@@ -95,6 +96,11 @@ func Load(getenv func(string) string) (Config, error) {
 	cfg.ListenAddr = getenv("LISTEN_ADDR")
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = ":8080"
+	}
+
+	cfg.HooksAddr = getenv("HOOKS_ADDR")
+	if cfg.HooksAddr == "" {
+		cfg.HooksAddr = ":9090"
 	}
 
 	m, err := parseMutation(getenv("TEST_MUTATION"))

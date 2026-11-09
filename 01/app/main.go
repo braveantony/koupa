@@ -88,18 +88,33 @@ func main() {
 		os.Exit(1)
 	}
 
-	b := broadcast.New(pool, cfg.DatabaseURL, cfg.BroadcastPoll, log, nil)
+	hk := hooks.New(cfg.TestHooks, log)
+	hk.SetPod(cfg.PodUID, cfg.PodName)
+	if cfg.TestHooks {
+		// Separate port, never on the main mux.
+		go func() {
+			if err := hk.Run(ctx, cfg.HooksAddr); err != nil {
+				log.Error(applog.EvStartupFailed, "err", "hooks control port: "+err.Error())
+			}
+		}()
+	}
+	var drop broadcast.DropFunc
+	if f := hooks.DropReady(cfg.TestMutation.DropReady, log); f != nil {
+		drop = f
+	}
+	b := broadcast.New(pool, cfg.DatabaseURL, cfg.BroadcastPoll, log, drop)
 	go func() { _ = b.Run(ctx) }()
 	go store.RunKeyCleanup(ctx, pool, store.CleanupInterval, log)
 
 	err = server.Run(ctx, cfg, server.Deps{
-		Pool:        pool,
-		Broadcaster: b,
-		Log:         log,
-		FinalLog:    finalLog,
-		Hooks:       hooks.Noop{},
-		Pages:       web.Pages(),
-		Signals:     sigs,
+		Pool:           pool,
+		Broadcaster:    b,
+		Log:            log,
+		FinalLog:       finalLog,
+		Hooks:          hk,
+		DuplicateOrder: hooks.DuplicateOrder(cfg.TestMutation.DuplicateOrder, log),
+		Pages:          web.Pages(),
+		Signals:        sigs,
 	})
 	if err != nil {
 		log.Error(applog.EvStartupFailed, "err", err.Error())

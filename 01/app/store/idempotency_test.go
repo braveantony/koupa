@@ -726,3 +726,50 @@ func TestRunKeyCleanup(t *testing.T) {
 	stop()
 	recv(t, done, "RunKeyCleanup to return after cancel")
 }
+
+// pauseHooks pauses at one named point until released.
+type pauseHooks struct {
+	name    string
+	at      chan struct{}
+	release chan struct{}
+}
+
+func (p *pauseHooks) Pause(ctx context.Context, name, _ string) {
+	if name != p.name {
+		return
+	}
+	close(p.at)
+	select {
+	case <-p.release:
+	case <-ctx.Done():
+	}
+}
+
+// A12: order.before_commit pauses inside the transaction, so a second
+// connection does not see the order yet.
+func TestBeforeCommitPausesBeforeCommit(t *testing.T) {
+	pool := testdb.New(t)
+	ph := &pauseHooks{name: "order.before_commit", at: make(chan struct{}), release: make(chan struct{})}
+	var once sync.Once
+	unpause := func() { once.Do(func() { close(ph.release) }) }
+	t.Cleanup(unpause)
+	opts := idemOpts()
+	opts.Hooks = ph
+	opts.AttemptID = "att-7"
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := place(t, pool, "pause-bc", oneTea, opts)
+		done <- err
+	}()
+	recv(t, ph.at, "request paused")
+	if n := countOrders(t, pool, "pause-bc"); n != 0 {
+		t.Fatalf("orders visible while paused before commit = %d", n)
+	}
+	unpause()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if n := countOrders(t, pool, "pause-bc"); n != 1 {
+		t.Fatalf("orders after release = %d", n)
+	}
+}

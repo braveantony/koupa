@@ -157,3 +157,15 @@ func TestLoadMutationRejects(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadHooksAddr(t *testing.T) {
+	withVersion(t, "v1")
+	cfg, err := Load(env(map[string]string{"DATABASE_URL": "postgres://x"}))
+	if err != nil || cfg.HooksAddr != ":9090" {
+		t.Fatalf("default = %q, %v", cfg.HooksAddr, err)
+	}
+	cfg, err = Load(env(map[string]string{"DATABASE_URL": "postgres://x", "HOOKS_ADDR": "127.0.0.1:1"}))
+	if err != nil || cfg.HooksAddr != "127.0.0.1:1" {
+		t.Fatalf("set = %q, %v", cfg.HooksAddr, err)
+	}
+}

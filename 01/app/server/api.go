@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"koupa/app/hooks"
 	"koupa/app/store"
 	"koupa/internal/wire"
 )
@@ -120,6 +121,8 @@ func (s *Server) handlePlaceOrder(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &body) {
 		return
 	}
+	attempt := r.Header.Get(wire.HeaderAttempt)
+	s.deps.Hooks.Pause(r.Context(), hooks.RequestMid, attempt)
 	req := store.OrderRequest{ClientRef: body.ClientRef}
 	for _, it := range body.Items {
 		req.Items = append(req.Items, store.OrderItem{MenuItemID: it.MenuItemID, Quantity: it.Quantity})
@@ -133,6 +136,8 @@ func (s *Server) handlePlaceOrder(w http.ResponseWriter, r *http.Request) {
 		CheckSoldOut:   s.cfg.Version == "v2",
 		LockTimeout:    s.cfg.LockTimeout,
 		DuplicateOrder: s.deps.DuplicateOrder,
+		Hooks:          s.deps.Hooks,
+		AttemptID:      attempt,
 	})
 	recordTx(r, txr)
 	if err != nil {
@@ -140,6 +145,10 @@ func (s *Server) handlePlaceOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	recordFields(r, "order_id", res.Order.ID, "replayed", res.Replayed)
+	if !res.Replayed {
+		// Committed; the client has no response yet.
+		s.deps.Hooks.Pause(r.Context(), hooks.OrderAfterCommit, attempt)
+	}
 	status := http.StatusCreated
 	if res.Replayed {
 		status = http.StatusOK
@@ -175,10 +184,12 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	attempt := r.Header.Get(wire.HeaderAttempt)
+	s.deps.Hooks.Pause(r.Context(), hooks.RequestMid, attempt)
 	ctx, cancel := store.DBContext()
 	defer cancel()
 	recordFields(r, "order_id", id)
-	res, txr, err := store.MarkReady(ctx, s.deps.Pool, id, r.Header.Get(wire.HeaderAttempt), 0)
+	res, txr, err := store.MarkReady(ctx, s.deps.Pool, id, attempt, 0)
 	recordTx(r, txr)
 	if err != nil {
 		writeStoreError(w, err, txr)

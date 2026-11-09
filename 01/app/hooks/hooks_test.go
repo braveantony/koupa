@@ -1,0 +1,218 @@
+package hooks
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"koupa/app/applog"
+)
+
+const wait = 5 * time.Second
+
+type syncBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuf) lines() []map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []map[string]any
+	for _, l := range strings.Split(strings.TrimSpace(s.b.String()), "\n") {
+		if l == "" {
+			continue
+		}
+		m := map[string]any{}
+		if err := json.Unmarshal([]byte(l), &m); err == nil {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func newLog() (*slog.Logger, *syncBuf) {
+	buf := &syncBuf{}
+	return applog.New(buf, "uid-1", "pod-1", "v1"), buf
+}
+
+func post(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
+	return rec
+}
+
+func TestDisabledHooksNoPort(t *testing.T) {
+	log, _ := newLog()
+	r := New(false, log)
+	// Pause returns at once.
+	done := make(chan struct{})
+	go func() { r.Pause(context.Background(), "request.mid", "a"); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(wait):
+		t.Fatal("disabled Pause blocked")
+	}
+	// Reserve a free port, free it, and check Run does not take it.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+	if err := r.Run(context.Background(), addr); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if c, err := net.DialTimeout("tcp", addr, time.Second); err == nil {
+		c.Close()
+		t.Fatal("disabled hooks opened a port")
+	}
+}
+
+func TestArmWaitRelease(t *testing.T) {
+	log, buf := newLog()
+	r := New(true, log)
+	r.SetPod("uid-9", "pod-9")
+	h := r.Handler()
+
+	// Not armed: no pause.
+	r.Pause(context.Background(), "order.before_commit", "x")
+
+	if rec := post(t, h, "/hooks/order.before_commit/arm"); rec.Code != 200 {
+		t.Fatalf("arm: %d", rec.Code)
+	}
+	released := make(chan struct{})
+	go func() {
+		r.Pause(context.Background(), "order.before_commit", "att-1")
+		close(released)
+	}()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hooks/order.before_commit/wait?timeout=5s", nil))
+	if rec.Code != 200 {
+		t.Fatalf("wait: %d %s", rec.Code, rec.Body)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["pod_uid"] != "uid-9" || got["pod_name"] != "pod-9" || got["attempt"] != "att-1" {
+		t.Fatalf("wait body = %v", got)
+	}
+	select {
+	case <-released:
+		t.Fatal("released before release")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if rec := post(t, h, "/hooks/order.before_commit/release"); rec.Code != 200 {
+		t.Fatalf("release: %d", rec.Code)
+	}
+	select {
+	case <-released:
+	case <-time.After(wait):
+		t.Fatal("Pause not released")
+	}
+	// Disarmed again: the next request passes.
+	r.Pause(context.Background(), "order.before_commit", "att-2")
+
+	found := false
+	for _, l := range buf.lines() {
+		if l["event"] == applog.EvHookPaused && l["hook"] == "order.before_commit" && l["attempt"] == "att-1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no hook_paused line: %v", buf.lines())
+	}
+}
+
+func TestPauseEndsWithContext(t *testing.T) {
+	log, _ := newLog()
+	r := New(true, log)
+	post(t, r.Handler(), "/hooks/request.mid/arm")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { r.Pause(ctx, "request.mid", ""); close(done) }()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(wait):
+		t.Fatal("Pause ignored ctx")
+	}
+}
+
+func TestWaitTimeout(t *testing.T) {
+	log, _ := newLog()
+	r := New(true, log)
+	rec := httptest.NewRecorder()
+	r.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hooks/sse.after_hello/wait?timeout=50ms", nil))
+	if rec.Code != http.StatusRequestTimeout {
+		t.Fatalf("code = %d", rec.Code)
+	}
+}
+
+func TestUnknownHook404(t *testing.T) {
+	log, _ := newLog()
+	h := New(true, log).Handler()
+	for _, p := range []string{"/hooks/nope/arm", "/hooks/nope/release"} {
+		if rec := post(t, h, p); rec.Code != http.StatusNotFound {
+			t.Errorf("POST %s = %d", p, rec.Code)
+		}
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hooks/nope/wait", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("wait = %d", rec.Code)
+	}
+}
+
+func TestRunServesWhenEnabled(t *testing.T) {
+	log, _ := newLog()
+	r := New(true, log)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx, addr) }()
+	var resp *http.Response
+	for i := 0; i < 100; i++ {
+		resp, err = http.Post("http://"+addr+"/hooks/nope/arm", "", nil)
+		if err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 404 {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(wait):
+		t.Fatal("Run did not stop")
+	}
+}
