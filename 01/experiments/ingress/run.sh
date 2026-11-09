@@ -20,19 +20,32 @@
 #
 #   experiments/ingress/run.sh
 #
-# Test seam: INGRESS_RESULTS_CMD, when set, is run instead of the whole
+# Ownership: every run has its own id; the case database, the Envoy
+# container and the build directory carry it, and cleanup removes only what
+# this run created. The shared test DB container is never removed or
+# replaced: scripts/test-db.sh runs only when no container of that name
+# exists; one that exists but is not usable fails the setup. A cleanup step
+# that fails is a FAIL. experiments/ingress/test/ownership.sh checks this.
+#
+# Test seams: INGRESS_RESULTS_CMD, when set, is run instead of the whole
 # setup and harness; its stdout is taken as results.jsonl (one JSON object
-# per case, see cmd/ingress). Ports: INGRESS_APP_PORT (18080),
-# INGRESS_ENVOY_PORT (18000), INGRESS_ADMIN_PORT (18001).
+# per case, see cmd/ingress). INGRESS_DB_CONTAINER (koupa-test-db): any
+# other name is never created, only used. Ports: INGRESS_APP_PORT (18080),
+# INGRESS_ENVOY_PORT (18000), INGRESS_ADMIN_PORT (18001); concurrent runs
+# need different ports.
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 stage=$(cd "$here/../.." && pwd)
-EVID=${INGRESS_EVIDENCE:-$stage/evidence/ingress-$(date -u +%Y%m%dT%H%M%SZ)}
+run_id=$(date -u +%Y%m%d%H%M%S)_$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')
+EVID=${INGRESS_EVIDENCE:-$stage/evidence/ingress-$run_id}
 SUMMARY=$EVID/summary.txt
 RESULTS=$EVID/results.jsonl
 ENVOY_IMAGE=docker.io/envoyproxy/envoy:v1.39.5@sha256:15ecaee735013685c53d3e4e2189ccee6fbd20450ab1dffe98ef85f1e1b36d78
-ENVOY_NAME=koupa-ingress-envoy
-DB_CONTAINER=koupa-test-db
+ENVOY_NAME=koupa-ingress-envoy-$run_id
+DEFAULT_DB_CONTAINER=koupa-test-db
+DB_CONTAINER=${INGRESS_DB_CONTAINER:-$DEFAULT_DB_CONTAINER}
+DB_NAME=koupa_ingress_$run_id
+BIN=$stage/bin/ingress-$run_id
 APP_PORT=${INGRESS_APP_PORT:-18080}
 ENVOY_PORT=${INGRESS_ENVOY_PORT:-18000}
 ADMIN_PORT=${INGRESS_ADMIN_PORT:-18001}
@@ -42,7 +55,7 @@ CASES="late-arrival retry-success retry-ended-no-response retry-ended-error retr
 mkdir -p "$EVID"
 : >"$SUMMARY"
 : >"$RESULTS"
-app_pid="" harness_pid="" db_name="" envoy_started=""
+app_pid="" harness_pid="" db_created="" envoy_created="" bin_created=""
 
 log() { echo "ingress: $*" >&2; }
 
@@ -118,20 +131,41 @@ cleanup() {
 	local rc=$?
 	trap - EXIT
 	trap "" INT TERM
-	if [ -n "$envoy_started" ]; then
+	# Only what this run created; each failure is recorded.
+	if [ -n "$envoy_created" ] && podman container exists "$ENVOY_NAME" 2>/dev/null; then
 		podman logs "$ENVOY_NAME" >"$EVID/envoy/envoy.log" 2>&1
-		podman rm -f "$ENVOY_NAME" >/dev/null 2>&1
+		podman rm -f "$ENVOY_NAME" >>"$EVID/cleanup.log" 2>&1 ||
+			echo "FAIL cleanup - cannot remove container $ENVOY_NAME (see cleanup.log)" >>"$SUMMARY"
 	fi
-	[ -n "$harness_pid" ] && kill "$harness_pid" 2>/dev/null && wait "$harness_pid" 2>/dev/null
-	[ -n "$app_pid" ] && kill "$app_pid" 2>/dev/null && wait "$app_pid" 2>/dev/null
-	if [ -n "$db_name" ]; then
+	stop_pid harness "$harness_pid"
+	stop_pid App "$app_pid"
+	if [ -n "$db_created" ]; then
 		podman exec "$DB_CONTAINER" psql -q -U postgres -d postgres \
-			-c "DROP DATABASE IF EXISTS $db_name WITH (FORCE)" >/dev/null 2>&1
+			-c "DROP DATABASE IF EXISTS $DB_NAME WITH (FORCE)" >>"$EVID/cleanup.log" 2>&1 ||
+			echo "FAIL cleanup - cannot drop database $DB_NAME (see cleanup.log)" >>"$SUMMARY"
+	fi
+	if [ -n "$bin_created" ]; then
+		rm -rf "$BIN" 2>>"$EVID/cleanup.log" ||
+			echo "FAIL cleanup - cannot remove $BIN" >>"$SUMMARY"
 	fi
 	echo "--- summary ($EVID)"
 	cat "$SUMMARY"
 	grep -q '^FAIL' "$SUMMARY" && rc=1
 	exit $rc
+}
+# stop_pid WHAT PID: TERM a child of this run, KILL it after 10s.
+stop_pid() {
+	local what=$1 pid=$2 i
+	[ -n "$pid" ] || return 0
+	kill -0 "$pid" 2>/dev/null || return 0
+	kill -TERM "$pid" 2>/dev/null
+	for i in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done
+	if kill -0 "$pid" 2>/dev/null; then
+		kill -KILL "$pid" 2>/dev/null
+		echo "FAIL cleanup - $what (pid $pid) ignored TERM, killed" >>"$SUMMARY"
+	fi
+	wait "$pid" 2>/dev/null
+	return 0
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
@@ -157,24 +191,35 @@ setup_and_run() {
 	fi
 	[ -s "$EVID/access-log-keys.diff" ] || echo "ok   setup - envoy.yaml access-log keys match k8s/base/gateway.yaml" >>"$SUMMARY"
 
-	# 1. Test database: reuse a running scripts/test-db.sh container, else start one.
-	if [ "$(podman exec "$DB_CONTAINER" psql -tA -U postgres -d postgres \
-		-c "SELECT 1 FROM pg_database WHERE datname = 'koupa_template'" 2>/dev/null)" != 1 ]; then
+	# 1. Test database. scripts/test-db.sh force-recreates its container,
+	# so it runs only when there is none; an existing container is used as
+	# it is or the setup fails, never removed.
+	if ! podman container exists "$DB_CONTAINER"; then
+		[ "$DB_CONTAINER" = "$DEFAULT_DB_CONTAINER" ] ||
+			fail_setup "database container $DB_CONTAINER does not exist (only $DEFAULT_DB_CONTAINER is created)"
 		log "starting the test database"
 		(cd "$stage" && scripts/test-db.sh >/dev/null) || fail_setup "scripts/test-db.sh failed"
 	fi
-	db_name=koupa_ingress_$(date -u +%Y%m%d%H%M%S)
+	if [ "$(podman exec "$DB_CONTAINER" psql -tA -U postgres -d postgres \
+		-c "SELECT 1 FROM pg_database WHERE datname = 'koupa_template'" 2>/dev/null)" != 1 ]; then
+		fail_setup "container $DB_CONTAINER exists but is not a usable test DB (not running or no koupa_template); left untouched"
+	fi
 	local i
 	for i in 1 2 3 4 5; do
-		podman exec "$DB_CONTAINER" psql -q -U postgres -d postgres \
-			-c "CREATE DATABASE $db_name TEMPLATE koupa_template OWNER koupa" >/dev/null 2>&1 && break
-		[ "$i" = 5 ] && fail_setup "cannot create database $db_name"
-		sleep 1
+		# CREATE fails if the name exists, so success means this run owns it.
+		if podman exec "$DB_CONTAINER" psql -q -U postgres -d postgres \
+			-c "CREATE DATABASE $DB_NAME TEMPLATE koupa_template OWNER koupa" >>"$EVID/setup.log" 2>&1; then
+			db_created=1
+			break
+		fi
+		[ "$i" = 5 ] && fail_setup "cannot create database $DB_NAME (see setup.log)"
+		sleep 1 # the template may be in use by another CREATE DATABASE
 	done
 
 	# 2. Build the App (v2) and the harness.
-	local bin=$stage/bin/ingress
-	mkdir -p "$bin"
+	local bin=$BIN
+	[ -e "$bin" ] && fail_setup "$bin already exists"
+	mkdir -p "$bin" && bin_created=1
 	log "building"
 	(cd "$stage" && CGO_ENABLED=0 scripts/go build -ldflags "-X koupa/app/config.Version=v2" -o "$bin/koupa" ./app &&
 		CGO_ENABLED=0 scripts/go build -o "$bin/ingress" ./experiments/ingress/cmd/ingress) >"$EVID/build.log" 2>&1 ||
@@ -184,7 +229,7 @@ setup_and_run() {
 	mkdir -p "$EVID/app" "$EVID/envoy" "$EVID/cases"
 	local collect_start
 	collect_start=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
-	DATABASE_URL="postgres://koupa:koupa@127.0.0.1:55432/$db_name?sslmode=disable" \
+	DATABASE_URL="postgres://koupa:koupa@127.0.0.1:55432/$DB_NAME?sslmode=disable" \
 		POD_UID=$POD_UID POD_NAME=$POD_NAME LISTEN_ADDR=127.0.0.1:$APP_PORT \
 		IDEMPOTENCY_KEY=0 GRACEFUL_SHUTDOWN=1 TEST_HOOKS= TEST_MUTATION= \
 		"$bin/koupa" >"$EVID/app/$POD_UID.log" 2>"$EVID/app-stderr.log" &
@@ -204,16 +249,17 @@ setup_and_run() {
 	local proxy_port
 	proxy_port=$(sed 's/.*://' "$EVID/proxy.addr")
 
-	# 5. Envoy.
+	# 5. Envoy. --disable-hot-restart: with --network host the hot-restart
+	# domain socket (base id 0) is shared, so a second Envoy would not start.
 	sed -e "s/__ADMIN_PORT__/$ADMIN_PORT/" -e "s/__LISTEN_PORT__/$ENVOY_PORT/" \
 		-e "s/__PROXY_PORT__/$proxy_port/" "$here/envoy.yaml" >"$EVID/envoy/envoy.yaml"
 	: >"$EVID/envoy/access.log"
-	podman rm -f "$ENVOY_NAME" >/dev/null 2>&1
+	podman container exists "$ENVOY_NAME" && fail_setup "container $ENVOY_NAME already exists"
+	envoy_created=1 # the name is this run's own: whatever podman leaves under it is ours
 	podman run -d --name "$ENVOY_NAME" --network host -e ENVOY_UID=0 \
 		-v "$EVID/envoy:/logs:Z" "$ENVOY_IMAGE" \
-		-c /logs/envoy.yaml --file-flush-interval-msec 100 --log-level warn >/dev/null ||
+		-c /logs/envoy.yaml --disable-hot-restart --file-flush-interval-msec 100 --log-level warn >/dev/null ||
 		fail_setup "podman run envoy failed"
-	envoy_started=1
 
 	wait "$harness_pid"
 	local code=$?
