@@ -5,6 +5,10 @@
 // end right after it was reported. Scripts must therefore confirm what
 // happened to an attempt through the per-attempt logs (hook_released,
 // request_end, SIGTERM lines), not through the wait reply alone.
+//
+// A point armed with hold=1 keeps its pauses after the client has gone (the
+// request ctx is ignored) until release, or until maxHold logs
+// hook_hold_expired. Used to commit long after the client gave up.
 package hooks
 
 import "context"

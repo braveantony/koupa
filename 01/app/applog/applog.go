@@ -24,6 +24,7 @@ const (
 	EvMutationDuplicateOrder = "mutation_duplicate_order"
 	EvHookPaused             = "hook_paused"
 	EvHookReleased           = "hook_released"
+	EvHookHoldExpired        = "hook_hold_expired"
 	EvShutdownTimeout        = "shutdown_timeout"
 	EvProgressAheadOfH       = "progress_ahead_of_h"
 	EvKeyCleanup             = "key_cleanup"

@@ -24,17 +24,27 @@ var names = []string{OrderBeforeCommit, OrderAfterCommit, RequestMid, SSEAfterHe
 
 const defaultWait = 30 * time.Second
 
+// maxHold bounds a pause armed with hold=1, which ignores its request ctx:
+// such a pause ends at release or after maxHold (logged hook_hold_expired),
+// so a forgotten release cannot hold a request forever.
+var maxHold = 120 * time.Second
+
 // pause is one request held at a point.
 type pause struct {
 	attempt  string
 	ctx      context.Context
+	hold     bool          // armed with hold=1: ctx end does not end it
 	rel      chan struct{} // closed by release
 	reported bool          // already returned by a wait
 }
 
+// live: the pause still holds a request (a held pause outlives its ctx).
+func (ps *pause) live() bool { return ps.hold || ps.ctx.Err() == nil }
+
 // point is the state of one named pause point.
 type point struct {
 	armed   bool
+	hold    bool          // pauses ignore request ctx (arm?hold=1)
 	pauses  []*pause      // live pauses, oldest first
 	changed chan struct{} // closed and replaced when pauses change
 }
@@ -93,13 +103,32 @@ func (r *Registry) Pause(ctx context.Context, name, attemptID string) {
 		r.mu.Unlock()
 		return
 	}
-	ps := &pause{attempt: attemptID, ctx: ctx, rel: make(chan struct{})}
+	ps := &pause{attempt: attemptID, ctx: ctx, hold: p.hold, rel: make(chan struct{})}
 	p.pauses = append(p.pauses, ps)
 	p.notify()
 	// Logged under the lock so release (which also holds it) logs after.
-	r.log.Info(applog.EvHookPaused, "hook", name, "attempt", attemptID)
+	r.log.Info(applog.EvHookPaused, "hook", name, "attempt", attemptID, "hold", ps.hold)
 	r.mu.Unlock()
 
+	if ps.hold {
+		t := time.NewTimer(maxHold)
+		defer t.Stop()
+		select {
+		case <-ps.rel:
+		case <-t.C:
+			r.mu.Lock()
+			for i, q := range p.pauses {
+				if q == ps {
+					p.pauses = append(p.pauses[:i], p.pauses[i+1:]...)
+					p.notify()
+					r.log.Warn(applog.EvHookHoldExpired, "hook", name, "attempt", attemptID, "max_hold", maxHold.String())
+					break
+				}
+			}
+			r.mu.Unlock()
+		}
+		return
+	}
 	select {
 	case <-ps.rel:
 	case <-ctx.Done():
@@ -121,12 +150,13 @@ func (r *Registry) Pause(ctx context.Context, name, attemptID string) {
 // cancelHook is a test seam run before a cancelled pause removes itself.
 var cancelHook func()
 
-func (r *Registry) arm(name string) bool {
+func (r *Registry) arm(name string, hold bool) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	p, ok := r.points[name]
 	if ok {
 		p.armed = true
+		p.hold = hold
 	}
 	return ok
 }
@@ -139,6 +169,7 @@ func (r *Registry) release(name string) bool {
 		return false
 	}
 	p.armed = false
+	p.hold = false
 	for _, ps := range p.pauses {
 		r.log.Info(applog.EvHookReleased, "hook", name, "attempt", ps.attempt)
 		close(ps.rel)
@@ -150,7 +181,7 @@ func (r *Registry) release(name string) bool {
 
 // Handler is the control API:
 //
-//	POST /hooks/{name}/arm
+//	POST /hooks/{name}/arm[?hold=1]
 //	POST /hooks/{name}/release
 //	GET  /hooks/{name}/wait?timeout=30s   -> {"pod_uid","pod_name","attempt"}
 //
@@ -158,7 +189,16 @@ func (r *Registry) release(name string) bool {
 func (r *Registry) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /hooks/{name}/arm", func(w http.ResponseWriter, q *http.Request) {
-		if !r.arm(q.PathValue("name")) {
+		var hold bool
+		switch q.URL.Query().Get("hold") {
+		case "", "0":
+		case "1":
+			hold = true
+		default:
+			http.Error(w, "hold must be 0 or 1", http.StatusBadRequest)
+			return
+		}
+		if !r.arm(q.PathValue("name"), hold) {
 			http.Error(w, "unknown hook", http.StatusNotFound)
 			return
 		}
@@ -199,7 +239,7 @@ func (r *Registry) handleWait(w http.ResponseWriter, q *http.Request) {
 		// Drop pauses whose request already ended; they are never reported.
 		live := p.pauses[:0]
 		for _, ps := range p.pauses {
-			if ps.ctx.Err() == nil {
+			if ps.live() {
 				live = append(live, ps)
 			}
 		}

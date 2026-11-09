@@ -380,3 +380,96 @@ func TestWaitSkipsCancelledUnremovedPause(t *testing.T) {
 	close(hold)
 	<-done
 }
+
+func postReq(t *testing.T, h http.Handler, path string) int {
+	t.Helper()
+	return post(t, h, path).Code
+}
+
+// arm?hold=1: a paused request stays paused (and reportable) after its
+// request ctx ends; only release ends it.
+func TestHoldIgnoresContext(t *testing.T) {
+	log, buf := newLog()
+	r := New(true, log)
+	h := r.Handler()
+	if c := postReq(t, h, "/hooks/order.before_commit/arm?hold=1"); c != 200 {
+		t.Fatalf("arm hold: %d", c)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { r.Pause(ctx, "order.before_commit", "held-1"); close(done) }()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+		t.Fatal("held pause ended with its ctx")
+	case <-time.After(100 * time.Millisecond):
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hooks/order.before_commit/wait?timeout=1s", nil))
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "held-1") {
+		t.Fatalf("wait after cancel: %d %s", rec.Code, rec.Body)
+	}
+	postReq(t, h, "/hooks/order.before_commit/release")
+	select {
+	case <-done:
+	case <-time.After(wait):
+		t.Fatal("held pause not released")
+	}
+	found := false
+	for _, l := range buf.lines() {
+		if l["event"] == applog.EvHookReleased && l["attempt"] == "held-1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no hook_released line: %v", buf.lines())
+	}
+	// release disarms and clears hold: a plain arm again honours ctx.
+	postReq(t, h, "/hooks/order.before_commit/arm")
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	done2 := make(chan struct{})
+	go func() { r.Pause(ctx2, "order.before_commit", "plain"); close(done2) }()
+	time.Sleep(50 * time.Millisecond)
+	cancel2()
+	select {
+	case <-done2:
+	case <-time.After(wait):
+		t.Fatal("plain pause after hold ignored ctx")
+	}
+	postReq(t, h, "/hooks/order.before_commit/release")
+}
+
+// A held pause ends by itself after maxHold, logged as hook_hold_expired.
+func TestHoldExpires(t *testing.T) {
+	old := maxHold
+	maxHold = 100 * time.Millisecond
+	t.Cleanup(func() { maxHold = old })
+	log, buf := newLog()
+	r := New(true, log)
+	postReq(t, r.Handler(), "/hooks/request.mid/arm?hold=1")
+	done := make(chan struct{})
+	go func() { r.Pause(context.Background(), "request.mid", "exp-1"); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(wait):
+		t.Fatal("held pause never expired")
+	}
+	found := false
+	for _, l := range buf.lines() {
+		if l["event"] == applog.EvHookHoldExpired && l["attempt"] == "exp-1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no hook_hold_expired line: %v", buf.lines())
+	}
+}
+
+func TestArmRejectsBadHold(t *testing.T) {
+	log, _ := newLog()
+	r := New(true, log)
+	if c := postReq(t, r.Handler(), "/hooks/request.mid/arm?hold=yes"); c != http.StatusBadRequest {
+		t.Fatalf("hold=yes: %d, want 400", c)
+	}
+}
