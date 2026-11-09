@@ -238,7 +238,7 @@ ENVCHECK start=2026-11-09T03:59:05.767Z path=/retry code=0 flags=DC details=down
 
 | 欄位 | 結論 | 證據與注意事項 |
 |---|---|---|
-| `%UPSTREAM_REQUEST_ATTEMPT_COUNT%` | **可以**（依文件與原始碼；**已實測**：欄位有輸出，值為 1、2、3，見 2.2 的 log；「0」的情況這次沒有觸發，原始碼推論（沒設定也印 0）仍未實測） | 文件第 213 行：「Number of times the request is attempted upstream. An attempt count of `0` means that the request was never attempted upstream.」**但**原始碼 `source/common/formatter/stream_info_formatter.cc` 第 1686 行是 `stream_info.attemptCount().value_or(0)`：欄位沒設定時也印 `0`，不會印 `-`。所以 A11 說的三種情況（明確 0、依格式規格省略、沒設定或收集失敗）在 HTTP access log 裡分不出來：只要格式裡有這個欄位，輸出一定有數字。`0` 的意思是「沒有往上游送過」（含 router 之前就回應的情況，例如找不到路由）。「欄位沒設定」要靠核對 log 格式本身，不能靠值判斷 |
+| `%UPSTREAM_REQUEST_ATTEMPT_COUNT%` | **可以**（依文件與原始碼；**已實測**：欄位有輸出，值為 1、2、3，見 2.2 的 log；「0」的情況這次沒有觸發，原始碼推論（沒設定也印 0）仍未實測） | 文件第 213 行：「Number of times the request is attempted upstream. An attempt count of `0` means that the request was never attempted upstream.」**但**原始碼 `source/common/formatter/stream_info_formatter.cc` 第 1686 行是 `stream_info.attemptCount().value_or(0)`：欄位沒設定時也印 `0`，不會印 `-`。所以 A11 說的三種情況（明確 0、依格式規格省略、沒設定或收集失敗）在 HTTP access log 裡分不出來：只要格式裡有這個欄位，輸出一定有數字。**單獨一個 `0` 有歧義**（可能是真的沒嘗試過上游，也可能是欄位沒設定），**判定規則：記錄到的 0 一律視為「未知」，除非同一行的回應旗標是 `UH` 或 `NR`（證明沒有嘗試過上游）才可判為「沒有上游嘗試」**。「欄位沒設定」要靠核對 log 格式本身，不能靠值判斷 |
 | `%RESPONSE_FLAGS%` | **可以** | 文件第 489 行起。A11 列的旗標都在表內：`UH`（NoHealthyUpstream）、`UF`（UpstreamConnectionFailure）、`UC`（UpstreamConnectionTermination）、`UT`（UpstreamRequestTimeout）、`URX`（UpstreamRetryLimitExceeded）、`DC`（DownstreamConnectionTermination）；另有 `UR`（UpstreamRemoteReset）、`SI`（StreamIdleTimeout）、`UMSDR`（UpstreamMaxStreamDurationReached）、`DT`、`LR` 等 |
 | `%RESPONSE_CODE_DETAILS%` | **可以** | 文件第 173 行 `%RESPONSE_CODE_DETAILS(X)%`，HTTP 才有，TCP 印 `-` |
 | `%REQ(X-KOUPA-ATTEMPT)%` | **可以** | 文件第 939 行 `%REQUEST_HEADER(X?Y):Z%` / `%REQ(X?Y):Z%`；標頭不存在時印 `-` |
@@ -250,7 +250,7 @@ ENVCHECK start=2026-11-09T03:59:05.767Z path=/retry code=0 flags=DC details=down
 
 1. **已實測**：CRD 存在，`spec` 有 `description, envoy, httpOptions, service, telemetry`（`kubectl get crd ciliumgatewayclassconfigs.cilium.io -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties}'`），`telemetry.accessLogs` 有 `format/json/targets/text`。
 2. **已實測**：有輸出，四個欄位都有值（見 2.2）。多個 Pod 用 `-l k8s-app=cilium-envoy` 時 `kubectl logs` 預設只印最後 10 行且要加 `--prefix`；實務上對每個 Pod 各收一條。
-3. **已實測**：`X-Koupa-Attempt: 7` 與 `3` 在 access log 的 `%REQ(X-KOUPA-ATTEMPT)%` 原樣印出。上游收到的標頭沒有檢查（agnhost 沒有回顯標頭的端點），**待確認**。
+3. **已實測**：`X-Koupa-Attempt` 在 access log 原樣印出；**上游也收到**：後端用 agnhost `/header?key=<名稱>`（回傳該請求標頭的值）。`curl -H 'X-Koupa-Attempt: 9' http://<node>:<nodePort>/header?key=X-Koupa-Attempt` 回 `9`；`key=X-Forwarded-For` 回 `172.22.0.254`（Envoy 加的）；`key=X-Envoy-Original-Path` 回空（這個標頭只在 Envoy 改寫路徑時才有，沒有改寫就沒有）。原文見 3.6。
 4. chart 預設 `envoy.log.accessLogEnabled: true`（configmap 的 `envoy-access-log-enabled: "true"`，**已實測**）是給 Hubble 用的 access log 轉送，和上面的 stdout 設定是兩回事，不要混在一起。Hubble 確實看得到 Gateway 的 HTTP 請求（見第 4 節）。
 
 ## 3. 重試與逾時（步驟 3）
@@ -307,7 +307,7 @@ Cilium 1.20.4 對 Gateway 產生的設定（以上述 golden 檔為準）：
 
 | 逾時 | 預設值 | 在哪設 | 能不能改 | 證據 |
 |---|---|---|---|---|
-| route timeout | **沒設定**，所以落到 Envoy 預設 **15 秒** | `envoy_virtual_host.go` 第 501～518 行 `timeoutMutation`：`backend`、`request` 都沒寫時不設 `route.timeout` | 可以：HTTPRoute 的 `rules[].timeouts.request` / `backendRequest`（取兩者較小）；寫 `0s` 即停用（Cilium 轉成 `timeout: 0s`；Envoy：0 表示停用） | Envoy `source/common/router/config_impl.h` 第 976 行 `DEFAULT_ROUTE_TIMEOUT_MS = 15000`；`api/envoy/config/route/v3/route_components.proto` 第 1373～1376 行「If not specified, the default is 15s … A value of 0 will disable the route's timeout」 |
+| route timeout | **沒設定**（Cilium 不寫 `route.timeout`）。Task 1 原推論「落到 Envoy 預設 15 秒」**已被實測推翻**：實際生效為**沒有逾時**（原因與實測見 3.2 開頭與 3.5） | `envoy_virtual_host.go` 第 501～518 行 `timeoutMutation`：`backend`、`request` 都沒寫時不設 `route.timeout` | 可以：HTTPRoute 的 `rules[].timeouts.request` / `backendRequest`（取兩者較小）；寫 `0s` 即停用（Cilium 轉成 `timeout: 0s`；Envoy：0 表示停用） | Envoy `source/common/router/config_impl.h` 第 976 行 `DEFAULT_ROUTE_TIMEOUT_MS = 15000`；`api/envoy/config/route/v3/route_components.proto` 第 1373～1376 行「If not specified, the default is 15s … A value of 0 will disable the route's timeout」 |
 | max stream duration | route 與 HCM 都明確設成 `0s`（不限制） | `envoy_virtual_host.go` 第 504 行；`envoy_http_connection_manager.go` 第 148 行 | 無 | golden 檔 `maxStreamDuration: 0s` |
 | stream idle timeout | **300 秒** | HCM `streamIdleTimeout`；Helm `envoy.streamIdleTimeoutDurationSeconds`，operator 旗標 `--proxy-stream-idle-timeout-seconds` | 可以改 Helm（本任務不改） | `operator/pkg/ciliumenvoyconfig/cell.go` 第 39～42 行；values.yaml 第 2815 行；golden 檔 `streamIdleTimeout: 300s` |
 | 上游連線 idle timeout | **60 秒**（cluster 的 `commonHttpProtocolOptions.idleTimeout`） | Helm `envoy.idleTimeoutDurationSeconds` | 同上 | values.yaml 第 2812 行；golden 檔 `idleTimeout: 60s` |
@@ -323,6 +323,260 @@ Cilium 1.20.4 對 Gateway 產生的設定（以上述 golden 檔為準）：
 
 1. **已實測**：結果見 3.1、3.2。route timeout 沒設時實際上是「無逾時」；dynamic cluster 沒有 `connect_timeout`（Envoy 預設 5 秒生效）。
 2. Cilium 對 terminating 端點在 Envoy EDS 裡的處理（calibrate 的上界 U 要靠它）：**仍待確認**（需要 `measure.sh calibrate` 級的實驗）。本次只觀察到一個相關現象：把 `sse` Deployment 縮到 0 副本、EndpointSlice 的 endpoints 已經是 `<unset>` 之後，Envoy 的 cluster 仍保留舊的上游位址 `10.244.1.186:8081`，23 秒後仍繼續把請求送去（`/drop` 在 `dur≈5000`、`flags=UF`、`connection_timeout` 失敗；`cilium-dbg envoy admin clusters` 仍列出該位址的 `cx_connect_fail::4`）。這是「縮到 0」的情況，不是「換一個新 Pod」，不能直接當作 calibrate 的答案，但顯示入口對「端點全部消失」可能不會立刻更新 EDS。
+
+### 3.5 原始輸出（Task 1b 修正補充）
+
+測試環境：namespace `envcheck`（2026-11-09 重建一次，用同一份設定；測完已再次刪除，見 7.2）。Gateway 的 NodePort 是 32125，從主機打 `172.22.0.2:32125`（`tkha-worker-1`）。`sse` 後端每秒送一行 `data: tick <序號> <時間>`，路徑含 `slowhdr` 時先等 25 秒才送回應標頭。對應的路由：`/sse`（無 `timeouts`）、`/slowhdr`（無 `timeouts`）、`/t30`（`timeouts.request: 30s`）。
+
+#### 3.5.1 回應標頭延遲 25 秒（`/slowhdr`，沒寫 `timeouts`）
+
+```console
+$ date -u +%T; curl -s -m 60 -i -o /dev/null -D - -w 'time_total=%{time_total} http_code=%{http_code}\n' "http://172.22.0.2:32125/slowhdr"; date -u +%T
+04:05:03
+HTTP/1.1 200 OK
+content-type: text/event-stream
+cache-control: no-cache
+x-envoy-upstream-service-time: 25005
+date: Mon, 09 Nov 2026 04:05:28 GMT
+server: envoy
+transfer-encoding: chunked
+
+time_total=60.002441 http_code=200
+04:06:03
+```
+
+起點 04:05:03，標頭的 `date` 是 04:05:28，`x-envoy-upstream-service-time: 25005`（毫秒），狀態 200：標頭等了 25 秒仍沒有被 15 秒 route timeout 打斷。（連線之後是串流，curl `-m 60` 在 60 秒結束，`time_total=60.002441` 是這個原因。）
+
+#### 3.5.2 SSE 串流 100 秒（`/sse`，沒寫 `timeouts`）
+
+```console
+$ date -u +%T; curl -s -m 100 -N -D hdr_sse.txt http://172.22.0.2:32125/sse -o sse_body.txt; echo "curl exit=$?"; date -u +%T
+04:05:03
+curl exit=28
+04:06:43
+$ cat hdr_sse.txt
+HTTP/1.1 200 OK
+content-type: text/event-stream
+cache-control: no-cache
+x-envoy-upstream-service-time: 2
+date: Mon, 09 Nov 2026 04:05:03 GMT
+server: envoy
+transfer-encoding: chunked
+$ grep -c '^data' sse_body.txt;  head -1 sse_body.txt;  grep '^data' sse_body.txt | tail -1
+100
+data: tick 0 04:05:03
+data: tick 99 04:06:42
+```
+
+04:05:03 到 04:06:43 共 100 秒、收到 100 筆資料，curl 結束碼 28（`-m 100` 逾時，是用戶端自己結束），沒有在 15 秒被切斷。對照 `/t30`（`timeouts.request: 30s`）：
+
+```console
+$ curl -s -m 60 -N -D hdr_t30.txt http://172.22.0.2:32125/t30 -o t30_body.txt; echo "curl exit=$?"
+curl exit=18
+$ grep -c '^data' t30_body.txt;  grep '^data' t30_body.txt | tail -1
+30
+data: tick 29 04:05:32
+```
+
+30 秒、30 筆，結束碼 18（回應不完整）。對應的 access log 行：
+
+```text
+ENVCHECK start=2026-11-09T04:05:03.505Z path=/slowhdr code=200 flags=DC details=downstream_remote_disconnect upstream=10.244.3.163:8081 attempts=1 dur=60003 koupa=-
+ENVCHECK start=2026-11-09T04:05:03.505Z path=/t30 code=200 flags=UT details=response_timeout upstream=10.244.3.163:8081 attempts=1 dur=30000 koupa=-
+```
+
+（上一輪測試同樣行為：`/sse` `dur=100004 flags=DC`、`/t30` `dur=30000 flags=UT`。`/sse` 這輪的那一行已被 `--tail=40` 擠出視窗，原文見第一輪 log，不重貼。）
+
+#### 3.5.3 CRD 原文（`CiliumGatewayClassConfig`）
+
+```console
+$ kubectl get crd ciliumgatewayclassconfigs.cilium.io -o yaml | sed -n 160,250p
+                type: object
+              telemetry:
+                description: |-
+                  Telemetry specifies observability options for Gateways using this
+                  GatewayClass configuration.
+                properties:
+                  accessLogs:
+                    description: |-
+                      AccessLogs configures Envoy access logging for generated Gateway
+                      listeners.
+                    items:
+                      description: |-
+                        AccessLogs defines an Envoy access log configuration, including its output
+                        format and the generated proxy components that should emit it.
+                        Access logs are currently written to Envoy stdout.
+                      properties:
+                        format:
+                          description: Format specifies the access log output format.
+                          enum:
+                          - JSON
+                          - Text
+                          type: string
+                        json:
+                          additionalProperties:
+                            type: string
+                          default:
+                            authority: '%REQUEST_HEADER(:AUTHORITY)%'
+                            bytes_received: '%BYTES_RECEIVED%'
+                            bytes_sent: '%BYTES_SENT%'
+                            duration: '%DURATION%'
+                            method: '%REQUEST_HEADER(:METHOD)%'
+                            path: '%REQUEST_HEADER(X-ENVOY-ORIGINAL-PATH?:PATH)%'
+                            protocol: '%PROTOCOL%'
+                            request_id: '%REQUEST_HEADER(X-REQUEST-ID)%'
+                            response_code: '%RESPONSE_CODE%'
+                            response_flags: '%RESPONSE_FLAGS%'
+                            start_time: '%START_TIME%'
+                            upstream_host: '%UPSTREAM_HOST%'
+                            upstream_service_time: '%RESPONSE_HEADER(X-ENVOY-UPSTREAM-SERVICE-TIME)%'
+                            user_agent: '%REQUEST_HEADER(USER-AGENT)%'
+                            x_forwarded_for: '%REQUEST_HEADER(X-FORWARDED-FOR)%'
+                          description: |-
+                            JSON maps access log field names to Envoy command operators.
+                            It is used when Format is "JSON".
+                            For available format specifiers, see the Envoy documentation:
+                            - https://www.envoyproxy.io/docs/envoy/latest/configuration/observability/access_log/usage
+                            Note: Always refer to the documentation matching the specific Envoy version you are running.
+                            The following Cilium-specific formatters are also supported:
+                            - %CILIUM_GATEWAY_NAME% -- replaced with the Gateway resource name.
+                            - %CILIUM_GATEWAY_NAMESPACE% -- replaced with the Gateway resource namespace.
+                          maxProperties: 64
+                          minProperties: 1
+                          type: object
+                        targets:
+                          default:
+                          - HTTP
+                          description: |-
+                            Targets specifies the generated Envoy proxy components where access logs
+                            are emitted. If omitted, access logs are emitted for HTTP traffic only.
+                            HTTP targets Envoy HTTP connection managers. TCP targets Envoy TCP proxies,
+                            including TLS passthrough.
+                          items:
+                            description: AccessLogsTarget specifies where access logs
+                              are emitted.
+                            enum:
+                            - HTTP
+                            - TCP
+                            type: string
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                        text:
+                          default: '[%START_TIME%] "%REQUEST_HEADER(:METHOD)% %REQUEST_HEADER(X-ENVOY-ORIGINAL-PATH?:PATH)%
+                            %PROTOCOL%" %RESPONSE_CODE% %RESPONSE_FLAGS% %BYTES_RECEIVED%
+                            %BYTES_SENT% %DURATION% %RESPONSE_HEADER(X-ENVOY-UPSTREAM-SERVICE-TIME)%
+                            "%REQUEST_HEADER(X-FORWARDED-FOR)%" "%REQUEST_HEADER(USER-AGENT)%"
+                            "%REQUEST_HEADER(X-REQUEST-ID)%" "%REQUEST_HEADER(:AUTHORITY)%"
+                            "%UPSTREAM_HOST%"'
+                          description: |-
+                            Text specifies the Envoy access log format string.
+                            It is used when Format is "Text".
+                            For available format specifiers, see the Envoy documentation:
+                            - https://www.envoyproxy.io/docs/envoy/latest/configuration/observability/access_log/usage
+                            Note: Always refer to the documentation matching the specific Envoy version you are running.
+                            The following Cilium-specific formatters are also supported:
+                            - %CILIUM_GATEWAY_NAME% -- replaced with the Gateway resource name.
+                            - %CILIUM_GATEWAY_NAMESPACE% -- replaced with the Gateway resource namespace.
+                          maxLength: 4096
+                          minLength: 1
+                          type: string
+                      required:
+```
+
+`spec` 的第一層欄位（同一個 CRD，2.4 第 1 點的指令）：`description`、`envoy`、`httpOptions`、`service`、`telemetry`。完整 `jsonpath` 輸出另存於 Task 1b 的暫存檔，內容與上面的 YAML 一致，不重貼。
+
+#### 3.5.4 統計計數器原文
+
+```console
+$ kubectl -n kube-system exec pod/cilium-7c9w4 -c cilium-agent -- cilium-dbg envoy admin metrics | grep -E 'envcheck_sse_80' | grep -E '^envoy_cluster_(upstream_rq_total|upstream_rq_retry|upstream_rq_retry_limit_exceeded|upstream_rq_timeout|upstream_cx_destroy_remote_with_active_rq|upstream_rq_pending_failure_eject|upstream_rq_xx|upstream_rq)\{'
+envoy_cluster_upstream_cx_destroy_remote_with_active_rq{envoy_cluster_name="envcheck/cilium-gateway-gw/envcheck_sse_80"} 4
+envoy_cluster_upstream_rq{envoy_response_code="200",envoy_cluster_name="envcheck/cilium-gateway-gw/envcheck_sse_80"} 3
+envoy_cluster_upstream_rq{envoy_response_code="503",envoy_cluster_name="envcheck/cilium-gateway-gw/envcheck_sse_80"} 2
+envoy_cluster_upstream_rq_pending_failure_eject{envoy_cluster_name="envcheck/cilium-gateway-gw/envcheck_sse_80"} 0
+envoy_cluster_upstream_rq_retry{envoy_cluster_name="envcheck/cilium-gateway-gw/envcheck_sse_80"} 2
+envoy_cluster_upstream_rq_retry_limit_exceeded{envoy_cluster_name="envcheck/cilium-gateway-gw/envcheck_sse_80"} 1
+envoy_cluster_upstream_rq_timeout{envoy_cluster_name="envcheck/cilium-gateway-gw/envcheck_sse_80"} 1
+envoy_cluster_upstream_rq_total{envoy_cluster_name="envcheck/cilium-gateway-gw/envcheck_sse_80"} 7
+envoy_cluster_upstream_rq_xx{envoy_response_code_class="2",envoy_cluster_name="envcheck/cilium-gateway-gw/envcheck_sse_80"} 3
+envoy_cluster_upstream_rq_xx{envoy_response_code_class="5",envoy_cluster_name="envcheck/cilium-gateway-gw/envcheck_sse_80"} 2
+```
+
+這是重建 namespace 之後、跑完 `/slowhdr`、`/sse`、`/t30`、`/drop`、`/retry` 各一次的累計值（`/slowhdr` 與 `/sse` 的串流被用戶端中斷，所以 `upstream_cx_destroy_remote_with_active_rq` 也有數字）。`upstream_rq_retry=2`、`upstream_rq_retry_limit_exceeded=1` 對應 `/retry` 的 `attempts: 2`；`upstream_rq_timeout=1` 對應 `/t30` 的 `UT`。
+
+#### 3.5.5 對應的 access log 原文（`/drop`、`/retry`）
+
+```text
+ENVCHECK start=2026-11-09T03:58:39.925Z path=/drop code=503 flags=UC details=upstream_reset_before_response_started{connection_termination} upstream=10.244.1.186:8081 attempts=1 dur=2 koupa=7
+ENVCHECK start=2026-11-09T03:58:39.933Z path=/retry code=503 flags=URX,UC details=upstream_reset_before_response_started{connection_termination} upstream=10.244.1.186:8081 attempts=3 dur=56 koupa=7
+```
+
+（第二輪重建後也再打了一次 `/drop`、`/retry`，結果相同：`/drop` 503、`/retry` 503，統計如 3.5.4。）
+
+### 3.6 API server audit log 與上游標頭保留（Task 1b 修正補充）
+
+#### 3.6.1 audit
+
+```console
+$ sudo podman exec tkha-control-plane-1 sh -c 'sed -n 40,48p /etc/kubernetes/manifests/kube-apiserver.yaml'
+    - --tls-cert-file=/etc/kubernetes/pki/apiserver.crt
+    - --tls-private-key-file=/etc/kubernetes/pki/apiserver.key
+    - --audit-log-format=legacy
+    - --audit-policy-file=/opt/taroko/logs/apiserver/audit-policy.yaml
+    - --audit-log-path=/opt/taroko/logs/apiserver/audit.log
+    - --audit-log-maxage=3
+    - --audit-log-maxbackup=5
+    - --audit-log-maxsize=10
+    image: registry.k8s.io/kube-apiserver:v1.37.2
+
+$ sudo podman exec tkha-control-plane-1 sh -c 'ls -l /opt/taroko/logs/apiserver/; cat /opt/taroko/logs/apiserver/audit-policy.yaml'
+-rw-r--r-- 1 1000 1000    460 Nov  9 11:44 audit-policy.yaml
+-rw------- 1 root root 910083 Nov  9 12:04 audit.log
+apiVersion: audit.k8s.io/v1
+kind: Policy
+omitStages:
+  - "RequestReceived"
+rules:
+  - level: Request
+    verbs: ["create","update","patch","delete","watch","get","list","deletecollection"]
+    resources:
+      - group: ""  # core
+        resources: ["pods", "services", "secrets", "configmaps"]
+      - group: "apps"
+        resources: ["daemonsets", "deployments", "replicasets", "statefulsets"]
+      - group: "batch"
+        resources: ["jobs", "cronjobs"]
+
+$ kubectl -n envcheck delete pod echo-75579c9647-gbffx --wait=false
+pod "echo-75579c9647-gbffx" deleted from envcheck namespace
+$ sudo podman exec tkha-control-plane-1 sh -c 'grep "method=\"delete\"" /opt/taroko/logs/apiserver/audit.log | grep "namespaces/envcheck/pods" | tail -2'
+2026-11-09T04:04:54.434051059Z AUDIT: id="808cc6fc-0cca-4044-8985-abae3fa770f5" stage="ResponseComplete" ip="172.22.0.253" method="delete" user="kubernetes-admin" groups="\"kubeadm:cluster-admins\",\"system:authenticated\"" as="<self>" asgroups="<lookup>" user-agent="kubectl/v1.37.2 (linux/amd64) kubernetes/c50e539" namespace="envcheck" uri="/api/v1/namespaces/envcheck/pods/echo-75579c9647-gbffx" response="200"
+2026-11-09T04:04:56.409806603Z AUDIT: id="aade76ff-fe7a-4cab-8eb7-46900d0f6416" stage="ResponseComplete" ip="172.22.0.253" method="delete" user="system:node:tkha-worker-1" groups="\"system:nodes\",\"system:authenticated\"" as="<self>" asgroups="<lookup>" user-agent="kubelet/v1.37.2 (linux/amd64) kubernetes/c50e539" namespace="envcheck" uri="/api/v1/namespaces/envcheck/pods/echo-75579c9647-gbffx" response="200"
+```
+
+（`audit.log` 單行過長的部分我用 `cut` 截過一次做瀏覽，上面兩行 `delete` 是未截斷的原文。）兩筆刪除：04:04:54.43 是 kubectl 發的刪除請求（對應 grace period 開始），04:04:56.41 是 kubelet 在容器停掉後做的最終刪除。這可以當 A11 交叉核對 Pod 刪除時間的來源；`--audit-log-format=legacy` 是單行文字格式，不是 JSON，解析要用正規表示式。
+
+#### 3.6.2 上游標頭保留
+
+後端是 agnhost `netexec` 的 `/header?key=<名稱>`（回傳請求中該標頭的值）。
+
+```console
+$ curl -s -m5 -D - -H 'X-Koupa-Attempt: 9' "http://172.22.0.2:32125/header?key=X-Koupa-Attempt"
+HTTP/1.1 200 OK
+date: Mon, 09 Nov 2026 04:04:51 GMT
+content-length: 1
+content-type: text/plain; charset=utf-8
+x-envoy-upstream-service-time: 0
+server: envoy
+
+9
+$ curl -s -m5 -H 'X-Koupa-Attempt: 9' "http://172.22.0.2:32125/header?key=X-Envoy-Original-Path"
+（空行：沒有這個標頭）
+$ curl -s -m5 -H 'X-Koupa-Attempt: 9' "http://172.22.0.2:32125/header?key=X-Forwarded-For"
+172.22.0.254
+```
+
+結論：自訂標頭 `X-Koupa-Attempt` 穿過 Gateway 原樣送到上游，Envoy 另外加了 `X-Forwarded-For`。
 
 ## 4. Hubble（步驟 4）
 
@@ -415,12 +669,12 @@ docker-content-digest: sha256:03a1c6a62b27e8ad31cae5c085131b5ac706b09403d6fcb6c5
 | 上游位址 | 可做 | `%UPSTREAM_HOST%`；上游嘗試次數大於 1 時只代表最後一次 |
 | 回應旗標 | 可做 | `%RESPONSE_FLAGS%`（`UH/UF/UC/UT/URX/DC` 都在 Envoy 1.39.5 的表內） |
 | 回應細節 | 可做 | `%RESPONSE_CODE_DETAILS%` |
-| 上游嘗試次數 | 可做（已實測輸出 1、2、3），但三種情況只能分兩種（「0」未實測） | `%UPSTREAM_REQUEST_ATTEMPT_COUNT%`；原始碼是 `value_or(0)`，「明確 0」和「沒設定」都印 0。「依格式規格省略」不會發生（HTTP access log 欄位一律有值）。「欄位沒設定／收集失敗」靠核對 log 格式與每個節點的 `cilium-envoy` log 是否完整判斷 |
+| 上游嘗試次數 | 可做（已實測輸出 1、2、3），但只能分兩種：數字 ≥ 1 可信；**記錄到的 0 一律視為未知**，除非旗標為 `UH` 或 `NR` 才判為「沒有上游嘗試」 | `%UPSTREAM_REQUEST_ATTEMPT_COUNT%`；原始碼是 `value_or(0)`，「明確 0」和「沒設定」都印 0。「依格式規格省略」不會發生（HTTP access log 欄位一律有值）。「欄位沒設定／收集失敗」靠核對 log 格式與每個節點的 `cilium-envoy` log 是否完整判斷 |
 | 總耗時 | 可做 | `%DURATION%` |
 | `X-Koupa-Attempt` | 可做 | `%REQ(X-KOUPA-ATTEMPT)%` |
 | 入口重試 | 預設不會重試，可保持關閉（已實測） | 只有 HTTPRoute 有 `retry` 才會；koupa 路由不寫 `retry`，上游嘗試次數最多 1 次（`/drop`：`attempts=1`）。若寫了 `retry.attempts: N`，上游嘗試次數最多 **N+1**（已實測：N=2 時 `attempts=3`） |
 | 每次上游嘗試的紀錄 | 做不到 | access log 每個下游請求只有一行；Cilium Gateway 沒有逐次嘗試的設定。在不寫 `retry` 時嘗試次數不會大於 1，這個缺口不影響；若有人打開 `retry`，嘗試次數大於 1 的請求「入口選了哪個 Pod」判定一律未知 |
-| 統計計數器 | 可做（已實測） | admin 的 `/stats`（`cilium-dbg envoy admin metrics`，Prometheus 格式）。**已實測的實際名稱**：`envoy_cluster_upstream_rq_total{envoy_cluster_name="envcheck/cilium-gateway-gw/envcheck_sse_80"}`、`envoy_cluster_upstream_rq_retry`、`..._rq_retry_limit_exceeded`、`..._rq_timeout`、`..._upstream_cx_destroy_remote_with_active_rq`、`..._upstream_rq_xx{envoy_response_code_class="5"}`、`..._upstream_rq{envoy_response_code="503"}`、`..._upstream_rq_pending_failure_eject`（cluster 名稱 `<ns>/cilium-gateway-<gw>/<ns>_<svc>_<port>`，`:` 變 `_`；每個節點各自計數）。Envoy 1.39.5 文件（`configuration/upstream/cluster_manager/cluster_stats.rst`）有：`upstream_rq_total`、`upstream_rq_retry`、`upstream_rq_timeout`、`upstream_rq_rx_reset`、`upstream_rq_pending_failure_eject`、`upstream_cx_destroy_remote_with_active_rq`（上游連線帶著進行中請求被遠端關閉）；5xx 數用 `upstream_rq_5xx`（動態名稱，待確認）。cluster 名稱依 `getClusterName` 是 `<ns>:<service>:<port>`，加上 CEC 前綴後的實際名稱待確認 |
+| 統計計數器 | 可做（已實測，見 3.5.4） | admin 的 `/stats`：`cilium-dbg envoy admin metrics`（Prometheus 格式，每個節點各自計數）。**實際名稱**（已實測）：`envoy_cluster_upstream_rq_total`、`envoy_cluster_upstream_rq_retry`、`envoy_cluster_upstream_rq_retry_limit_exceeded`、`envoy_cluster_upstream_rq_timeout`、`envoy_cluster_upstream_cx_destroy_remote_with_active_rq`、`envoy_cluster_upstream_rq_pending_failure_eject`；回應碼用標籤形式：`envoy_cluster_upstream_rq{envoy_response_code="503"}` 與 `envoy_cluster_upstream_rq_xx{envoy_response_code_class="5"}`（**沒有** `upstream_rq_5xx` 這個名稱）。cluster 名稱標籤 `envoy_cluster_name="<ns>/cilium-gateway-<gw>/<ns>_<svc>_<port>"`（`:` 換成 `_`） |
 | 涵蓋所有入口實例 | 降級做法（已實測：請求只進被連到的那個節點的 Envoy，log 與統計都只在該節點） | 每個節點一個 `cilium-envoy`，要對全部節點同時收 log 與統計；少一個，該節點相關的判定標未知 |
 
 ### 表 B：A11 其他來源
@@ -430,7 +684,7 @@ docker-content-digest: sha256:03a1c6a62b27e8ad31cae5c085131b5ac706b09403d6fcb6c5
 | Envoy 端點／設定更新紀錄（calibrate 的直接證據上界 U） | 待確認，傾向做不到（Task 1b：config/clusters admin 可看當下端點，但沒有更新歷史；縮到 0 後 Envoy 仍保留舊端點，見 3.3） | 需要 Envoy 對 EDS 更新的紀錄（debug log 或 agent 後端列表快照）。沒有的話，A11 已規定退回「模型推估」，並標成估計 |
 | 干擾因素 | 要記錄 | outlier detection 預設開（3.1 末段） |
 | Hubble | 主機上做不到；降級做法已實測可行 | 第 4 節；在 agent Pod 內執行 `hubble observe` 可用（`/usr/bin/hubble` v1.20.4），看得到 Gateway 的 `http-request`/`http-response`（方法、URL、狀態碼、耗時），但沒有上游位址、旗標、嘗試次數、自訂標頭；只是輔助用途 |
-| API server audit log（交叉核對刪除請求時間） | 待確認（Task 1b 未查） | tk8s 有 `manifests/audit-policy.yaml`；實際有無啟用與 log 位置，叢集不存在無法查證 |
+| API server audit log（交叉核對刪除請求時間） | **已實測：可用** | 見 3.6。kube-apiserver 有開 audit，log 在控制平面節點 `/opt/taroko/logs/apiserver/audit.log`（root 權限，需 `sudo podman exec`）；policy 對 pods/services/secrets/configmaps 與 apps/batch 工作負載的 `get/list/watch/create/update/patch/delete` 記到 `Request` 層級（不含 `RequestReceived` 階段），pod 刪除請求實測有紀錄（時間戳為奈秒、UTC）。注意 policy 沒涵蓋 `endpointslices`、`events`，所以端點移除不會出現在 audit log |
 
 ### 表 C：A14 「和入口的紀錄對帳」三方
 
@@ -460,13 +714,14 @@ docker-content-digest: sha256:03a1c6a62b27e8ad31cae5c085131b5ac706b09403d6fcb6c5
 | 2 | `cilium-envoy` DaemonSet 存在、admin socket 可用 | **已實測** | 有 4 個 Pod；`cilium-dbg envoy admin config/clusters/listeners/metrics/serverinfo` 可用，agent 容器無 curl（2.1） |
 | 3 | 路由實際的 route timeout、retry、stream idle、max stream duration | **已實測（有更正）** | route timeout 預設無逾時（非 15 秒）；retry 預設無；`attempts: N` = N 次重試；stream idle 300 秒 config 已確認但**行為未測**；connect timeout 實際 5 秒（3.1、3.2） |
 | 4 | `CiliumGatewayClassConfig.spec.telemetry` 可用、四個欄位實際輸出 | **已實測** | 可用，但只能經 GatewayClass `parametersRef`；四個欄位都有輸出（2.2） |
-| 5 | `/stats` 的 cluster 名稱與計數器名稱 | **已實測** | 見表 A「統計計數器」列 |
+| 5 | `/stats` 的 cluster 名稱與計數器名稱 | **已實測** | 見表 A「統計計數器」列與 3.5.4 |
+| 5b | 自訂標頭穿過 Gateway 到上游、API server audit log | **已實測** | 標頭保留、audit 可用（3.6） |
 | 6 | Hubble 是否啟用、agent 內有無 `hubble` 執行檔 | **已實測** | 啟用；`/usr/bin/hubble` v1.20.4 可用；看得到 Gateway HTTP（第 4 節） |
 | 7 | terminating 端點在 Envoy EDS 的處理 | **待確認** | 需要 calibrate 實驗；縮到 0 後 Envoy 仍保留舊端點（3.3） |
 | 8 | CNPG 接受 `tag@digest`，且 `SHOW transaction_timeout` 可用 | **待確認** | 屬於建 Cluster 時才能驗，不在 Task 1b 範圍 |
 | 9（新增） | stream idle 300 秒的實際切斷行為與回應旗標 | **待確認** | 要一條靜默超過 300 秒的連線；預期旗標 `SI`，未驗證 |
 | 10（新增） | `retry` 沒寫 `attempts` 時的預設重試次數 | **待確認** | 本次只測了 `attempts: 2` |
-| 11（新增） | `%UPSTREAM_REQUEST_ATTEMPT_COUNT%` 在沒有嘗試上游時印 0 | **待確認** | 本次所有請求都有上游嘗試 |
+| 11（新增） | `%UPSTREAM_REQUEST_ATTEMPT_COUNT%` 的 0 | **待確認** | 本次所有請求都有上游嘗試；規則：記錄到的 0 視為未知，除非旗標為 `UH` 或 `NR`（2.3） |
 
 ### 7.1 LoadBalancer IP 在主機上不一定連得到（測試過程的發現）
 
@@ -501,6 +756,26 @@ cilium   io.cilium/gateway-controller   True       15m
 $ kubectl get gateway,httproute,ciliumgatewayclassconfigs.cilium.io -A
 No resources found
 $ kubectl get leases -n kube-system | grep -c envcheck
+0
+```
+
+**第二輪（Task 1b 修正補充）**：為了補測 audit 與標頭保留，同一份設定重建過一次 `envcheck`，測完再次刪除，驗證輸出如下：
+
+```console
+$ kubectl delete gatewayclass envcheck-cilium
+gatewayclass.gateway.networking.k8s.io "envcheck-cilium" deleted
+$ kubectl delete ns envcheck --wait=true --timeout=120s
+namespace "envcheck" deleted
+$ kubectl get ns envcheck
+Error from server (NotFound): namespaces "envcheck" not found
+$ kubectl get gatewayclass
+NAME     CONTROLLER                     ACCEPTED   AGE
+cilium   io.cilium/gateway-controller   True       23m
+$ kubectl get gateway,httproute,ciliumgatewayclassconfigs.cilium.io -A
+No resources found
+$ kubectl get leases -n kube-system | grep -c envcheck
+0
+$ kubectl get svc -A | grep -c envcheck
 0
 ```
 
