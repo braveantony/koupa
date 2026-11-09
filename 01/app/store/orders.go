@@ -147,15 +147,16 @@ type PendingItem struct {
 // PendingOrder is an order still preparing, with its items.
 type PendingOrder struct {
 	Order
-	Items []PendingItem
+	ClientRef string // empty when the order was created without one
+	Items     []PendingItem
 }
 
 // ListPending returns orders still preparing, oldest first, each with its
 // items. One query: the limited order set is joined to its items.
 func ListPending(ctx context.Context, pool *pgxpool.Pool, limit int) ([]PendingOrder, error) {
 	rows, err := pool.Query(ctx, `
-SELECT o.id, o.number, o.total, m.name, i.quantity
-FROM (SELECT id, number, total FROM orders WHERE status = 'preparing' ORDER BY id LIMIT $1) o
+SELECT o.id, o.number, o.total, o.client_ref, m.name, i.quantity
+FROM (SELECT id, number, total, client_ref FROM orders WHERE status = 'preparing' ORDER BY id LIMIT $1) o
 LEFT JOIN order_items i ON i.order_id = o.id
 LEFT JOIN menu_items m ON m.id = i.menu_item_id
 ORDER BY o.id, m.id`, limit)
@@ -167,14 +168,18 @@ ORDER BY o.id, m.id`, limit)
 	for rows.Next() {
 		var o Order
 		var num int64
-		var name *string
+		var ref, name *string
 		var qty *int
-		if err := rows.Scan(&o.ID, &num, &o.Total, &name, &qty); err != nil {
+		if err := rows.Scan(&o.ID, &num, &o.Total, &ref, &name, &qty); err != nil {
 			return nil, err
 		}
 		if len(out) == 0 || out[len(out)-1].ID != o.ID {
 			o.Number = FormatNumber(num)
-			out = append(out, PendingOrder{Order: o})
+			po := PendingOrder{Order: o}
+			if ref != nil {
+				po.ClientRef = *ref
+			}
+			out = append(out, po)
 		}
 		if name != nil && qty != nil {
 			last := &out[len(out)-1]

@@ -1,17 +1,12 @@
 package load
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"math/rand"
-	"net"
 	"net/http"
 	"sync"
-	"syscall"
 	"time"
 
 	"koupa/internal/wire"
@@ -86,78 +81,19 @@ func (c *Customer) Place(ctx context.Context, seq uint64, scheduled time.Time) e
 	c.init()
 	ref := fmt.Sprintf("%s-c%d", c.Run, seq)
 	body, _ := json.Marshal(orderReq{ClientRef: ref, Items: c.randomItems()})
-	var werr error
-	for try := 1; try <= 1+c.Retries; try++ {
-		rec := c.attempt(ctx, seq, try, ref, body, scheduled)
-		if err := c.W.Write(rec); err != nil && werr == nil {
-			werr = err
+	return sendWithRetry(c.W, c.Retries, func() bool { return ctx.Err() == nil }, func(try int) record.Attempt {
+		rec := record.Attempt{
+			Run: c.Run, Kind: record.KindOrder, ClientRef: ref,
+			Attempt: wire.NewAttemptID(c.Run, seq, try), Try: try, ScheduledAt: scheduled,
 		}
-		if !shouldRetry(rec) || ctx.Err() != nil {
-			break
-		}
-	}
-	return werr
-}
-
-func shouldRetry(r record.Attempt) bool {
-	return !r.FullResponse || r.Status == nil || *r.Status/100 != 2
-}
-
-func (c *Customer) attempt(ctx context.Context, seq uint64, try int, ref string, body []byte, scheduled time.Time) record.Attempt {
-	rec := record.Attempt{
-		Run: c.Run, Kind: record.KindOrder, ClientRef: ref,
-		Attempt: wire.NewAttemptID(c.Run, seq, try), Try: try, ScheduledAt: scheduled,
-	}
-	actx, cancel := context.WithTimeout(ctx, c.Timeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(actx, http.MethodPost, c.Base+"/orders", bytes.NewReader(body))
-	if err != nil {
-		rec.SentAt = time.Now()
-		rec.RespondedAt = rec.SentAt
-		return rec
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(wire.HeaderAttempt, rec.Attempt)
-
-	rec.SentAt = time.Now()
-	rec.SchedLagMs = LagMs(scheduled, rec.SentAt)
-	resp, err := c.Client.Do(req)
-	if err != nil {
-		rec.RespondedAt = time.Now()
-		rec.ErrKind = classify(err)
-		return rec
-	}
-	defer resp.Body.Close()
-	st := resp.StatusCode
-	rec.Status = &st
-	rec.PodUID = resp.Header.Get(wire.HeaderPodUID)
-	data, err := io.ReadAll(resp.Body)
-	rec.RespondedAt = time.Now()
-	if err != nil {
-		rec.ErrKind = classify(err)
-		return rec
-	}
-	rec.FullResponse = true
-	if resp.StatusCode/100 == 2 {
-		var out struct {
-			OrderID *int64 `json:"order_id"`
-		}
-		if json.Unmarshal(data, &out) == nil {
-			rec.OrderID = out.OrderID
-		}
-	}
-	return rec
-}
-
-func classify(err error) string {
-	var ne net.Error
-	switch {
-	case errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout()):
-		return record.ErrTimeout
-	case errors.Is(err, syscall.ECONNREFUSED):
-		return record.ErrRefused
-	case errors.Is(err, syscall.ECONNRESET), errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
-		return record.ErrReset
-	}
-	return ""
+		return send(ctx, call{Client: c.Client, Timeout: c.Timeout, Method: http.MethodPost, URL: c.Base + "/orders", Body: body},
+			rec, func(r *record.Attempt, data []byte) {
+				var out struct {
+					OrderID *int64 `json:"order_id"`
+				}
+				if json.Unmarshal(data, &out) == nil {
+					r.OrderID = out.OrderID
+				}
+			})
+	})
 }

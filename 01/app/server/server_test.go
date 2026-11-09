@@ -414,13 +414,17 @@ func TestPendingOrders(t *testing.T) {
 		t.Errorf("pending = %+v, want %+v %+v", pending, a, b)
 	}
 	var full []struct {
-		Number string `json:"number"`
-		Items  []struct {
+		Number    string `json:"number"`
+		ClientRef string `json:"client_ref"`
+		Items     []struct {
 			Name     string `json:"name"`
 			Quantity int    `json:"quantity"`
 		} `json:"items"`
 	}
 	e.do(t, "GET", "/api/orders?status=pending", "", "", &full)
+	if len(full) == 2 && (full[0].ClientRef != "p-1" || full[1].ClientRef != "p-2") {
+		t.Errorf("pending client_ref = %q, %q; want p-1, p-2", full[0].ClientRef, full[1].ClientRef)
+	}
 	if len(full) != 2 || len(full[1].Items) != 1 || full[1].Items[0].Name != "容器冬瓜茶" || full[1].Items[0].Quantity != 2 {
 		t.Errorf("pending items = %+v", full)
 	}

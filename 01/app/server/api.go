@@ -32,7 +32,8 @@ type pendingItemJSON struct {
 // pendingJSON is an order plus what to make for it.
 type pendingJSON struct {
 	orderJSON
-	Items []pendingItemJSON `json:"items"`
+	ClientRef string            `json:"client_ref"`
+	Items     []pendingItemJSON `json:"items"`
 }
 
 type menuJSON struct {
@@ -172,7 +173,7 @@ func (s *Server) handlePending(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]pendingJSON, 0, len(orders))
 	for _, o := range orders {
-		p := pendingJSON{orderJSON: orderJSON{OrderID: o.ID, Number: o.Number, Total: o.Total}, Items: []pendingItemJSON{}}
+		p := pendingJSON{orderJSON: orderJSON{OrderID: o.ID, Number: o.Number, Total: o.Total}, ClientRef: o.ClientRef, Items: []pendingItemJSON{}}
 		for _, it := range o.Items {
 			p.Items = append(p.Items, pendingItemJSON{Name: it.Name, Quantity: it.Quantity})
 		}

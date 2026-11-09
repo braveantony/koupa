@@ -42,7 +42,7 @@ func TestCreateOrderComputesTotal(t *testing.T) {
 	}
 	want := []PendingItem{{"滾動珍珠奶茶", 1}, {"Pod 沫紅茶", 2}}
 	if len(pending[0].Items) != 2 || pending[0].Items[0] != want[0] || pending[0].Items[1] != want[1] ||
-		pending[0].Number != o.Number || pending[0].Total != 175 {
+		pending[0].ClientRef != "r1" || pending[0].Number != o.Number || pending[0].Total != 175 {
 		t.Fatalf("pending items %+v", pending[0])
 	}
 }
@@ -70,7 +70,7 @@ func TestSoldOutRejectedWhenChecking(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := RunWriteTx(ctx(t), pool, TxOptions{}, func(c context.Context, tx pgx.Tx) error {
-		_, err := CreateOrderTx(c, tx, OrderRequest{Items: []OrderItem{{MenuItemID: 3, Quantity: 1}}}, true)
+		_, err := CreateOrderTx(c, tx, OrderRequest{ClientRef: "ref-1", Items: []OrderItem{{MenuItemID: 3, Quantity: 1}}}, true)
 		return err
 	})
 	if !errors.Is(err, ErrSoldOut) {
