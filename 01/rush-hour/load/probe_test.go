@@ -73,7 +73,9 @@ func TestProberFixedRateNotWaitingForResponses(t *testing.T) {
 	p := &Prober{Base: srv.URL, RunID: "runP", Rate: 100, W: record.NewWriter(&buf), Timeout: time.Second}
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	p.Run(ctx)
+	if err := p.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if n := len(readRecords(t, &buf)); n < 10 {
 		t.Fatalf("sent %d probes in 200ms at 100/s with slow responses", n)
 	}
@@ -87,7 +89,9 @@ func TestProberRecordsNoResponse(t *testing.T) {
 	p := &Prober{Base: base, RunID: "runP", Rate: 50, W: record.NewWriter(&buf)}
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	p.Run(ctx)
+	if err := p.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
 	recs := readRecords(t, &buf)
 	if len(recs) == 0 {
 		t.Fatal("no records")
@@ -99,5 +103,42 @@ func TestProberRecordsNoResponse(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), `"pod_uid":null`) {
 		t.Fatal("unexpected null")
+	}
+}
+
+func TestProberForcesNewConnectionWithSuppliedKeepAliveClient(t *testing.T) {
+	var conns, reqs atomic.Int64
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqs.Add(1)
+		io.WriteString(w, `{}`)
+	}))
+	srv.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+		if s == http.StateNew {
+			conns.Add(1)
+		}
+	}
+	srv.Start()
+	defer srv.Close()
+	keepAlive := &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: 10}} // would reuse connections
+	var buf bytes.Buffer
+	p := &Prober{Client: keepAlive, Base: srv.URL, RunID: "runP", Rate: 100, W: record.NewWriter(&buf)}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if err := p.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if reqs.Load() < 10 || conns.Load() != reqs.Load() {
+		t.Fatalf("connections %d, requests %d: want equal", conns.Load(), reqs.Load())
+	}
+}
+
+func TestProberPropagatesWriterError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer srv.Close()
+	p := &Prober{Base: srv.URL, RunID: "runP", Rate: 100, W: record.NewWriter(failWriter{})}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := p.Run(ctx); err == nil {
+		t.Fatal("expected record write error from Run")
 	}
 }

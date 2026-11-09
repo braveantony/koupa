@@ -166,7 +166,11 @@ func (s *Server) handlePending(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := store.DBContext()
 	defer cancel()
-	orders, err := store.ListPending(ctx, s.deps.Pool, pendingLimit)
+	pat := ""
+	if run := r.URL.Query().Get("run"); run != "" {
+		pat = runPattern(run)
+	}
+	orders, err := store.ListPending(ctx, s.deps.Pool, pat, pendingLimit)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "database unavailable")
 		return

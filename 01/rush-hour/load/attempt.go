@@ -23,6 +23,7 @@ type call struct {
 	Method  string
 	URL     string
 	Body    []byte // nil for no body; a non-nil body is sent as JSON
+	Close   bool   // force a fresh connection: send Connection: close
 }
 
 // send performs c as the attempt described by rec (identity fields Run, Kind,
@@ -43,6 +44,7 @@ func send(ctx context.Context, c call, rec record.Attempt, onOK func(rec *record
 		rec.RespondedAt = rec.SentAt
 		return rec
 	}
+	req.Close = c.Close
 	if c.Body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -74,13 +76,17 @@ func send(ctx context.Context, c call, rec record.Attempt, onOK func(rec *record
 }
 
 // sendWithRetry runs do(try) for try = 1..1+retries, writing every attempt.
-// It stops early when the attempt succeeded (a complete 2xx response) or
-// more() reports false. A record-write error is returned (and stays in
+// do returns false when it decided not to send (nothing is written then and
+// the loop ends). It also stops early when the attempt succeeded (a complete
+// 2xx response) or more() reports false. A record-write error is returned (and stays in
 // w.Err()); sending continues so the measurement is not silently shortened.
-func sendWithRetry(w *record.Writer, retries int, more func() bool, do func(try int) record.Attempt) error {
+func sendWithRetry(w *record.Writer, retries int, more func() bool, do func(try int) (record.Attempt, bool)) error {
 	var werr error
 	for try := 1; try <= 1+retries; try++ {
-		rec := do(try)
+		rec, ok := do(try)
+		if !ok {
+			break
+		}
 		if err := w.Write(rec); err != nil && werr == nil {
 			werr = err
 		}

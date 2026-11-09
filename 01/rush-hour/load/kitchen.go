@@ -3,10 +3,12 @@ package load
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -41,7 +43,9 @@ type Kitchen struct {
 
 	mu       sync.Mutex
 	seen     map[int64]bool
-	n        uint64 // orders seen so far
+	nums     map[int64]uint64 // order id -> n, fixed at first sight
+	backlog  []pendingOrder   // seen, never issued (cancelled early): rescheduled by the next scan
+	stop     bool             // set under mu by Stop; checked under mu before each request
 	inflight int
 	attempts []string
 	err      error
@@ -54,6 +58,7 @@ func (k *Kitchen) init() {
 	k.once.Do(func() {
 		k.stopCh = make(chan struct{})
 		k.seen = map[int64]bool{}
+		k.nums = map[int64]uint64{}
 		k.rng = rand.New(rand.NewSource(time.Now().UnixNano()))
 		if k.Timeout == 0 {
 			k.Timeout = 5 * time.Second
@@ -83,16 +88,16 @@ func (k *Kitchen) Attempts() []string {
 // (bounded by Timeout); Run returns once they have. Safe to call repeatedly.
 func (k *Kitchen) Stop() {
 	k.init()
+	k.mu.Lock()
+	k.stop = true
+	k.mu.Unlock()
 	k.stopOnce.Do(func() { close(k.stopCh) })
 }
 
 func (k *Kitchen) stopped() bool {
-	select {
-	case <-k.stopCh:
-		return true
-	default:
-		return false
-	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.stop
 }
 
 func (k *Kitchen) setErr(err error) {
@@ -131,12 +136,18 @@ func (k *Kitchen) Drain(ctx context.Context, maxWait time.Duration) error {
 	k.init()
 	dctx, cancel := context.WithTimeout(ctx, maxWait)
 	defer cancel()
+	pollErr := false
 	for !k.stopped() {
-		fresh := k.scan(dctx)
+		fresh, ok := k.scan(dctx)
 		k.mu.Lock()
-		idle := k.inflight == 0
+		idle := k.inflight == 0 && len(k.backlog) == 0
 		k.mu.Unlock()
-		if fresh == 0 && idle {
+		if ok {
+			pollErr = false
+		} else if dctx.Err() == nil {
+			pollErr = true // not an empty list: keep trying until the deadline
+		}
+		if ok && fresh == 0 && idle {
 			break
 		}
 		if !k.sleep(dctx, k.Poll) {
@@ -145,7 +156,13 @@ func (k *Kitchen) Drain(ctx context.Context, maxWait time.Duration) error {
 	}
 	k.Stop()
 	k.wg.Wait()
-	return k.firstErr()
+	if err := k.firstErr(); err != nil {
+		return err
+	}
+	if pollErr {
+		return errors.New("kitchen: pending list unavailable when drain ended")
+	}
+	return nil
 }
 
 // sleep waits d; false means ctx is done or the kitchen was stopped.
@@ -167,68 +184,90 @@ type pendingOrder struct {
 	ClientRef string `json:"client_ref"`
 }
 
-// scan fetches the pending list and schedules every unseen order of this run.
-// It returns how many it scheduled; a failed poll schedules none (the next
-// poll tries again).
-func (k *Kitchen) scan(ctx context.Context) int {
+// scan fetches the pending list and schedules every unseen order of this run
+// plus any backlog from an earlier cancelled scan. It returns how many it
+// scheduled and whether the poll itself succeeded (an empty list is a
+// success; a failed poll is not, and schedules only the backlog).
+func (k *Kitchen) scan(ctx context.Context) (int, bool) {
+	fresh := k.schedule(ctx, nil)
 	pctx, cancel := context.WithTimeout(ctx, k.Timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(pctx, http.MethodGet, k.Base+"/api/orders?status=pending", nil)
+	req, err := http.NewRequestWithContext(pctx, http.MethodGet,
+		k.Base+"/api/orders?status=pending&run="+url.QueryEscape(k.RunID), nil)
 	if err != nil {
-		return 0
+		return fresh, false
 	}
 	resp, err := k.Client.Do(req)
 	if err != nil {
-		return 0
+		return fresh, false
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(resp.Body)
 	var list []pendingOrder
 	if err != nil || resp.StatusCode != http.StatusOK || json.Unmarshal(data, &list) != nil {
+		return fresh, false
+	}
+	return fresh + k.schedule(ctx, list), true
+}
+
+// schedule starts a goroutine for the backlog and for each unseen order of
+// this run in list. The server already filters by run; the prefix check is a
+// second guard.
+func (k *Kitchen) schedule(ctx context.Context, list []pendingOrder) int {
+	prefix := k.RunID + "-"
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.stop {
 		return 0
 	}
-	prefix := k.RunID + "-"
-	fresh := 0
+	todo := k.backlog
+	k.backlog = nil
 	for _, o := range list {
-		if !strings.HasPrefix(o.ClientRef, prefix) {
-			continue
-		}
-		k.mu.Lock()
-		if k.seen[o.OrderID] || k.stopped() {
-			k.mu.Unlock()
+		if !strings.HasPrefix(o.ClientRef, prefix) || k.seen[o.OrderID] {
 			continue
 		}
 		k.seen[o.OrderID] = true
-		k.n++
-		n := k.n
+		k.nums[o.OrderID] = uint64(len(k.nums)) + 1
+		todo = append(todo, o)
+	}
+	for _, o := range todo {
 		k.inflight++
 		k.wg.Add(1)
-		k.mu.Unlock()
-		fresh++
-		go k.markLater(ctx, o, n)
+		go k.markLater(ctx, o, k.nums[o.OrderID])
 	}
-	return fresh
+	return len(todo)
 }
 
 func (k *Kitchen) markLater(ctx context.Context, o pendingOrder, n uint64) {
 	defer k.wg.Done()
+	issued := false
 	defer func() {
 		k.mu.Lock()
 		k.inflight--
+		if !issued {
+			k.backlog = append(k.backlog, o) // cancelled before its turn: not lost
+		}
 		k.mu.Unlock()
 	}()
 	scheduled := time.Now().Add(k.Delay())
 	if !k.sleep(ctx, time.Until(scheduled)) {
-		return // stopped before it was time: never issued
+		return
 	}
-	url := fmt.Sprintf("%s/orders/%d/ready", k.Base, o.OrderID)
-	err := sendWithRetry(k.W, readyRetries, func() bool { return !k.stopped() && ctx.Err() == nil }, func(try int) record.Attempt {
+	readyURL := fmt.Sprintf("%s/orders/%d/ready", k.Base, o.OrderID)
+	// Requests already issued are not cut short by cancellation or Stop.
+	sctx := context.WithoutCancel(ctx)
+	err := sendWithRetry(k.W, readyRetries, func() bool { return !k.stopped() && ctx.Err() == nil }, func(try int) (record.Attempt, bool) {
 		id := wire.NewAttemptID(k.RunID+"-k", n, try)
 		k.mu.Lock()
+		if k.stop || ctx.Err() != nil { // checked under the lock Stop takes: nothing starts after Stop
+			k.mu.Unlock()
+			return record.Attempt{}, false
+		}
+		issued = true
 		k.attempts = append(k.attempts, id)
 		k.mu.Unlock()
 		rec := record.Attempt{Run: k.RunID, Kind: record.KindReady, ClientRef: o.ClientRef, Attempt: id, Try: try, ScheduledAt: scheduled}
-		return send(ctx, call{Client: k.Client, Timeout: k.Timeout, Method: http.MethodPost, URL: url}, rec,
+		return send(sctx, call{Client: k.Client, Timeout: k.Timeout, Method: http.MethodPost, URL: readyURL}, rec,
 			func(r *record.Attempt, body []byte) {
 				var out struct {
 					OrderID  *int64 `json:"order_id"`
@@ -237,7 +276,7 @@ func (k *Kitchen) markLater(ctx context.Context, o pendingOrder, n uint64) {
 				if json.Unmarshal(body, &out) == nil {
 					r.OrderID, r.ReadySeq = out.OrderID, out.ReadySeq
 				}
-			})
+			}), true
 	})
 	if err != nil {
 		k.setErr(err)

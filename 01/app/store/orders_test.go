@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"context"
 	"errors"
 	"sync"
@@ -36,7 +37,7 @@ func TestCreateOrderComputesTotal(t *testing.T) {
 	if n != 2 || price != 120 {
 		t.Fatalf("items n=%d price=%d", n, price)
 	}
-	pending, err := ListPending(ctx(t), pool, 10)
+	pending, err := ListPending(ctx(t), pool, "", 10)
 	if err != nil || len(pending) != 1 || pending[0].ID != o.ID {
 		t.Fatalf("pending %+v err %v", pending, err)
 	}
@@ -177,5 +178,29 @@ func TestRequestHashOrderIndependent(t *testing.T) {
 	}
 	if len(a) != 64 {
 		t.Fatalf("hash %q", a)
+	}
+}
+
+func TestListPendingFiltersBeforeLimit(t *testing.T) {
+	pool := testdb.New(t)
+	mk := func(ref string) int64 {
+		var o Order
+		_, err := RunWriteTx(ctx(t), pool, TxOptions{}, func(c context.Context, tx pgx.Tx) (err error) {
+			o, err = CreateOrderTx(c, tx, OrderRequest{ClientRef: ref, Items: []OrderItem{{MenuItemID: 1, Quantity: 1}}}, true)
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return o.ID
+	}
+	for i := 0; i < 5; i++ { // older, unrelated: more than the limit
+		mk(fmt.Sprintf("old-c%d", i))
+	}
+	want := mk("run1-c1")
+	mk("run10-c1") // prefix lookalike must not match "run1-%"
+	got, err := ListPending(ctx(t), pool, `run1-%`, 3)
+	if err != nil || len(got) != 1 || got[0].ID != want || got[0].ClientRef != "run1-c1" {
+		t.Fatalf("got %+v err %v, want only order %d", got, err, want)
 	}
 }

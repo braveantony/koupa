@@ -16,8 +16,8 @@ import (
 // wire.NewAttemptID(RunID+"-p", seq, 1) with seq counting from 1; pod_uid is
 // empty (null) when no response arrived.
 type Prober struct {
-	// Client must not reuse connections. Nil means a client whose Transport
-	// has DisableKeepAlives set, which is what calibration needs.
+	// Any client works: every probe is sent with Connection: close, so no
+	// connection is reused. Nil means a plain client with keep-alives off.
 	Client  *http.Client
 	Base    string
 	RunID   string
@@ -54,7 +54,7 @@ func (p *Prober) Run(ctx context.Context) error {
 			rec := record.Attempt{Run: p.RunID, Kind: record.KindProbe, Attempt: wire.NewAttemptID(p.RunID+"-p", seq, 1), Try: 1, ScheduledAt: at}
 			// Not tied to ctx: a probe already due completes (bounded by
 			// timeout) so the final slots are not recorded as cancelled.
-			rec = send(context.Background(), call{Client: client, Timeout: timeout, Method: http.MethodGet, URL: p.Base + "/api/whoami"}, rec, nil)
+			rec = send(context.Background(), call{Client: client, Timeout: timeout, Method: http.MethodGet, URL: p.Base + "/api/whoami", Close: true}, rec, nil)
 			if err := p.W.Write(rec); err != nil {
 				mu.Lock()
 				if werr == nil {

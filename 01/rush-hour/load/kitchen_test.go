@@ -26,6 +26,9 @@ type fakeShop struct {
 	failFor map[int64]int    // order id -> number of leading POSTs to fail with 503
 	seq     int64
 	attIDs  []string
+	getFail int // leading GETs of the pending list that fail with 503
+	gets    int
+	queries []string
 }
 
 func newShop() *fakeShop {
@@ -54,6 +57,12 @@ func (f *fakeShop) handler() http.Handler {
 	mux.HandleFunc("GET /api/orders", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		f.gets++
+		f.queries = append(f.queries, r.URL.RawQuery)
+		if f.gets <= f.getFail {
+			http.Error(w, "down", 503)
+			return
+		}
 		var parts []string
 		for _, id := range f.pending {
 			parts = append(parts, fmt.Sprintf(`{"order_id":%d,"number":"%04d","total":100,"client_ref":%q,"items":[{"name":"x","quantity":1}]}`, id, id, f.refs[id]))
@@ -231,5 +240,112 @@ func TestKitchenPropagatesWriterError(t *testing.T) {
 	k.W = record.NewWriter(failWriter{})
 	if err := k.Drain(context.Background(), 2*time.Second); err == nil {
 		t.Fatal("expected record write error from Drain")
+	}
+}
+
+func TestKitchenAsksServerForThisRunOnly(t *testing.T) {
+	shop := newShop()
+	shop.add(1, "runK-c1")
+	srv := httptest.NewServer(shop.handler())
+	defer srv.Close()
+	var buf bytes.Buffer
+	k := newKitchen(srv, &buf)
+	if err := k.Drain(context.Background(), 2*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	shop.mu.Lock()
+	defer shop.mu.Unlock()
+	if len(shop.queries) == 0 || shop.queries[0] != "status=pending&run=runK" {
+		t.Fatalf("queries = %v", shop.queries)
+	}
+}
+
+func TestKitchenDrainRetriesFailedPoll(t *testing.T) {
+	shop := newShop()
+	shop.add(1, "runK-c1")
+	shop.getFail = 3 // an error is not an empty list
+	srv := httptest.NewServer(shop.handler())
+	defer srv.Close()
+	var buf bytes.Buffer
+	k := newKitchen(srv, &buf)
+	if err := k.Drain(context.Background(), 3*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if shop.totalPosts() != 1 {
+		t.Fatalf("posts = %d, want 1 (drain gave up on a failed poll)", shop.totalPosts())
+	}
+}
+
+func TestKitchenDrainReportsPollFailureAtDeadline(t *testing.T) {
+	shop := newShop()
+	shop.getFail = 1 << 30
+	srv := httptest.NewServer(shop.handler())
+	defer srv.Close()
+	k := newKitchen(srv, &bytes.Buffer{})
+	start := time.Now()
+	err := k.Drain(context.Background(), 200*time.Millisecond)
+	if err == nil || time.Since(start) < 200*time.Millisecond {
+		t.Fatalf("err %v after %v, want an error at the deadline", err, time.Since(start))
+	}
+}
+
+func TestKitchenCancelThenDrainMarksSeenOrders(t *testing.T) {
+	shop := newShop()
+	shop.add(1, "runK-c1")
+	shop.add(2, "runK-c2")
+	srv := httptest.NewServer(shop.handler())
+	defer srv.Close()
+	var buf bytes.Buffer
+	k := newKitchen(srv, &buf)
+	k.Delay = func() time.Duration { return 400 * time.Millisecond }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- k.Run(ctx) }()
+	waitFor(t, time.Second, func() bool {
+		shop.mu.Lock()
+		defer shop.mu.Unlock()
+		return shop.gets >= 2 // both orders seen and waiting out their delay
+	})
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if shop.totalPosts() != 0 {
+		t.Fatal("marked before the delay elapsed")
+	}
+	k.Delay = func() time.Duration { return time.Millisecond }
+	if err := k.Drain(context.Background(), 3*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	shop.mu.Lock()
+	defer shop.mu.Unlock()
+	if shop.posts[1] != 1 || shop.posts[2] != 1 {
+		t.Fatalf("posts = %v, want each order marked once by Drain", shop.posts)
+	}
+}
+
+func TestKitchenNoRequestStartsAfterStop(t *testing.T) {
+	for round := 0; round < 20; round++ {
+		shop := newShop()
+		for i := int64(1); i <= 40; i++ {
+			shop.add(i, fmt.Sprintf("runK-c%d", i))
+		}
+		srv := httptest.NewServer(shop.handler())
+		var buf bytes.Buffer
+		k := newKitchen(srv, &buf)
+		k.Delay = func() time.Duration { return 0 } // timers fire right as Stop lands
+		done := make(chan error, 1)
+		go func() { done <- k.Run(context.Background()) }()
+		waitFor(t, 2*time.Second, func() bool { return shop.totalPosts() >= 1 })
+		k.Stop()
+		atStop := len(k.Attempts())
+		<-done
+		if after := len(k.Attempts()); after != atStop {
+			t.Fatalf("round %d: %d attempts issued after Stop returned", round, after-atStop)
+		}
+		if shop.totalPosts() != atStop {
+			t.Fatalf("round %d: %d requests, %d attempts registered at Stop", round, shop.totalPosts(), atStop)
+		}
+		srv.Close()
 	}
 }

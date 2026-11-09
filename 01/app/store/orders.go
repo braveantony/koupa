@@ -152,14 +152,18 @@ type PendingOrder struct {
 }
 
 // ListPending returns orders still preparing, oldest first, each with its
-// items. One query: the limited order set is joined to its items.
-func ListPending(ctx context.Context, pool *pgxpool.Pool, limit int) ([]PendingOrder, error) {
+// items. One query: the limited order set is joined to its items. A non-empty
+// refPattern is a LIKE pattern (escape character \) the client_ref must match;
+// it is applied before the limit, so unrelated older orders cannot hide the
+// wanted ones.
+func ListPending(ctx context.Context, pool *pgxpool.Pool, refPattern string, limit int) ([]PendingOrder, error) {
 	rows, err := pool.Query(ctx, `
 SELECT o.id, o.number, o.total, o.client_ref, m.name, i.quantity
-FROM (SELECT id, number, total, client_ref FROM orders WHERE status = 'preparing' ORDER BY id LIMIT $1) o
+FROM (SELECT id, number, total, client_ref FROM orders WHERE status = 'preparing'
+  AND ($2 = '' OR client_ref LIKE $2 ESCAPE '\') ORDER BY id LIMIT $1) o
 LEFT JOIN order_items i ON i.order_id = o.id
 LEFT JOIN menu_items m ON m.id = i.menu_item_id
-ORDER BY o.id, m.id`, limit)
+ORDER BY o.id, m.id`, limit, refPattern)
 	if err != nil {
 		return nil, err
 	}

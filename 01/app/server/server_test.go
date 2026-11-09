@@ -430,6 +430,23 @@ func TestPendingOrders(t *testing.T) {
 	}
 }
 
+func TestPendingOrdersRunFilter(t *testing.T) {
+	e := newEnv(t, testConfig("v1"), nil)
+	var a, b, c orderResp
+	e.do(t, "POST", "/orders", "", orderBody("runA-c1", 1, 1), &a)
+	e.do(t, "POST", "/orders", "", orderBody("runB-c1", 1, 1), &b)
+	e.do(t, "POST", "/orders", "", orderBody("runA-c2", 1, 1), &c)
+	var got []orderResp
+	e.do(t, "GET", "/api/orders?status=pending&run=runA", "", "", &got)
+	if len(got) != 2 || got[0] != a || got[1] != c {
+		t.Errorf("run=runA pending = %+v, want %+v %+v", got, a, c)
+	}
+	e.do(t, "GET", "/api/orders?status=pending&run=run_", "", "", &got) // _ is escaped, not a wildcard
+	if len(got) != 0 {
+		t.Errorf("run=run_ matched %+v", got)
+	}
+}
+
 func TestPagesPlaceholder(t *testing.T) {
 	e := newEnv(t, testConfig("v1"), nil)
 	for _, p := range []string{"/", "/kitchen", "/board"} {

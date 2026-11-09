@@ -81,19 +81,20 @@ func (c *Customer) Place(ctx context.Context, seq uint64, scheduled time.Time) e
 	c.init()
 	ref := fmt.Sprintf("%s-c%d", c.Run, seq)
 	body, _ := json.Marshal(orderReq{ClientRef: ref, Items: c.randomItems()})
-	return sendWithRetry(c.W, c.Retries, func() bool { return ctx.Err() == nil }, func(try int) record.Attempt {
+	return sendWithRetry(c.W, c.Retries, func() bool { return ctx.Err() == nil }, func(try int) (record.Attempt, bool) {
 		rec := record.Attempt{
 			Run: c.Run, Kind: record.KindOrder, ClientRef: ref,
 			Attempt: wire.NewAttemptID(c.Run, seq, try), Try: try, ScheduledAt: scheduled,
 		}
-		return send(ctx, call{Client: c.Client, Timeout: c.Timeout, Method: http.MethodPost, URL: c.Base + "/orders", Body: body},
+		out := send(ctx, call{Client: c.Client, Timeout: c.Timeout, Method: http.MethodPost, URL: c.Base + "/orders", Body: body},
 			rec, func(r *record.Attempt, data []byte) {
-				var out struct {
+				var resp struct {
 					OrderID *int64 `json:"order_id"`
 				}
-				if json.Unmarshal(data, &out) == nil {
-					r.OrderID = out.OrderID
+				if json.Unmarshal(data, &resp) == nil {
+					r.OrderID = resp.OrderID
 				}
 			})
+		return out, true
 	})
 }
