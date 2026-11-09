@@ -120,7 +120,7 @@ func (b *Board) once(ctx context.Context, client *http.Client, p *Parser, conn i
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
-	if p.LastEventID != "" {
+	if validHeaderValue(p.LastEventID) {
 		req.Header.Set("Last-Event-ID", p.LastEventID)
 	}
 	resp, err := client.Do(req)
@@ -195,4 +195,19 @@ func (b *Board) once(ctx context.Context, client *http.Client, p *Parser, conn i
 		d.Err = errors.Join(ctx.Err()).Error()
 	}
 	b.emit(d)
+}
+
+// validHeaderValue reports whether v is non-empty and can be sent as an HTTP
+// header value (no control characters other than tab, no DEL). A last event
+// ID with control characters is not sent rather than failing every reconnect.
+func validHeaderValue(v string) bool {
+	if v == "" {
+		return false
+	}
+	for i := 0; i < len(v); i++ {
+		if c := v[i]; (c < 0x20 && c != '\t') || c == 0x7f {
+			return false
+		}
+	}
+	return true
 }

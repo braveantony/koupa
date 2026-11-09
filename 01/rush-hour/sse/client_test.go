@@ -222,3 +222,35 @@ func TestConnectionRefusedIsError(t *testing.T) {
 		t.Fatalf("got %+v", es)
 	}
 }
+
+func TestNewStreamWithoutIDClearsLastEventID(t *testing.T) {
+	s := &script{bodies: []string{
+		"id: 4\nevent: ready\ndata: {}\n\n",
+		"data: x\n\n",
+		"HOLD",
+	}}
+	runBoard(t, s, 10*time.Millisecond, func(*Board, *syncBuf) bool { s.mu.Lock(); defer s.mu.Unlock(); return len(s.headers) >= 3 })
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if v := s.headers[1].Get("Last-Event-ID"); v != "4" {
+		t.Errorf("second: %q want 4", v)
+	}
+	if _, ok := s.headers[2]["Last-Event-Id"]; ok {
+		t.Errorf("third connection must not send Last-Event-ID, got %q", s.headers[2].Get("Last-Event-ID"))
+	}
+}
+
+func TestMalformedIDStillReconnects(t *testing.T) {
+	for name, id := range map[string]string{"invalid utf8": "7\xff", "control char": "7\x01"} {
+		s := &script{bodies: []string{"id: " + id + "\ndata: x\n\n", "HOLD"}}
+		runBoard(t, s, 10*time.Millisecond, func(*Board, *syncBuf) bool { s.mu.Lock(); defer s.mu.Unlock(); return len(s.headers) >= 2 })
+		s.mu.Lock()
+		if len(s.headers) < 2 {
+			t.Fatalf("%s: no reconnect", name)
+		}
+		if name == "invalid utf8" && s.headers[1].Get("Last-Event-ID") != "7\u00ef\u00bf\u00bd" && s.headers[1].Get("Last-Event-ID") != "7\ufffd" {
+			t.Errorf("%s: header=%q", name, s.headers[1].Get("Last-Event-ID"))
+		}
+		s.mu.Unlock()
+	}
+}

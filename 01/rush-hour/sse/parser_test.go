@@ -36,6 +36,8 @@ func TestParseSpecExamples(t *testing.T) {
 		{"event type", "event: ready\ndata: x\n\ndata: y\n\n", []ev{{"ready", "x", ""}, {"message", "y", ""}}},
 		{"id persists", "id: 4\ndata: a\n\ndata: b\n\n", []ev{{"message", "a", "4"}, {"message", "b", "4"}}},
 		{"id with NUL ignored", "id: 4\ndata: a\n\nid: 5\x006\ndata: b\n\n", []ev{{"message", "a", "4"}, {"message", "b", "4"}}},
+		{"malformed UTF-8 replaced", "data: a\xffb\xe2\x82c\xc0\xaf\n\n", []ev{{"message", "a\ufffdb\ufffdc\ufffd\ufffd", ""}}},
+		{"malformed id and event", "id: x\xff\nevent: e\xfe\ndata: d\n\n", []ev{{"e\ufffd", "d", "x\ufffd"}}},
 		{"unknown field ignored", "foo: bar\ndata: a\n\n", []ev{{"message", "a", ""}}},
 	}
 	for _, c := range cases {
@@ -93,5 +95,15 @@ func TestRetryUpdatesDelay(t *testing.T) {
 	p.Parse(strings.NewReader("retry: 1500\n\nretry: 15a\nretry:\nretry: -3\nretry: 20\n\n"), func(Event) {})
 	if !reflect.DeepEqual(got, []time.Duration{1500 * time.Millisecond, 20 * time.Millisecond}) {
 		t.Fatalf("got %v", got)
+	}
+}
+
+func TestRetryClampedToMax(t *testing.T) {
+	var got []time.Duration
+	p := Parser{OnRetry: func(d time.Duration) { got = append(got, d) }}
+	p.Parse(strings.NewReader("retry: 3600000\nretry: 3600001\nretry: 99999999999999999999999\nretry: 0\n\n"), func(Event) {})
+	want := []time.Duration{MaxRetry, MaxRetry, MaxRetry, 0}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v want %v", got, want)
 	}
 }
