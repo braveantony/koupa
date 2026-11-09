@@ -60,29 +60,26 @@ func main() {
 
 	// Startup can block on the database; SIGTERM is handled meanwhile.
 	sctx, scancel := context.WithTimeout(ctx, startupTimeout)
-	type opened struct {
-		pool *pgxpool.Pool
-		err  error
-	}
 	openc := make(chan opened, 1)
 	go func() {
 		p, err := store.NewPool(sctx, cfg, log)
 		openc <- opened{p, err}
 	}()
-	var pool *pgxpool.Pool
-	select {
-	case o := <-openc:
-		pool, err = o.pool, o.err
-	case sig := <-sigs:
+	o, sig := awaitStartup(openc, sigs)
+	if sig != nil {
 		if !cfg.GracefulShutdown {
 			finalLog.Info(applog.EvSigterm, "signal", sig.String(), "graceful", false, "phase", "startup")
 			os.Exit(0)
 		}
 		log.Info(applog.EvSigterm, "signal", sig.String(), "graceful", true, "phase", "startup")
 		scancel()
+		if o.pool != nil {
+			o.pool.Close()
+		}
 		finalLog.Info(applog.EvExit, "clean", true, "phase", "startup")
 		os.Exit(0)
 	}
+	pool, err := o.pool, o.err
 	scancel()
 	if err != nil {
 		log.Error(applog.EvStartupFailed, "err", err.Error())
@@ -110,4 +107,28 @@ func main() {
 	// server.Run logged exit; leave now. Closing the pool would wait for
 	// connections still held by requests Shutdown gave up on.
 	os.Exit(0)
+}
+
+// opened is the result of opening the pool at startup.
+type opened struct {
+	pool *pgxpool.Pool
+	err  error
+}
+
+// awaitStartup waits for the pool result or a signal. A signal that is
+// already pending wins even when the result is ready too (select alone
+// would pick at random), so SIGTERM during startup is never lost behind a
+// failed or finished NewPool. A non-nil signal means: stop now.
+func awaitStartup(openc <-chan opened, sigs <-chan os.Signal) (opened, os.Signal) {
+	select {
+	case sig := <-sigs:
+		return opened{}, sig
+	case o := <-openc:
+		select {
+		case sig := <-sigs:
+			return o, sig
+		default:
+			return o, nil
+		}
+	}
 }
