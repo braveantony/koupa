@@ -1,0 +1,20 @@
+# Step 3: boards resume from Last-Event-ID after reconnecting.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../step-2
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: koupa
+        namespace: koupa
+      spec:
+        template:
+          spec:
+            containers:
+              - name: koupa
+                env:
+                  - name: RESUME_FROM_LAST_ID
+                    value: "1"

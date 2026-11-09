@@ -1,0 +1,20 @@
+# Step 4: retried orders with the same client_ref do not create duplicates.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../step-3
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: koupa
+        namespace: koupa
+      spec:
+        template:
+          spec:
+            containers:
+              - name: koupa
+                env:
+                  - name: IDEMPOTENCY_KEY
+                    value: "1"

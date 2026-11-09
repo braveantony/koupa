@@ -1,0 +1,24 @@
+# Tool validation only (plan A12, A14): step 4 plus the test hook server on
+# 9090. Never used for real measurements; the port is not in the Service.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../steps/step-4
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: koupa
+        namespace: koupa
+      spec:
+        template:
+          spec:
+            containers:
+              - name: koupa
+                ports:
+                  - name: hooks
+                    containerPort: 9090
+                env:
+                  - name: TEST_HOOKS
+                    value: "1"

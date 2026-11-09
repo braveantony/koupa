@@ -1,0 +1,23 @@
+# Idle-disconnect lab (design 4.3), heartbeat on: the app sends an SSE
+# comment line every 15 s, well under the gateway's 300 s stream idle
+# timeout. Task-level measurements may change this overlay (e.g. route
+# timeouts) once the real cut-off is observed.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../base
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: koupa
+        namespace: koupa
+      spec:
+        template:
+          spec:
+            containers:
+              - name: koupa
+                env:
+                  - name: SSE_HEARTBEAT
+                    value: 15s

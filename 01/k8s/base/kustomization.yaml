@@ -1,0 +1,9 @@
+# Step 0: the app with no shutdown handling at all.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - gateway.yaml
+  - deployment.yaml
+  - service.yaml
+  - httproute.yaml

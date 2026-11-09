@@ -1,0 +1,24 @@
+# measure.sh calibrate (plan A11 step 1): step 0 plus a long preStop and
+# enough grace, so a terminating Pod keeps serving while probes measure when
+# the gateway stops picking it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../base
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: koupa
+        namespace: koupa
+      spec:
+        template:
+          spec:
+            terminationGracePeriodSeconds: 45
+            containers:
+              - name: koupa
+                lifecycle:
+                  preStop:
+                    sleep:
+                      seconds: 20

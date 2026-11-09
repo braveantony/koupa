@@ -1,0 +1,25 @@
+# Step 2: graceful shutdown. Timing rule (plan A5):
+#   preStop 15 + SHUTDOWN_TIMEOUT 15 + 5 < terminationGracePeriodSeconds
+# so grace = preStop + SHUTDOWN_TIMEOUT + 10 = 40.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../step-1
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: koupa
+        namespace: koupa
+      spec:
+        template:
+          spec:
+            terminationGracePeriodSeconds: 40
+            containers:
+              - name: koupa
+                env:
+                  - name: GRACEFUL_SHUTDOWN
+                    value: "1"
+                  - name: SHUTDOWN_TIMEOUT
+                    value: 15s

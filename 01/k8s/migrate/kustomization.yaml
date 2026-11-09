@@ -1,0 +1,23 @@
+# The SQL files live in 01/migrations, outside this directory, so render with
+#   kubectl kustomize --load-restrictor LoadRestrictionsNone k8s/migrate
+# (setup.sh does this). When adding a migration, list its files here and bump
+# 000004 in this file and in job.yaml; setup.sh refuses to run if the latest
+# file in 01/migrations is not in the rendered ConfigMap.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: koupa
+resources:
+  - job.yaml
+generatorOptions:
+  disableNameSuffixHash: true
+configMapGenerator:
+  - name: koupa-migrate-000004
+    files:
+      - ../../migrations/000001_init.up.sql
+      - ../../migrations/000001_init.down.sql
+      - ../../migrations/000002_menu.up.sql
+      - ../../migrations/000002_menu.down.sql
+      - ../../migrations/000003_role_settings.up.sql
+      - ../../migrations/000003_role_settings.down.sql
+      - ../../migrations/000004_ready_seq_index.up.sql
+      - ../../migrations/000004_ready_seq_index.down.sql

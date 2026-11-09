@@ -1,0 +1,23 @@
+# Step 1: delay SIGTERM with a preStop sleep so endpoint removal can reach
+# the gateway first. 15 s is the conservative placeholder from TEACHER.md;
+# Task 23 replaces it with the calibrated value. Grace stays at the default 30 s.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: koupa
+        namespace: koupa
+      spec:
+        template:
+          spec:
+            containers:
+              - name: koupa
+                lifecycle:
+                  preStop:
+                    sleep:
+                      seconds: 15
