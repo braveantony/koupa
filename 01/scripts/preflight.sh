@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Pre-measurement checks against the LIVE cluster (plan A8 step 2).
 #
-#   scripts/preflight.sh <step-0..step-4|control> [--image IMAGE]
+#   scripts/preflight.sh <step-0..step-4|control> [--image IMAGE] [--digest DIGEST]
 #
 # Run after the step's manifest is applied and the rollout has finished.
-# IMAGE (default ghcr.io/braveantony/koupa:v1) is the image the Pods must run.
-# The six checks, each printed as "ok <name>: ..." or "FAIL <name>: ...":
+# IMAGE (default ghcr.io/braveantony/koupa:v1) is the image the Pods must run;
+# DIGEST is what its registry tag resolves to now (measure.sh resolves it
+# once per run; without --digest: `skopeo inspect docker://IMAGE`).
+# The seven checks, each printed as "ok <name>: ..." or "FAIL <name>: ...":
 #   generation     Deployment observedGeneration == generation
 #   replicaset     every koupa Pod belongs to the current ReplicaSet, runs, is
 #                  Ready, and there are spec.replicas of them
@@ -16,6 +18,8 @@
 #   test-switches  TEST_HOOKS and TEST_MUTATION are not set (A12, A14)
 #   tx-timeout     every Pod's log shows transaction_timeout = 60s ("1min")
 #                  and its startup line has no test switch on (A6)
+#   image-digest   every koupa Pod's imageID digest equals DIGEST (a node
+#                  with an old image cached under the same tag is caught)
 # Exit 0 all passed, 1 a check failed, 2 usage or render error.
 set -euo pipefail
 stage=$(cd "$(dirname "$0")/.." && pwd)
@@ -23,16 +27,18 @@ NS=${KOUPA_NS:-koupa}
 KUBECTL=${KUBECTL:-kubectl}
 
 usage() {
-	echo "usage: $0 <step-0..step-4|control> [--image IMAGE]" >&2
+	echo "usage: $0 <step-0..step-4|control> [--image IMAGE] [--digest DIGEST]" >&2
 	exit 2
 }
 
 step=${1:-}
 [ $# -ge 1 ] && shift
 image=ghcr.io/braveantony/koupa:v1
+digest=""
 while [ $# -gt 0 ]; do
 	case $1 in
 	--image) [ $# -ge 2 ] || usage; image=$2; shift 2 ;;
+	--digest) [ $# -ge 2 ] || usage; digest=$2; shift 2 ;;
 	*) usage ;;
 	esac
 done
@@ -44,6 +50,11 @@ esac
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+
+if [ -z "$digest" ]; then
+	digest=$("${SKOPEO:-skopeo}" inspect --format '{{.Digest}}' "docker://$image" 2>"$tmp/skopeo.err") || digest=""
+	[ -n "$digest" ] || digest="unresolved: $(head -c 300 "$tmp/skopeo.err" | tr '\n' ' ')"
+fi
 
 "$KUBECTL" kustomize "$dir" >"$tmp/rendered.yaml" 2>"$tmp/err" || {
 	echo "preflight: kubectl kustomize $dir failed: $(cat "$tmp/err")" >&2
@@ -60,10 +71,10 @@ for pod in $(python3 -I -c 'import json,sys; print(" ".join(p["metadata"]["name"
 	"$KUBECTL" -n "$NS" logs "$pod" -c koupa >"$tmp/logs/$pod.log" 2>"$tmp/logs/$pod.err" || true
 done
 
-python3 -I - "$step" "$image" "$tmp" <<'PY'
+python3 -I - "$step" "$image" "$tmp" "$digest" <<'PY'
 import json, os, re, sys, yaml
 
-step, image, tmp = sys.argv[1:]
+step, image, tmp, digest = sys.argv[1:]
 failures = []
 
 def report(name, ok, msg):
@@ -244,8 +255,22 @@ for p in pods:
 report("tx-timeout", not bad, "; ".join(bad) if bad else
        "%d Pods logged transaction_timeout 1min (60s)" % len(pods))
 
+# 7. image digest: what each Pod really runs vs. what the tag resolves to.
+if not digest.startswith("sha256:"):
+    report("image-digest", False, "cannot resolve %s in the registry (%s)" % (image, digest))
+else:
+    bad = []
+    for p in pods:
+        st = [c for c in p.get("status", {}).get("containerStatuses", []) if c.get("name") == "koupa"]
+        iid = (st[0].get("imageID") or "") if st else ""
+        if iid.rsplit("@", 1)[-1] != digest:
+            bad.append("%s runs %s" % (p["metadata"]["name"], iid or "no imageID"))
+    report("image-digest", not bad and bool(pods),
+           ("; ".join(bad) + "; registry %s is %s" % (image, digest)) if bad else
+           ("%d Pods run %s@%s" % (len(pods), image.split(":")[0], digest) if pods else "no Pods"))
+
 if failures:
     print("preflight %s: FAILED (%s)" % (step, ", ".join(failures)))
     sys.exit(1)
-print("preflight %s: all 6 checks passed" % step)
+print("preflight %s: all 7 checks passed" % step)
 PY

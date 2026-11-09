@@ -127,17 +127,39 @@ EOF
 #!/usr/bin/env bash
 echo "podman $*" >>"$FAKE/calls.log"
 case "$1" in
-image) echo "sha256:fakedigest" ;;
+image)
+	# podman image inspect --format F REF: {{.Id}} -> the fake image ID.
+	case "$*" in
+	*.Id*) echo "fa4e1d0000000000000000000000000000000000000000000000000000000001" ;;
+	*) echo "sha256:fakedigest" ;;
+	esac ;;
 ps) cat "$FAKE/podman-ps" 2>/dev/null ;;
 version | --version) echo "podman version fake" ;;
 run)
 	# podman run [opts] IMAGE ARGS...: run the fake rush-hour with ARGS.
 	shift
-	while [ $# -gt 0 ] && [ "$1" != "${RUSH_HOUR_IMAGE:-ghcr.io/braveantony/rush-hour:0.1.0}" ]; do shift; done
+	while [ $# -gt 0 ] && [ "$1" != "${RUSH_HOUR_IMAGE:-ghcr.io/braveantony/rush-hour:0.1.0}" ] &&
+		[ "$1" != fa4e1d0000000000000000000000000000000000000000000000000000000001 ]; do shift; done
 	shift
 	exec "$FAKE/bin/rush-hour" "$@" ;;
 esac
 exit 0
+EOF
+
+	# Fake skopeo inspect --format '{{.Digest}}' docker://IMAGE: the digest
+	# in $FAKE/digest-<tag> (default: v1 = make_live's imageID, others ...02);
+	# $FAKE/skopeo-fail makes it fail.
+	cat >"$FAKE/bin/skopeo" <<'EOF'
+#!/usr/bin/env bash
+echo "skopeo $*" >>"$FAKE/calls.log"
+[ -f "$FAKE/skopeo-fail" ] && { echo "fake skopeo: registry unreachable" >&2; exit 1; }
+ref=${!#}
+tag=${ref##*:}
+if [ -f "$FAKE/digest-$tag" ]; then cat "$FAKE/digest-$tag"; exit 0; fi
+case $tag in
+v1) printf 'sha256:%064d\n' 1 ;;
+*) printf 'sha256:%064d\n' 2 ;;
+esac
 EOF
 
 	cat >"$FAKE/bin/curl" <<'EOF'

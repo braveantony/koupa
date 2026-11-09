@@ -16,6 +16,9 @@ sed 's/@RUN@/step-2-20260101-000000-r1-abcd/g' "$FAKE/scorecard.json" >"$run/sco
 echo "Rush Hour 成績單" >"$run/scorecard.txt"
 mkdir -p "$run/manifest"; echo "kind: Deployment" >"$run/manifest/applied.yaml"; echo "{\"completed\": true}" >"$run/rollout.json"
 : >"$run/attempts.jsonl"
+cat >"$run/image-digests.json" <<J
+{"koupa":{"ghcr.io/braveantony/koupa:v1":{"digest":"sha256:$(printf '%064d' 1)"}},"rush_hour":{"kind":"image","image_id":null}}
+J
 : >"$run/boards.jsonl"
 "$COLLECT_TIMELINE" start "$run"
 "$COLLECT_TIMELINE" stop "$run"
@@ -23,7 +26,7 @@ mkdir -p "$run/manifest"; echo "kind: Deployment" >"$run/manifest/applied.yaml";
 rc=$?
 check "evidence.sh exit 0 (rc=$rc)" [ "$rc" -eq 0 ]
 [ "$rc" -eq 0 ] || sed 's/^/    /' "$T/out"
-for f in manifest/kustomize.yaml manifest/live.yaml versions.txt images.json params.json \
+for f in image-digests.json manifest/kustomize.yaml manifest/live.yaml versions.txt images.json params.json \
 	audit/used-by-scorecard.json audit/cursor.json audit/orders.json audit/ready.json audit/queries.txt \
 	failures.json missing.jsonl timeline.txt scorecard.txt scorecard.json attempts.jsonl boards.jsonl \
 	ingress.log app evidence-index.txt; do
@@ -31,6 +34,7 @@ for f in manifest/kustomize.yaml manifest/live.yaml versions.txt images.json par
 done
 check "kustomize output is step-2 with image v1" bash -c 'grep -q "GRACEFUL_SHUTDOWN" "$1" && grep -q "koupa:v1" "$1"' _ "$run/manifest/kustomize.yaml"
 check "images.json has the Pod digests" grep -q 'koupa@sha256:' "$run/images.json"
+check "images.json: Pod digest matches the registry" grep -q '"digest_matches_registry": true' "$run/images.json"
 check "images.json has the rush-hour digest" grep -q 'sha256:fakedigest' "$run/images.json"
 check "versions has the git commit" grep -q '^git_commit=' "$run/versions.txt"
 check "audit queried with the run id" grep -q 'api/audit?run=step-2-20260101-000000-r1-abcd&mode=orders' "$FAKE/calls.log"

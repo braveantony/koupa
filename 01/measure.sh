@@ -9,7 +9,8 @@
 # One run, every time from step 1 (plan A8):
 #   1. render the step's overlay, set the image to v1, kubectl apply
 #   2. wait for the rollout and for old Pods to be gone, then
-#      scripts/preflight.sh (six checks); any mismatch stops: no measurement
+#      scripts/preflight.sh (seven checks, incl. every Pod's image digest =
+#      what the v1 tag resolves to now); any mismatch stops: no measurement
 #   3. start the timeline collectors (scripts/collect-timeline.sh), read the
 #      Gateway IP
 #   4. start rush-hour (podman, host network); it sends once the 3 boards
@@ -144,7 +145,7 @@ rush_hour() {
 		$ex "$RUSH_HOUR_BIN" "$@"
 	else
 		$ex podman run --rm --name "rush-hour-$cur_id" --network host --userns=keep-id --user "$(id -u):$(id -g)" \
-			-v "$mount:$mount:Z" "$RUSH_HOUR_IMAGE" "$@"
+			-v "$mount:$mount:Z" "${rh_image_id:-$RUSH_HOUR_IMAGE}" "$@"
 	fi
 }
 
@@ -247,7 +248,7 @@ PY
 }
 
 # ---------------------------------------------------------------- one run
-cur_id="" cur_dir="" rh_pid="" cov_pid="" collecting=0
+cur_id="" cur_dir="" rh_pid="" cov_pid="" collecting=0 rh_image_id=""
 
 write_params() {
 	python3 -I - "$cur_dir/params.json" <<PY
@@ -258,7 +259,7 @@ json.dump({
     "duration_s": $duration, "change_at_s": $CHANGE_AT_S, "rollout_deadline_s": $((duration - ROLLOUT_MARGIN_S)),
     "rate": $rate, "boards": 3, "retries": 1, "tx_timeout": "60s", "verbose": bool($verbose),
     "diagnostic": bool($diagnostic), "base_url": "${base_url:-}", "namespace": "$NS",
-    "rush_hour": {"kind": "$rh_kind", "ref": "$rh_ref"},
+    "rush_hour": {"kind": "$rh_kind", "ref": "$rh_ref", "image_id": "${rh_image_id:-}" or None},
     "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)", "host": "$(hostname)",
 }, open(sys.argv[1], "w"), indent=2)
 PY
@@ -458,8 +459,34 @@ measure_one() {
 	mkdir -p "$cur_dir/manifest"
 	in_run=1
 	run_dirs+=("$cur_dir")
-	write_params "$n"
 	log "run $n/$runs: $cur_id"
+
+	# Resolve once per run what the images are now: the koupa tags in the
+	# registry (preflight compares every Pod against v1; the evidence pack
+	# keeps both) and the local rush-hour image, which then runs by its ID.
+	local v1_digest v2_digest err=$cur_dir/.resolve.err
+	v1_digest=$(skopeo inspect --format '{{.Digest}}' "docker://$IMG_V1" 2>"$err") || v1_digest=""
+	v2_digest=$(skopeo inspect --format '{{.Digest}}' "docker://$IMG_V2" 2>>"$err") || v2_digest=""
+	rh_image_id=""
+	if [ "$rh_kind" = image ]; then
+		rh_image_id=$(podman image inspect --format '{{.Id}}' "$RUSH_HOUR_IMAGE" 2>>"$err") || rh_image_id=""
+	fi
+	python3 -I - "$cur_dir/image-digests.json" "$IMG_V1" "$v1_digest" "$IMG_V2" "$v2_digest" \
+		"$rh_kind" "$rh_ref" "$rh_image_id" <<'PY'
+import datetime, json, sys
+out, i1, d1, i2, d2, kind, ref, iid = sys.argv[1:]
+now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+json.dump({"resolved_at": now, "how": "skopeo inspect --format {{.Digest}} docker://<tag>",
+           "koupa": {i1: {"digest": d1 or None}, i2: {"digest": d2 or None}},
+           "rush_hour": {"kind": kind, "ref": ref, "image_id": iid or None}},
+          open(out, "w"), indent=2)
+PY
+	write_params "$n"
+	[ -n "$v1_digest" ] && [ -n "$v2_digest" ] ||
+		abort_run "無法從 registry 解析 koupa 映像檔 digest（$(head -c 200 "$err" | tr '\n' ' ')）"
+	[ "$rh_kind" = bin ] || [ -n "$rh_image_id" ] ||
+		abort_run "找不到本機 rush-hour 映像檔 $RUSH_HOUR_IMAGE"
+	rm -f "$err"
 
 	# 1. render, image v1, apply.
 	if ! "$KUBECTL" kustomize "$overlay_dir" >"$cur_dir/manifest/rendered.yaml" 2>>"$cur_dir/measure.log"; then
@@ -489,11 +516,11 @@ measure_one() {
 		fi
 		sleep 1
 	done
-	if ! "$stage/scripts/preflight.sh" "$mode" --image "$IMG_V1" >"$cur_dir/preflight.txt" 2>&1; then
+	if ! "$stage/scripts/preflight.sh" "$mode" --image "$IMG_V1" --digest "$v1_digest" >"$cur_dir/preflight.txt" 2>&1; then
 		sed 's/^/  /' "$cur_dir/preflight.txt" >&2
 		abort_run "量測前核對不符：$(grep '^FAIL' "$cur_dir/preflight.txt" | sed 's/^FAIL \([a-z-]*\):.*/\1/' | paste -sd, -)"
 	fi
-	log "preflight: all 6 checks passed"
+	log "preflight: all 7 checks passed"
 
 	# 3. collectors, Gateway IP.
 	if ! "$COLLECT" start "$cur_dir" >>"$cur_dir/measure.log" 2>&1; then

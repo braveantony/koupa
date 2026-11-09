@@ -80,14 +80,15 @@ fi
 rh_kind=$(param rush_hour.kind)
 rh_ref=$(param rush_hour.ref)
 rh_digest=unknown
+rh_id=$(param rush_hour.image_id)
 case $rh_kind in
-image) rh_digest=$(podman image inspect --format '{{.Digest}}' "$rh_ref" 2>/dev/null || echo unknown) ;;
+image) rh_digest=$(podman image inspect --format '{{.Digest}}' "${rh_id:-$rh_ref}" 2>/dev/null || echo unknown) ;;
 bin) rh_digest=sha256:$(sha256sum "$rh_ref" 2>/dev/null | cut -d' ' -f1) ;;
 esac
 "$KUBECTL" -n "$NS" get pods -l app.kubernetes.io/name=koupa -o json >"$run/.pods-now.json" 2>/dev/null || echo '{"items":[]}' >"$run/.pods-now.json"
-python3 -I - "$run" "$rh_kind" "$rh_ref" "$rh_digest" <<'PY'
+python3 -I - "$run" "$rh_kind" "$rh_ref" "$rh_digest" "$rh_id" <<'PY'
 import json, os, sys
-run, kind, ref, digest = sys.argv[1:]
+run, kind, ref, digest, iid = sys.argv[1:]
 pods = {}
 def add(items, source):
     for p in items:
@@ -122,7 +123,17 @@ for name in ("pods-at-stop.json", ".pods-now.json"):
 for e in pods.values():
     e["seen_in"] = sorted(set(e["seen_in"]))
 out = {"koupa_pods": sorted(pods.values(), key=lambda e: e["pod"] or ""),
-       "rush_hour": {"kind": kind, "ref": ref, "digest": digest}}
+       "rush_hour": {"kind": kind, "ref": ref, "image_id": iid or None, "digest": digest}}
+# Each Pod's digest against what its tag resolved to at the start of the run.
+try:
+    reg = json.load(open(os.path.join(run, "image-digests.json"))).get("koupa", {})
+except (OSError, ValueError):
+    reg = {}
+for e in out["koupa_pods"]:
+    want = (reg.get(e.get("image") or "") or {}).get("digest")
+    have = (e.get("image_id") or "").rsplit("@", 1)[-1] or None
+    e["registry_digest"] = want
+    e["digest_matches_registry"] = (have == want) if want and have else None
 json.dump(out, open(os.path.join(run, "images.json"), "w"), indent=2)
 PY
 rm -f "$run/.pods-now.json"
@@ -155,7 +166,7 @@ done
 [ -f "$run/collect.json" ] && [ ! -e "$run/missing.jsonl" ] && : >"$run/missing.jsonl"
 
 # Index.
-required=(params.json manifest/applied.yaml manifest/kustomize.yaml manifest/live.yaml versions.txt
+required=(params.json image-digests.json manifest/applied.yaml manifest/kustomize.yaml manifest/live.yaml versions.txt
 	images.json rollout.json scorecard.json scorecard.txt attempts.jsonl boards.jsonl ingress.log app
 	missing.jsonl timeline.txt audit/used-by-scorecard.json failures.json)
 missing=0

@@ -17,7 +17,7 @@ rc=$?
 wait
 check "late tx_timeout_check: control runs, exit 0 (rc=$rc)" [ "$rc" -eq 0 ]
 [ "$rc" -eq 0 ] || tail -15 "$T/out" | sed 's/^/    /'
-check "preflight passed" grep -q 'preflight: all 6 checks passed' "$T/out"
+check "preflight passed" grep -q 'preflight: all 7 checks passed' "$T/out"
 check "did not wait out the timeout" bash -c '! grep -q "not every Pod logged" "$1"' _ "$T/out"
 
 rm -rf "$MEASURE_EVIDENCE_DIR"/*
