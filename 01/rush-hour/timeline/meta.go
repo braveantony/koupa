@@ -29,6 +29,7 @@ type PodMeta struct {
 	PrecisionMs  *int64   `json:"term_start_precision_ms,omitempty"`
 	CollectStart *string  `json:"collect_start"`
 	CollectEnd   *string  `json:"collect_end"`
+	StoppedAt    *string  `json:"stopped_at"` // when collect-timeline.sh stop ran (collect_end null: still running then)
 	EndMarker    string   `json:"end_marker"`
 	Reasons      []string `json:"coverage_reasons"`
 }
@@ -50,8 +51,10 @@ func Finalize(dir string) error {
 		return perr
 	}
 	atStop, serr := loadPodsAtStop(dir)
+	stoppedAt := readStoppedAt(dir)
 	for _, uid := range appLogUIDs(dir) {
 		m := buildMeta(dir, uid, pods[uid], atStop, serr == nil)
+		m.StoppedAt = stoppedAt
 		b, err := json.MarshalIndent(m, "", "  ")
 		if err != nil {
 			return err
@@ -79,6 +82,11 @@ func LoadPodLogMeta(dir, uid string, h *podHist, atStop map[string]*podObj, have
 	} else {
 		m.PodName, m.CollectStart, m.CollectEnd = st.PodName, st.CollectStart, st.CollectEnd
 		m.StartupFromBeginning, m.Gaps = st.StartupFromBeginning, st.Gaps
+		if st.Ended == "" || st.CollectEnd == nil {
+			// The follower died without recording its end: we do not know
+			// until when the log was collected.
+			notes = append(notes, "log 收集程序沒有正常結束（沒有 collect_end）")
+		}
 	}
 	mk, err := readAppLog(filepath.Join(dir, DirApp, uid+".log"), uid)
 	if err != nil {
@@ -168,4 +176,19 @@ func endMarkerText(s string) string {
 		return "量測結束時 Pod 仍在執行"
 	}
 	return "無"
+}
+
+// readStoppedAt reads stopped_at from collect.json (nil when absent).
+func readStoppedAt(dir string) *string {
+	b, err := os.ReadFile(filepath.Join(dir, "collect.json"))
+	if err != nil {
+		return nil
+	}
+	var c struct {
+		StoppedAt *string `json:"stopped_at"`
+	}
+	if json.Unmarshal(b, &c) != nil || c.StoppedAt == nil || parseRFC(c.StoppedAt) == nil {
+		return nil
+	}
+	return c.StoppedAt
 }

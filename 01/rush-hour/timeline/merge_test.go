@@ -119,3 +119,23 @@ func TestTimelineKeepsBothTimes(t *testing.T) {
 	}
 	t.Error("sigterm not in timeline.jsonl")
 }
+
+func TestDeletionWithoutGraceIsMarkedUnknown(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "pods.jsonl"),
+		podLine(at(1), "ADDED", "u1", "koupa-a", "")+
+			podLine(at(2.3), "MODIFIED", "u1", "koupa-a", fmt.Sprintf(`,"deletionTimestamp":%q`, rfc(at(32)))))
+	evs, err := Build(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range evs {
+		if e.Kind == KindDeletionStart {
+			if e.IntervalStart != nil || e.EventTime != nil || !strings.Contains(e.Detail, "未知") {
+				t.Errorf("deletion without grace: %+v", e)
+			}
+			return
+		}
+	}
+	t.Error("observed deletion dropped from the timeline")
+}

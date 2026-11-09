@@ -1,11 +1,14 @@
 package winddown
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"koupa/rush-hour/record"
 )
 
 func TestParseIngressLog(t *testing.T) {
@@ -88,7 +91,7 @@ func TestAppLogCoverage(t *testing.T) {
 	writeLog(t, dir, "pe", startup("pe", true), sigterm("pe"), exit("pe"))
 	// running pod: no marker, meta says complete.
 	writeLog(t, dir, "pr", startup("pr", true))
-	if err := os.WriteFile(filepath.Join(dir, "pr.meta.json"), []byte(`{"pod_uid":"pr","pod_name":"koupa-r","complete":true,"exited_at":null,"term_start":null}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "pr.meta.json"), []byte(`{"pod_uid":"pr","pod_name":"koupa-r","complete":true,"exited_at":null,"term_start":null,"collect_start":"2026-11-09T09:59:00Z","collect_end":null,"stopped_at":"2026-11-09T10:01:00Z"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// no startup line.
@@ -121,7 +124,9 @@ func TestAppLogCoverage(t *testing.T) {
 	if !app.Available {
 		t.Fatal(app.Err)
 	}
-	want := map[string]bool{"p0": true, "pg": false, "pe": true, "pr": true, "pn": false, "pb": false, "pc": true, "pd": false, "pm": false, "px": false, "py": false}
+	// The collector's meta is the only coverage authority: markers alone
+	// (p0, pe, pc) no longer make a Pod covered.
+	want := map[string]bool{"p0": false, "pg": false, "pe": false, "pr": true, "pn": false, "pb": false, "pc": false, "pd": false, "pm": false, "px": false, "py": false}
 	for uid, w := range want {
 		p := app.Pods[uid]
 		if p == nil {
@@ -198,4 +203,56 @@ func (c *fakeClock) After(d time.Duration) <-chan time.Time {
 	ch := make(chan time.Time, 1)
 	ch <- c.now
 	return ch
+}
+
+func TestCoverageComesFromMeta(t *testing.T) {
+	dir := t.TempDir()
+	start := `{"ts":"2026-11-09T10:00:00Z","event":"startup","pod_uid":"%s","graceful_shutdown":false}`
+	sig := `{"ts":"2026-11-09T10:00:05Z","event":"sigterm","pod_uid":"%s"}`
+	meta := func(uid, extra string) {
+		b := `{"pod_uid":"` + uid + `","pod_name":"koupa-` + uid + `"` + extra + `}`
+		if err := os.WriteFile(filepath.Join(dir, uid+".meta.json"), []byte(b), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, uid := range []string{"mk", "mw", "ms", "mn", "m0"} {
+		writeLog(t, dir, uid, fmt.Sprintf(start, uid), fmt.Sprintf(sig, uid))
+	}
+	meta("mk", `,"complete":false,"collect_start":"2026-11-09T09:59:00Z","collect_end":"2026-11-09T10:00:10Z"`)
+	meta("mw", `,"complete":true,"collect_start":"2026-11-09T10:00:00Z","collect_end":"2026-11-09T10:00:10Z"`)
+	meta("ms", `,"complete":true,"collect_start":"2026-11-09T10:00:00Z","collect_end":null,"stopped_at":"2026-11-09T10:00:20Z"`)
+	meta("mn", `,"complete":true,"collect_start":"2026-11-09T10:00:00Z","collect_end":null,"stopped_at":null`)
+	app := ReadAppLogs(dir)
+	at := func(sec int) time.Time {
+		return time.Date(2026, 11, 9, 10, 0, 0, 0, time.UTC).Add(time.Duration(sec) * time.Second)
+	}
+	cases := []struct {
+		uid  string
+		sec  int
+		want bool
+	}{
+		{"mk", 5, false}, // markers present, meta says incomplete
+		{"m0", 5, false}, // markers present, no meta
+		{"mw", 5, true}, {"mw", -1, false}, {"mw", 11, false},
+		{"ms", 15, true}, {"ms", 21, false}, // collect_end null: the stop time
+		{"mn", 5, false}, // no end at all
+	}
+	for _, c := range cases {
+		if got := app.Pods[c.uid].CoveredAt(at(c.sec)); got != c.want {
+			t.Errorf("%s at +%ds: covered %v, want %v", c.uid, c.sec, got, c.want)
+		}
+	}
+	if app.Pods["mk"].Covered || app.Pods["m0"].Covered || !app.Pods["mw"].Covered {
+		t.Error("pod-level Covered does not follow meta.complete")
+	}
+	// The attempt's own time decides LogCovered.
+	ev := Evidence{App: app}
+	in := record.Attempt{Attempt: "a1", PodUID: "mw", SentAt: at(2), RespondedAt: at(3)}
+	if !assemble(in, ev, true, nil).LogCovered {
+		t.Error("attempt inside the collection window not covered")
+	}
+	late := record.Attempt{Attempt: "a2", PodUID: "mw", SentAt: at(9), RespondedAt: at(12)}
+	if assemble(late, ev, true, nil).LogCovered {
+		t.Error("attempt ending after collect_end covered")
+	}
 }

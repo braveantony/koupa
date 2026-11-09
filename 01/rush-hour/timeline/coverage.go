@@ -36,19 +36,28 @@ type DeletionEstimate struct {
 // DeletionPrecision is the width of the deletionTimestamp truncation.
 const DeletionPrecision = time.Second
 
+// FirstDeletion returns the first observation that carries a deletion
+// timestamp (ok=false when the Pod was never seen deleting).
+func FirstDeletion(obs []PodObservation) (PodObservation, bool) {
+	for _, o := range obs {
+		if o.DeletionTimestamp != nil {
+			return o, true
+		}
+	}
+	return PodObservation{}, false
+}
+
 // DeletionStart uses the first observation that carries a deletion
 // timestamp; later observations may show a shortened grace period and are
-// ignored. ok=false when the Pod was never seen deleting.
+// ignored. ok=false when the Pod was never seen deleting, or when that first
+// observation has no deletionGracePeriodSeconds (the start is then unknown,
+// not deletionTimestamp itself).
 func DeletionStart(obs []PodObservation) (DeletionEstimate, bool) {
-	for _, o := range obs {
-		if o.DeletionTimestamp == nil {
-			continue
+	if o, ok := FirstDeletion(obs); ok {
+		if o.GracePeriodSeconds == nil {
+			return DeletionEstimate{}, false
 		}
-		var grace int64
-		if o.GracePeriodSeconds != nil {
-			grace = *o.GracePeriodSeconds
-		}
-		start := o.DeletionTimestamp.Add(-time.Duration(grace) * time.Second)
+		start := o.DeletionTimestamp.Add(-time.Duration(*o.GracePeriodSeconds) * time.Second)
 		upper := start.Add(DeletionPrecision)
 		if !o.CollectedAt.IsZero() && o.CollectedAt.Before(upper) {
 			upper = o.CollectedAt

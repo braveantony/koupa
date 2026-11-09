@@ -134,3 +134,10 @@ func TestFinishedAtDoesNotProveCoverage(t *testing.T) {
 		t.Errorf("end marker = %q", r.EndMarker)
 	}
 }
+
+func TestDeletionStartMissingGraceIsUnknown(t *testing.T) {
+	obs := []PodObservation{{CollectedAt: *at(2.3), DeletionTimestamp: at(32)}}
+	if est, ok := DeletionStart(obs); ok {
+		t.Errorf("fabricated termination start %v without deletionGracePeriodSeconds", est.Start)
+	}
+}

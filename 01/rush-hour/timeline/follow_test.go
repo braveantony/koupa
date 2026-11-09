@@ -54,10 +54,11 @@ func TestFinalizeWritesMeta(t *testing.T) {
 	write(t, filepath.Join(dir, "app", "u1.log"),
 		fmt.Sprintf("%s %s {\"ts\":%q,\"event\":\"startup\",\"pod_uid\":\"u1\",\"graceful_shutdown\":false}\n", stamp(at(0.5)), rfc(at(-60)), rfc(at(-60)))+
 			fmt.Sprintf("%s %s {\"ts\":%q,\"event\":\"sigterm\",\"pod_uid\":\"u1\"}\n", stamp(at(2.5)), rfc(at(2.4)), rfc(at(2.4))))
-	st := FollowState{PodUID: "u1", PodName: "koupa-a", CollectStart: *at(0), StartupFromBeginning: true, Ended: "container_exited"}
+	st := FollowState{PodUID: "u1", PodName: "koupa-a", CollectStart: *at(0), CollectEnd: at(3), StartupFromBeginning: true, Ended: "container_exited"}
 	b, _ := json.Marshal(st)
 	write(t, filepath.Join(dir, "app", "u1.collect.json"), string(b))
 	write(t, filepath.Join(dir, "pods-at-stop.json"), `{"items":[]}`)
+	write(t, filepath.Join(dir, "collect.json"), `{"started_at":"2026-11-09T06:49:59Z","stopped_at":"2026-11-09T06:51:00.5Z"}`)
 
 	if err := Finalize(dir); err != nil {
 		t.Fatal(err)
@@ -74,6 +75,8 @@ func TestFinalizeWritesMeta(t *testing.T) {
 		TermStart *string `json:"term_start"`
 		PodIP     string  `json:"pod_ip"`
 		Prec      *int64  `json:"term_start_precision_ms"`
+		StoppedAt *string `json:"stopped_at"`
+		CStart    *string `json:"collect_start"`
 	}
 	if err := json.Unmarshal(raw, &m); err != nil {
 		t.Fatal(err)
@@ -89,6 +92,9 @@ func TestFinalizeWritesMeta(t *testing.T) {
 	}
 	if m.Prec == nil || *m.Prec < 1000 {
 		t.Errorf("precision: %s", raw)
+	}
+	if m.StoppedAt == nil || *m.StoppedAt != "2026-11-09T06:51:00.5Z" || m.CStart == nil {
+		t.Errorf("stopped_at / collect_start: %s", raw)
 	}
 	// Idempotent: a second finalize gives the same file.
 	if err := Finalize(dir); err != nil {
@@ -171,5 +177,136 @@ func TestFollowerRefillsBreakAndDrains(t *testing.T) {
 	m, notes := LoadPodLogMeta(dir, "u1", nil, map[string]*podObj{}, true)
 	if r := Coverage(m); !r.Complete || len(notes) > 0 {
 		t.Errorf("coverage after a verified refill: %+v %v", r, notes)
+	}
+}
+
+// fakeSeq is a fake kubectl whose n-th "logs" call runs case n.
+func fakeSeq(t *testing.T, cases string) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	kc := filepath.Join(dir, "kubectl")
+	write(t, kc, `#!/bin/sh
+d=$FAKE_DIR
+case "$*" in
+*"get pod"*)
+	if [ -e "$d/exited" ]; then s='"terminated":{"exitCode":0}'; else s='"running":{}'; fi
+	echo '{"metadata":{"uid":"u1","name":"koupa-a"},"status":{"containerStatuses":[{"name":"koupa","state":{'"$s"'}}]}}'
+	exit 0;;
+esac
+n=$(cat "$d/n" 2>/dev/null || echo 0); n=$((n+1)); echo $n >"$d/n"
+case $n in
+`+cases+`
+*) exec sleep 30;;
+esac
+`)
+	if err := os.Chmod(kc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_DIR", dir)
+	app := filepath.Join(dir, "app")
+	if err := os.MkdirAll(app, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return kc, app
+}
+
+const (
+	lStartup = `2026-11-09T06:50:00.100Z {"ts":"2026-11-09T06:50:00.1Z","event":"startup","pod_uid":"u1","graceful_shutdown":false}`
+	lA       = `2026-11-09T06:50:01.200Z {"ts":"2026-11-09T06:50:01.2Z","event":"request_end","pod_uid":"u1"}`
+	lB       = `2026-11-09T06:50:02.300Z {"ts":"2026-11-09T06:50:02.3Z","event":"request_end","pod_uid":"u1"}`
+)
+
+// runFollower runs until the fake blocks, then stops it like `stop` does.
+func runFollower(t *testing.T, kc, app string, until func() bool) FollowState {
+	t.Helper()
+	f := Follower{Kubectl: kc, Namespace: "koupa", Pod: "koupa-a", UID: "u1", Dir: app, Poll: time.Millisecond}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- f.Run(ctx) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for !until() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(app, "u1.collect.json"))
+	var st FollowState
+	if err := json.Unmarshal(raw, &st); err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+func calls(app string) int {
+	b, _ := os.ReadFile(filepath.Join(filepath.Dir(app), "n"))
+	var n int
+	fmt.Sscan(string(b), &n)
+	return n
+}
+
+func TestFollowerFailureAfterRefillOverlap(t *testing.T) {
+	// 1: break after two lines; 2: refill verifies, adds a line, then fails;
+	// 3: the next refill never answers before the stop.
+	kc, app := fakeSeq(t, `1) echo '`+lStartup+`'; echo '`+lA+`'; exit 1;;
+2) echo '`+lA+`'; echo '`+lB+`'; exit 1;;`)
+	st := runFollower(t, kc, app, func() bool { return calls(app) >= 3 })
+	if len(st.Gaps) != 2 || !st.Gaps[0].Verified || st.Gaps[1].Verified {
+		t.Fatalf("want the first gap verified and the second not: %+v", st.Gaps)
+	}
+	m, _ := LoadPodLogMeta(filepath.Dir(app), "u1", nil, map[string]*podObj{"u1": runningPod()}, true)
+	if r := Coverage(m); r.Complete {
+		t.Errorf("running Pod complete despite an unverified gap: %+v", r)
+	}
+}
+
+func TestFollowerCancelWhileFollowing(t *testing.T) {
+	// The stream is healthy when the stop comes: no interruption.
+	kc, app := fakeSeq(t, `1) echo '`+lStartup+`'; echo '`+lA+`'; exec sleep 30;;`)
+	st := runFollower(t, kc, app, func() bool {
+		b, _ := os.ReadFile(filepath.Join(app, "u1.log"))
+		return strings.Count(string(b), "\n") >= 2
+	})
+	if st.Ended != "stopped" || len(st.Gaps) != 0 || st.CollectEnd == nil {
+		t.Fatalf("state: %+v", st)
+	}
+	m, _ := LoadPodLogMeta(filepath.Dir(app), "u1", nil, map[string]*podObj{"u1": runningPod()}, true)
+	if r := Coverage(m); !r.Complete || r.EndMarker != "running" {
+		t.Errorf("healthy stream at stop: %+v", r)
+	}
+}
+
+func TestFollowerCancelDuringRefill(t *testing.T) {
+	// The stop comes while a break is waiting for its refill.
+	kc, app := fakeSeq(t, `1) echo '`+lStartup+`'; echo '`+lA+`'; exit 1;;`)
+	st := runFollower(t, kc, app, func() bool { return calls(app) >= 2 })
+	if len(st.Gaps) != 1 || st.Gaps[0].Verified {
+		t.Fatalf("pending gap not recorded as unverified: %+v", st.Gaps)
+	}
+}
+
+func runningPod() *podObj {
+	var p podObj
+	_ = json.Unmarshal([]byte(`{"metadata":{"uid":"u1"},"status":{"containerStatuses":[{"name":"koupa","state":{"running":{}}}]}}`), &p)
+	return &p
+}
+
+func TestFollowerScannerErrorIsIncomplete(t *testing.T) {
+	// A line longer than the scanner limit truncates the stream; kubectl
+	// itself exits 0 and the container is gone, so only the scanner knows.
+	long := strings.Repeat("x", 4096)
+	kc, app := fakeSeq(t, `1) echo '`+lStartup+`'; echo '2026-11-09T06:50:01.200Z {"event":"`+long+`"}'; echo '`+lB+`'; touch "$d/exited"; exit 0;;
+2) echo 'unable to retrieve container logs'; exit 0;;`)
+	f := Follower{Kubectl: kc, Namespace: "koupa", Pod: "koupa-a", UID: "u1", Dir: app, Poll: time.Millisecond, MaxLine: 1024}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := f.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := LoadPodLogMeta(filepath.Dir(app), "u1", nil, map[string]*podObj{}, true)
+	m.SigtermAt = m.StartupAt // pretend the end marker is there: the gap alone must fail it
+	if r := Coverage(m); r.Complete {
+		t.Errorf("truncated stream counted as complete: %+v", r)
 	}
 }

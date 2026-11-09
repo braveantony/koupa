@@ -243,10 +243,10 @@ func ReadIngressLog(path string, podByIP map[string]string) *IngressLog {
 
 // ---------------------------------------------------------------- app logs
 
-// PodMeta is <dir>/<pod-uid>.meta.json, written by measure.sh (Task 20).
-// complete: the log stream was collected to the end (Pod exited and the
-// collector drained it). exited_at: kubelet finishedAt; term_start: the
-// estimated termination start (A11). pod_ip and term_start_precision_ms
+// PodMeta is <dir>/<pod-uid>.meta.json, written by collect-timeline.sh stop
+// (timeline.Finalize). complete: timeline.Coverage holds (A11).
+// exited_at: kubelet finishedAt; term_start: the estimated termination start
+// (A11). pod_ip and term_start_precision_ms
 // are optional: the first maps ingress upstream_host to the Pod, the second
 // is the timing margin for Cause (absent = unknown precision).
 type PodMeta struct {
@@ -257,6 +257,12 @@ type PodMeta struct {
 	TermStart   *string `json:"term_start"`
 	PodIP       string  `json:"pod_ip,omitempty"`
 	PrecisionMs *int64  `json:"term_start_precision_ms,omitempty"`
+	// Collection window: collect_end null means the log was still being
+	// followed at stop_at (collect-timeline.sh stop).
+	CollectStart *string  `json:"collect_start"`
+	CollectEnd   *string  `json:"collect_end"`
+	StoppedAt    *string  `json:"stopped_at"`
+	Reasons      []string `json:"coverage_reasons"`
 }
 
 // appLine is one App log line (applog: event = slog message).
@@ -326,16 +332,16 @@ type AppLogs struct {
 	Contradictory map[string]bool // attempt -> records disagree
 }
 
-// ReadAppLogs reads every <pod-uid>.log in dir and its optional meta file.
+// ReadAppLogs reads every <pod-uid>.log in dir and its meta file.
 //
-// Coverage (A11, until Task 20 refines it): a Pod's log is covered when it
-// has a startup line, every non-blank line is JSON that parsed (a prefix
-// before the first '{' is allowed), a meta file, if present, is readable
-// and names the same Pod, and either its final marker
-// is present (exit when graceful_shutdown, otherwise sigterm) or the meta
-// file says complete. For covered Pods the contradiction check runs:
-// request_end without request_received, or more than one of either line,
-// for the same attempt.
+// Coverage (A11): decided by the collector (timeline.Coverage, written as
+// meta.complete). A Pod is covered when its meta is readable, names the same
+// Pod, says complete and has collect_start, and every non-blank line here is
+// JSON that parsed (a prefix before the first '{' is allowed). Whether one
+// attempt is covered also needs its time inside the collection window
+// (PodLog.CoveredAt). Without meta nothing is covered. The contradiction
+// check: request_end without request_received, or more than one of either
+// line, for the same attempt.
 func ReadAppLogs(dir string) *AppLogs {
 	out := &AppLogs{
 		Pods: map[string]*PodLog{}, Received: map[string][]AppRecv{},
@@ -442,15 +448,10 @@ func ReadAppLogs(dir string) *AppLogs {
 				}
 			}
 		}
-		marker := false
-		if p.Graceful != nil && *p.Graceful {
-			marker = p.ExitAt != nil
-		} else if p.Graceful != nil {
-			marker = p.SigtermAt != nil
-		}
-		// A meta file that is present but unusable (unreadable, broken, or
-		// naming another Pod) makes this Pod's evidence unreliable.
-		p.Covered = p.MetaErr == "" && p.Startup && p.Bad == 0 && (marker || (p.Meta != nil && p.Meta.Complete))
+		// The collector's meta is the only coverage authority (A11 rules
+		// live in timeline.Coverage). A broken or foreign meta, or a line
+		// this reader cannot parse, makes the Pod's evidence unreliable.
+		p.Covered = p.MetaErr == "" && p.Meta != nil && p.Meta.Complete && p.Bad == 0 && p.collectStart() != nil
 	}
 	// Contradiction check, for attempts on covered Pods.
 	for a, ends := range out.Ends {
@@ -548,7 +549,8 @@ func assemble(a record.Attempt, ev Evidence, noIngress bool, dbReady map[int64]*
 	}
 	p := app.Pods[pod]
 	if p != nil {
-		e.LogCovered = p.Covered
+		// The whole attempt (sent .. responded) must lie in the collection.
+		e.LogCovered = p.CoveredAt(a.SentAt) && (a.RespondedAt.IsZero() || p.CoveredAt(a.RespondedAt))
 		if p.Meta != nil {
 			if t := parseTime(p.Meta.ExitedAt); t != nil {
 				x := t.Add(exitPrecision)
@@ -572,18 +574,56 @@ func assemble(a record.Attempt, ev Evidence, noIngress bool, dbReady map[int64]*
 }
 
 func (p *PodLog) describe() string {
+	if p.Covered {
+		end := "量測結束"
+		if t := p.collectEnd(); t != nil {
+			end = t.UTC().Format("15:04:05.000")
+		}
+		return fmt.Sprintf("完整（收集 %s～%s）", p.collectStart().UTC().Format("15:04:05.000"), end)
+	}
 	var parts []string
-	if !p.Startup {
-		parts = append(parts, "沒有 startup")
+	switch {
+	case p.MetaErr != "":
+		parts = append(parts, p.MetaErr)
+	case p.Meta == nil:
+		parts = append(parts, "沒有收集端的 meta.json")
+	case !p.Meta.Complete:
+		parts = append(parts, "收集端判定不完整")
+		parts = append(parts, p.Meta.Reasons...)
+	case p.collectStart() == nil:
+		parts = append(parts, "meta 沒有 collect_start")
 	}
 	if p.Bad > 0 {
 		parts = append(parts, fmt.Sprintf("%d 行無法解析", p.Bad))
 	}
-	if p.Covered {
-		return "完整"
-	}
-	if p.Startup && p.Bad == 0 {
-		parts = append(parts, "沒有結束標記，也沒有 complete 的 meta")
-	}
 	return "不完整（" + strings.Join(parts, "、") + "）"
+}
+
+func (p *PodLog) collectStart() *time.Time {
+	if p.Meta == nil {
+		return nil
+	}
+	return parseTime(p.Meta.CollectStart)
+}
+
+// collectEnd is collect_end, or the stop time when the log was still being
+// followed at stop (collect_end null); nil when neither is known.
+func (p *PodLog) collectEnd() *time.Time {
+	if p.Meta == nil {
+		return nil
+	}
+	if t := parseTime(p.Meta.CollectEnd); t != nil {
+		return t
+	}
+	return parseTime(p.Meta.StoppedAt)
+}
+
+// CoveredAt reports whether the Pod's log covers time t: the meta says
+// complete and t lies within [collect_start, collect_end] (A11 rule 3).
+func (p *PodLog) CoveredAt(t time.Time) bool {
+	if p == nil || !p.Covered {
+		return false
+	}
+	start, end := p.collectStart(), p.collectEnd()
+	return start != nil && end != nil && !t.Before(*start) && !t.After(*end)
 }

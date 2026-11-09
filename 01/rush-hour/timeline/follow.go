@@ -26,7 +26,7 @@ type FollowState struct {
 	StartupFromBeginning bool   `json:"startup_from_beginning"`
 	Segments             int    `json:"segments"` // kubectl logs invocations that returned lines or ended
 	Gaps                 []Gap  `json:"gaps"`
-	Ended                string `json:"ended"` // container_exited | pod_gone | stopped | ""
+	Ended                string `json:"ended"` // container_exited | pod_gone | stopped | error | ""
 	LastError            string `json:"last_error,omitempty"`
 	DrainCheck           string `json:"drain_check,omitempty"` // result of the read after the container exited
 }
@@ -90,11 +90,14 @@ type Follower struct {
 	Dir       string // the app directory
 	Poll      time.Duration
 	Now       func() time.Time
+	MaxLine   int // longest accepted line (default 16 MiB)
 
-	out   io.Writer
-	st    FollowState
-	tail  []string // received lines of the last second
-	total int
+	out     io.Writer
+	st      FollowState
+	fatal   error
+	pending int      // index in st.Gaps of the interruption awaiting its refill, or -1
+	tail    []string // received lines of the last second
+	total   int
 }
 
 func (f *Follower) statePath() string { return filepath.Join(f.Dir, f.UID+".collect.json") }
@@ -107,8 +110,10 @@ func (f *Follower) save() {
 	}
 }
 
-func (f *Follower) emit(l string, fromStart bool) {
-	fmt.Fprintf(f.out, "%s %s\n", FormatStamp(f.Now()), l)
+func (f *Follower) emit(l string, fromStart bool) error {
+	if _, err := fmt.Fprintf(f.out, "%s %s\n", FormatStamp(f.Now()), l); err != nil {
+		return err
+	}
 	f.total++
 	if fromStart && strings.Contains(l, `"event":"startup"`) {
 		f.st.StartupFromBeginning = true
@@ -118,6 +123,7 @@ func (f *Follower) emit(l string, fromStart bool) {
 		f.tail = f.tail[:0]
 	}
 	f.tail = append(f.tail, l)
+	return nil
 }
 
 func (f *Follower) kubectl(ctx context.Context, args ...string) *exec.Cmd {
@@ -125,11 +131,13 @@ func (f *Follower) kubectl(ctx context.Context, args ...string) *exec.Cmd {
 }
 
 // read runs one kubectl logs; follow=false for the final drain check. With
-// lines already received it is a refill (--since-time): gap, when non-nil,
-// gets Verified; a drain check (gap nil) that finds unseen or mismatched
-// lines records its own gap. settled=false when a refill returned nothing
-// and failed, so the overlap could not be checked yet.
-func (f *Follower) read(ctx context.Context, follow bool, gap *Gap) (werr error, stderrS string, settled bool) {
+// lines already received it is a refill (--since-time) that must reproduce
+// the overlap line for line. The result of the check goes to the pending
+// gap (an interruption recorded earlier); a drain check without a pending
+// gap that finds unseen or mismatched lines records its own gap. answered is
+// false when the overlap could not be checked (no log lines came back).
+// Scanner and log-write errors are returned as the stream's error.
+func (f *Follower) read(ctx context.Context, follow bool) (werr error, stderrS string, answered bool) {
 	args := []string{"logs", "--timestamps", "-c", f.Container, "pod/" + f.Pod}
 	if follow {
 		args = append(args, "-f")
@@ -141,6 +149,7 @@ func (f *Follower) read(ctx context.Context, follow bool, gap *Gap) (werr error,
 		args = append(args, "--since-time="+last.Truncate(time.Second).Format(time.RFC3339))
 	}
 	cmd := f.kubectl(ctx, args...)
+	cmd.WaitDelay = 2 * time.Second
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.StdoutPipe()
@@ -152,21 +161,29 @@ func (f *Follower) read(ctx context.Context, follow bool, gap *Gap) (werr error,
 	}
 	pending := refill
 	var buf []string
+	var emitErr error
+	emitAll := func(lines []string) {
+		for _, l := range lines {
+			if err := f.emit(l, !refill); err != nil && emitErr == nil {
+				emitErr = err
+			}
+		}
+	}
 	settle := func() {
 		newLines, ok := MergeRefill(f.tail, buf)
-		if gap != nil {
-			gap.Verified = ok
+		if f.pending >= 0 {
+			g := &f.st.Gaps[f.pending]
+			g.Refilled, g.Verified = true, ok
+			f.pending = -1
 		} else if !ok || len(newLines) > 0 {
-			// Drain check found lines we never got, or could not match.
 			f.st.Gaps = append(f.st.Gaps, Gap{After: last, Reason: fmt.Sprintf("串流結束後補讀，和已收到的行對不上（最後一秒收到 %d 行，補讀 %d 行，新行 %d）", len(f.tail), len(buf), len(newLines)), Refilled: true, Verified: ok})
 		}
 		pending = false
-		for _, l := range newLines {
-			f.emit(l, false)
-		}
+		f.save()
+		emitAll(newLines)
 	}
 	sc := bufio.NewScanner(stdout)
-	sc.Buffer(make([]byte, 64<<10), 16<<20)
+	sc.Buffer(make([]byte, 0, min(64<<10, f.maxLine())), f.maxLine()) // the limit is max(cap, max)
 	var junk string
 	for sc.Scan() {
 		l := sc.Text()
@@ -184,19 +201,27 @@ func (f *Follower) read(ctx context.Context, follow bool, gap *Gap) (werr error,
 			}
 			continue
 		}
-		f.emit(l, !refill)
+		emitAll([]string{l})
+	}
+	scanErr := sc.Err()
+	if scanErr != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill() // the rest of the stream is lost
 	}
 	werr = cmd.Wait()
-	if junk != "" && werr == nil {
+	switch {
+	case scanErr != nil:
+		werr = fmt.Errorf("reading kubectl output: %w", scanErr)
+		f.fatal = werr
+	case emitErr != nil:
+		werr = fmt.Errorf("writing the log file: %w", emitErr)
+		f.fatal = werr
+	case junk != "" && werr == nil:
 		werr = fmt.Errorf("kubectl logs returned a non-log line: %.200q", junk)
 	}
-	// An empty answer proves nothing (the container log may already be
-	// gone): leave it unsettled; a follow refill that ended cleanly with
-	// nothing new is settled (the overlap is then simply missing).
-	if pending && len(buf) == 0 && (gap == nil || werr != nil) {
+	if pending && len(buf) == 0 {
 		return werr, strings.TrimSpace(stderr.String()), false
 	}
-	if pending && ctx.Err() == nil {
+	if pending && ctx.Err() == nil && scanErr == nil {
 		settle()
 	}
 	return werr, strings.TrimSpace(stderr.String()), !pending
@@ -262,22 +287,13 @@ func (f *Follower) Run(ctx context.Context) error {
 		f.save()
 		return nil
 	}
-	var gap *Gap // an interruption waiting for its refill
-	unfilled := func(why string) {
-		if gap != nil {
-			f.st.Gaps = append(f.st.Gaps, Gap{After: gap.After, Reason: gap.Reason + "；" + why})
-			gap = nil
-		}
-	}
+	f.pending = -1
 	for {
-		werr, stderr, settled := f.read(ctx, true, gap)
-		if gap != nil && settled {
-			f.st.Gaps = append(f.st.Gaps, *gap)
-			gap = nil
-		}
+		werr, stderr, _ := f.read(ctx, true)
 		f.st.Segments++
 		if ctx.Err() != nil {
-			unfilled("收集已停止，沒有補讀")
+			// The stop: a pending interruption stays unverified (it is
+			// already recorded); a healthy stream needs nothing.
 			return stop("stopped")
 		}
 		reason := "kubectl logs 結束"
@@ -286,7 +302,14 @@ func (f *Follower) Run(ctx context.Context) error {
 			f.st.LastError = reason
 		}
 		f.save()
-		if f.total == 0 {
+		if f.fatal != nil {
+			// Lines were lost on our side (unreadable output or the log
+			// file could not be written): no refill can prove the log whole.
+			f.st.Gaps = append(f.st.Gaps, Gap{After: f.lastTS(), Reason: f.fatal.Error() + "（收集停止，log 不完整）"})
+			f.pending = -1
+			return stop("error")
+		}
+		if f.total == 0 && f.pending < 0 {
 			// Nothing read yet (container not started): retry from the start.
 			switch f.podState(ctx) {
 			case "gone":
@@ -303,47 +326,65 @@ func (f *Follower) Run(ctx context.Context) error {
 		}
 		switch f.podState(ctx) {
 		case "terminated":
+			if werr != nil {
+				f.interrupt(reason)
+			}
 			// Drain check: one more read must add nothing unverified (and
-			// fills a pending gap).
+			// fills a pending interruption).
+			hadPending := f.pending >= 0
 			nGaps := len(f.st.Gaps)
-			derr, dstderr, dsettled := f.read(ctx, false, gap)
+			derr, dstderr, answered := f.read(ctx, false)
 			switch {
-			case !dsettled:
+			case !answered:
 				f.st.DrainCheck = fmt.Sprintf("補讀沒有回傳任何行（%v %s）", derr, dstderr)
-			case len(f.st.Gaps) > nGaps:
+			case len(f.st.Gaps) > nGaps || (hadPending && !f.st.Gaps[nGaps-1].Verified):
 				f.st.DrainCheck = "補讀和已收到的行對不上"
 			default:
 				f.st.DrainCheck = "補讀逐行核對相符，沒有漏收"
 			}
-			if gap != nil && dsettled {
-				f.st.Gaps = append(f.st.Gaps, *gap)
-				gap = nil
-			}
-			unfilled("補讀失敗：" + dstderr)
-			if !dsettled && werr != nil {
-				// The stream ended with an error and the drain read could not
-				// check it. (A clean EOF at container exit needs no check.)
-				f.st.Gaps = append(f.st.Gaps, Gap{After: lineTS(f.tail[len(f.tail)-1]), Reason: reason + "；補讀失敗：" + dstderr})
-			}
 			return stop("container_exited")
 		case "gone":
-			unfilled("Pod 已不存在，無法補讀")
 			if werr != nil {
-				f.st.Gaps = append(f.st.Gaps, Gap{After: lineTS(f.tail[len(f.tail)-1]), Reason: reason + "；Pod 已不存在，無法補讀"})
+				f.interrupt(reason + "；Pod 已不存在，無法補讀")
 			}
 			return stop("pod_gone")
 		default:
-			// A break while the container runs (or state unknown): refill
-			// with --since-time on the next round.
-			if gap == nil {
-				gap = &Gap{After: lineTS(f.tail[len(f.tail)-1]), Reason: reason, Refilled: true}
-			}
+			// A break while the container runs (or state unknown): it is
+			// recorded now and refilled with --since-time on the next round.
+			f.interrupt(reason)
 			if !sleep(ctx, f.Poll) {
-				unfilled("收集已停止，沒有補讀")
 				return stop("stopped")
 			}
 		}
 	}
+}
+
+func (f *Follower) lastTS() time.Time {
+	if len(f.tail) == 0 {
+		return time.Time{}
+	}
+	return lineTS(f.tail[len(f.tail)-1])
+}
+
+// interrupt records a stream interruption at once, unverified. A refill
+// that reproduces the overlap marks it verified; until then (or if the
+// collection stops first) it counts against coverage. A second break before
+// the refill answered is covered by the same since-time, so it joins it.
+func (f *Follower) interrupt(reason string) {
+	if f.pending >= 0 {
+		f.st.Gaps[f.pending].Reason += "；" + reason
+	} else {
+		f.st.Gaps = append(f.st.Gaps, Gap{After: f.lastTS(), Reason: reason})
+		f.pending = len(f.st.Gaps) - 1
+	}
+	f.save()
+}
+
+func (f *Follower) maxLine() int {
+	if f.MaxLine > 0 {
+		return f.MaxLine
+	}
+	return 16 << 20
 }
 
 func sleep(ctx context.Context, d time.Duration) bool {

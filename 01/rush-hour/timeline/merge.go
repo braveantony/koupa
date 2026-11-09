@@ -171,6 +171,10 @@ func (b *builder) loadPods() map[string]*podHist {
 			b.evs = append(b.evs, Event{Source: "pods", Kind: KindDeletionStart, PodUID: uid, PodName: h.Name, CollectedAt: &est.ObservedAt,
 				IntervalStart: &est.Start, IntervalEnd: &est.Upper,
 				Detail: "推估終止起點 = 第一次觀察到的 deletionTimestamp − deletionGracePeriodSeconds（秒精度）"})
+		} else if o, ok := FirstDeletion(h.Obs); ok {
+			c := o.CollectedAt
+			b.evs = append(b.evs, Event{Source: "pods", Kind: KindDeletionStart, PodUID: uid, PodName: h.Name, CollectedAt: &c,
+				Detail: "觀察到刪除，但沒有 deletionGracePeriodSeconds：終止起點未知（只知道不晚於收集端看到的時間）"})
 		}
 		if h.FinishedAt != nil {
 			b.evs = append(b.evs, Event{Source: "pods", Kind: KindContainerExit, PodUID: uid, PodName: h.Name, CollectedAt: h.FinishedSeen,

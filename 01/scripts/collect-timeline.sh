@@ -58,12 +58,71 @@ missing() {
 
 stopping() { [ -e "$dir/.stopping" ]; }
 
-# spawn NAME CMD...: run "$0 CMD..." in its own process group; record it.
+# marker: names this run's processes inside the cilium agents.
+marker() { echo "koupa-collect-$(printf %s "$dir" | cksum | cut -d' ' -f1)"; }
+
+# reap_remote: end any hubble observe of this run still inside an agent.
+reap_remote() {
+	local pod m
+	m=$(marker)
+	for pod in $("$KUBECTL" -n kube-system get pods -l k8s-app=cilium -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+		"$KUBECTL" -n kube-system exec "$pod" -c cilium-agent -- pkill -f -- "--pod $m " >/dev/null 2>&1 || true
+	done
+}
+
+# with_lock CMD...: run CMD holding DIR/.lock (registration vs stop).
+with_lock() {
+	(
+		flock 9
+		"$@"
+	) 9>>"$dir/.lock"
+}
+
+# set_stopping: after this no collector can register any more.
+set_stopping() { with_lock touch "$dir/.stopping"; }
+
+# spawn NAME CMD DIR ARGS...: run "$0 _child DIR NAME CMD ARGS..." in its own session /
+# process group. The child registers itself (pgid = its pid) under the lock
+# and exits at once if stop has begun, so a stop never misses a collector.
 spawn() {
-	local name=$1
-	shift
-	setsid "$0" "$@" </dev/null >>"$dir/collectors.err" 2>&1 &
-	echo "$! $name" >>"$dir/collectors.pid"
+	local name=$1 cmd=$2
+	shift 3
+	setsid "$0" _child "$dir" "$name" "$cmd" "$@" </dev/null >>"$dir/collectors.err" 2>&1 &
+}
+
+_register() {
+	stopping && return 1
+	echo "$1 $2" >>"$dir/collectors.pid"
+}
+
+registered() { grep -c . "$dir/collectors.pid" 2>/dev/null || true; }
+
+# wait_registered N: until N groups registered (at most 10 s).
+wait_registered() {
+	local i
+	for i in $(seq 100); do
+		[ "$(registered)" -ge "$1" ] && return 0
+		sleep 0.1
+	done
+	echo "collect-timeline: only $(registered) of $1 collectors registered" >&2
+}
+
+# abort WHAT: a failed or interrupted start/stop must not leave collectors
+# running. The state stays for a later stop to finalize.
+abort() {
+	trap - ERR INT TERM
+	set +e
+	set_stopping
+	kill_groups TERM
+	local i
+	for i in $(seq 50); do
+		alive || break
+		sleep 0.1
+	done
+	alive && kill_groups KILL
+	reap_remote
+	echo "collect-timeline: $1 failed or was interrupted; collectors stopped. Run '$0 stop $dir' to finalize." >&2
+	exit 1
 }
 
 # ---------------------------------------------------------------- collectors
@@ -89,9 +148,19 @@ _hubble() {
 	local pod=$1
 	while :; do
 		set +e
-		"$KUBECTL" -n kube-system exec "$pod" -c cilium-agent -- hubble observe -f --namespace "$NS" -o json \
-			2>>"$dir/hubble.err" | "$RH" stamp --json >>"$dir/hubble.jsonl"
+		# kubectl exec does not end the remote command when the client dies:
+		# hubble runs beside a `cat` on the exec's stdin, which sees EOF once
+		# the stream closes and stops it. --not --pod <marker> filters nothing
+		# but names this run's processes for the cleanup in stop.
+		local sp
+		exec 3< <(exec sleep infinity)
+		sp=$!
+		"$KUBECTL" -n kube-system exec -i "$pod" -c cilium-agent -- sh -c \
+			"hubble observe -f --not --pod $(marker) --namespace $NS -o json & p=\$!; cat >/dev/null; kill \$p" \
+			<&3 2>>"$dir/hubble.err" | "$RH" stamp --json >>"$dir/hubble.jsonl"
 		local rc=${PIPESTATUS[0]}
+		exec 3<&-
+		kill "$sp" 2>/dev/null || true
 		set -e
 		stopping && exit 0
 		missing "hubble" "agent $pod 的 hubble observe 中斷（rc=$rc），重新連線"
@@ -219,32 +288,39 @@ start() {
 	printf '{"started_at":"%s","namespace":"%s","context":%s}\n' "$(now_rfc)" "$NS" \
 		"$(json_str "$("$KUBECTL" config current-context 2>/dev/null || echo unknown)")" >"$dir/collect.json"
 	: >"$dir/collectors.pid"
+	set -E
+	trap 'abort start' ERR INT TERM
+	local want=0
 
 	spawn pods _watch "$dir" pods pods.jsonl -n "$NS" get pods
 	spawn endpointslices _watch "$dir" endpointslices endpointslices.jsonl -n "$NS" get endpointslice -l kubernetes.io/service-name=koupa
 	spawn events _watch "$dir" events events.jsonl -n "$NS" get events
 	spawn applogs _applogs "$dir"
 	spawn host _host "$dir"
+	want=5
 
 	local pod n=0
 	for pod in $("$KUBECTL" -n kube-system get pods -l k8s-app=cilium -o jsonpath='{.items[*].metadata.name}'); do
 		spawn "hubble:$pod" _hubble "$dir" "$pod"
-		n=$((n + 1))
+		n=$((n + 1)) want=$((want + 1))
 	done
 	[ "$n" -gt 0 ] || missing hubble "找不到 cilium agent Pod"
 	n=0
 	for pod in $("$KUBECTL" -n kube-system get pods -l k8s-app=cilium-envoy -o jsonpath='{.items[*].metadata.name}'); do
 		spawn "ingress:$pod" _ingress "$dir" "$pod" "$since"
-		n=$((n + 1))
+		n=$((n + 1)) want=$((want + 1))
 	done
 	[ "$n" -gt 0 ] || missing ingress "找不到 cilium-envoy Pod"
 	stats envoy-stats-start.txt
-	echo "collect-timeline: started $(wc -l <"$dir/collectors.pid") collectors in $dir"
+	wait_registered "$want"
+	trap - ERR INT TERM
+	echo "collect-timeline: started $(registered) collectors in $dir (App log followers are added as Pods appear)"
 }
 
 # kill_groups SIGNAL: signal every recorded process group.
 kill_groups() {
 	local pg name
+	[ -f "$dir/collectors.pid" ] || return 0
 	while read -r pg name; do
 		[ -n "$pg" ] && kill "-$1" -- "-$pg" 2>/dev/null || true
 	done <"$dir/collectors.pid"
@@ -252,6 +328,7 @@ kill_groups() {
 
 alive() {
 	local pg name
+	[ -f "$dir/collectors.pid" ] || return 1
 	while read -r pg name; do
 		[ -n "$pg" ] && kill -0 -- "-$pg" 2>/dev/null && return 0
 	done <"$dir/collectors.pid"
@@ -264,27 +341,38 @@ stop() {
 		exit 1
 	}
 	if [ -s "$dir/collectors.pid" ]; then
-		touch "$dir/.stopping"
-		# No new followers; then the state at stop, before followers end.
-		local pg name
+		set -E
+		trap 'abort stop' ERR INT TERM
+		# No collector can register from here on; discovery must be gone
+		# before the state at stop is taken and the followers are ended.
+		set_stopping
+		local pg name i
 		while read -r pg name; do
-			[ "$name" = applogs ] && kill -TERM -- "-$pg" 2>/dev/null || true
+			if [ "$name" = applogs ]; then
+				kill -TERM -- "-$pg" 2>/dev/null || true
+				for i in $(seq 50); do
+					kill -0 -- "-$pg" 2>/dev/null || break
+					sleep 0.1
+				done
+				kill -KILL -- "-$pg" 2>/dev/null || true
+			fi
 		done <"$dir/collectors.pid"
 		"$KUBECTL" -n "$NS" get pods -o json >"$dir/pods-at-stop.json" 2>>"$dir/collectors.err" ||
 			{ rm -f "$dir/pods-at-stop.json"; missing pods "停止時取不到 Pod 狀態（pods-at-stop.json）"; }
 		stats envoy-stats-end.txt
 		audit "$(sed -n 's/.*"started_at":"\([^"]*\)".*/\1/p' "$dir/collect.json" 2>/dev/null)"
 		kill_groups TERM
-		local i
 		for i in $(seq 50); do
 			alive || break
 			sleep 0.1
 		done
 		alive && kill_groups KILL
+		reap_remote
 		printf '%s\n' "$(sed 's/}$//' "$dir/collect.json"),\"stopped_at\":\"$(now_rfc)\"}" >"$dir/collect.json.tmp" &&
 			mv "$dir/collect.json.tmp" "$dir/collect.json"
 		mv "$dir/collectors.pid" "$dir/collectors.pid.stopped"
 		rm -f "$dir"/app/.started.*
+		trap - ERR INT TERM
 	else
 		echo "collect-timeline: $dir is not collecting (already stopped?); recomputing meta and timeline"
 	fi
@@ -301,6 +389,15 @@ shift 2
 case $cmd in
 start) start ;;
 stop) stop ;;
-_watch | _hubble | _ingress | _host | _applogs | _follow) "$cmd" "$@" ;;
+_child)
+	# _child NAME CMD ARGS...: register this process group, then run CMD.
+	name=$1 sub=$2
+	shift 2
+	with_lock _register "$$" "$name" || exit 0
+	case $sub in
+	_watch | _hubble | _ingress | _host | _applogs | _follow) "$sub" "$@" ;;
+	*) exit 2 ;;
+	esac
+	;;
 *) usage ;;
 esac
