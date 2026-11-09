@@ -37,6 +37,7 @@ type Config struct {
 	WriteDeadline    time.Duration
 	TestHooks        bool
 	TestMutation     Mutation
+	ListenAddr       string // LISTEN_ADDR, default ":8080"
 }
 
 // Load reads the configuration through getenv (usually os.Getenv).
@@ -90,6 +91,11 @@ func Load(getenv func(string) string) (Config, error) {
 	durVar(&cfg.LockTimeout, "LOCK_TIMEOUT", 5*time.Second)
 	durVar(&cfg.BroadcastPoll, "BROADCAST_POLL_INTERVAL", 2*time.Second)
 	durVar(&cfg.WriteDeadline, "SSE_WRITE_DEADLINE", 2*time.Second)
+
+	cfg.ListenAddr = getenv("LISTEN_ADDR")
+	if cfg.ListenAddr == "" {
+		cfg.ListenAddr = ":8080"
+	}
 
 	m, err := parseMutation(getenv("TEST_MUTATION"))
 	if err != nil {

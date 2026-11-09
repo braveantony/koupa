@@ -49,7 +49,7 @@ func TestEveryEventCarriesPodUID(t *testing.T) {
 		EvExit, EvCommitUnknown, EvWriteStart, EvWriteEnd, EvWriteBlocked, EvMutationDropReady,
 		EvMutationDuplicateOrder, EvHookPaused, EvShutdownTimeout, EvProgressAheadOfH, EvKeyCleanup,
 		EvListenActive, EvListenLost, EvBroadcastQueryFailed, EvSubscriberOverflow,
-		EvBadLastEventID, EvBoardClosed} {
+		EvBadLastEventID, EvBoardClosed, EvStartupFailed} {
 		buf.Reset()
 		log.Info(ev)
 		var m map[string]any
@@ -59,5 +59,20 @@ func TestEveryEventCarriesPodUID(t *testing.T) {
 		if m["event"] != ev || m["pod_uid"] != "uid-9" {
 			t.Errorf("%s: %v", ev, m)
 		}
+	}
+}
+
+func TestGateFinalIsLastLine(t *testing.T) {
+	var buf bytes.Buffer
+	g := NewGate(&buf)
+	log := New(g, "u", "p", "v1")
+	final := New(g.Final(), "u", "p", "v1")
+	log.Info(EvStartup)
+	final.Info(EvSigterm)
+	log.Info(EvRequestEnd) // dropped: the gate is sealed
+	final.Info(EvExit)     // dropped too: only one final line
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[1], `"event":"sigterm"`) {
+		t.Fatalf("lines = %q", lines)
 	}
 }

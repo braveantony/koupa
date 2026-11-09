@@ -65,6 +65,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.TestMutation != (Mutation{}) {
 		t.Errorf("TestMutation = %+v", cfg.TestMutation)
 	}
+	if cfg.ListenAddr != ":8080" {
+		t.Errorf("ListenAddr = %q, want :8080", cfg.ListenAddr)
+	}
 }
 
 func TestLoadRequiresDatabaseURL(t *testing.T) {
@@ -81,10 +84,13 @@ func TestLoadValues(t *testing.T) {
 		"GRACEFUL_SHUTDOWN": "1", "RESUME_FROM_LAST_ID": "1", "IDEMPOTENCY_KEY": "0",
 		"TEST_HOOKS": "1", "SHUTDOWN_TIMEOUT": "20s", "SSE_HEARTBEAT": "10s",
 		"SSE_RETRY": "3s", "LOCK_TIMEOUT": "7s", "BROADCAST_POLL_INTERVAL": "500ms",
-		"SSE_WRITE_DEADLINE": "4s",
+		"SSE_WRITE_DEADLINE": "4s", "LISTEN_ADDR": "127.0.0.1:9999",
 	}))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if cfg.ListenAddr != "127.0.0.1:9999" {
+		t.Errorf("ListenAddr = %q", cfg.ListenAddr)
 	}
 	if cfg.PodUID != "uid-1" || cfg.PodName != "p-1" || cfg.Version != "v2" {
 		t.Errorf("identity wrong: %+v", cfg)

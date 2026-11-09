@@ -1,0 +1,88 @@
+// Command koupa is the tea-shop app: order, kitchen and call-number board.
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"koupa/app/applog"
+	"koupa/app/broadcast"
+	"koupa/app/config"
+	"koupa/app/hooks"
+	"koupa/app/server"
+	"koupa/app/store"
+)
+
+// startupTimeout bounds the initial database connection.
+const startupTimeout = 30 * time.Second
+
+func main() {
+	cfg, err := config.Load(os.Getenv)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "koupa: config:", err)
+		os.Exit(1)
+	}
+	// All logging goes through the gate so the final line (sigterm or
+	// exit) really is the last one.
+	gate := applog.NewGate(os.Stdout)
+	log := applog.New(gate, cfg.PodUID, cfg.PodName, cfg.Version)
+	finalLog := applog.New(gate.Final(), cfg.PodUID, cfg.PodName, cfg.Version)
+
+	// Subscribe before anything slow so an early SIGTERM is not lost.
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
+
+	log.Info(applog.EvStartup,
+		"listen_addr", cfg.ListenAddr,
+		"graceful_shutdown", cfg.GracefulShutdown,
+		"shutdown_timeout", cfg.ShutdownTimeout.String(),
+		"resume_from_last_id", cfg.ResumeFromLastID,
+		"idempotency_key", cfg.IdempotencyKey,
+		"sse_heartbeat", cfg.SSEHeartbeat.String(),
+		"sse_retry", cfg.SSERetry.String(),
+		"lock_timeout", cfg.LockTimeout.String(),
+		"db_timeout", cfg.DBTimeout.String(),
+		"broadcast_poll", cfg.BroadcastPoll.String(),
+		"sse_write_deadline", cfg.WriteDeadline.String(),
+		"test_hooks", cfg.TestHooks,
+		"test_mutation_drop_ready", cfg.TestMutation.DropReady,
+		"test_mutation_duplicate_order", cfg.TestMutation.DuplicateOrder,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sctx, scancel := context.WithTimeout(ctx, startupTimeout)
+	pool, err := store.NewPool(sctx, cfg, log)
+	scancel()
+	if err != nil {
+		log.Error(applog.EvStartupFailed, "err", err.Error())
+		fmt.Fprintln(os.Stderr, "koupa: database:", err)
+		os.Exit(1)
+	}
+
+	b := broadcast.New(pool, cfg.DatabaseURL, cfg.BroadcastPoll, log, nil)
+	go func() { _ = b.Run(ctx) }()
+	go store.RunKeyCleanup(ctx, pool, store.CleanupInterval, log)
+
+	err = server.Run(ctx, cfg, server.Deps{
+		Pool:        pool,
+		Broadcaster: b,
+		Log:         log,
+		FinalLog:    finalLog,
+		Hooks:       hooks.Noop{},
+		Signals:     sigs,
+	})
+	if err != nil {
+		log.Error(applog.EvStartupFailed, "err", err.Error())
+		fmt.Fprintln(os.Stderr, "koupa:", err)
+		os.Exit(1)
+	}
+	// server.Run logged exit; leave now. Closing the pool would wait for
+	// connections still held by requests Shutdown gave up on.
+	os.Exit(0)
+}

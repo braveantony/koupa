@@ -32,6 +32,7 @@ const (
 	EvSubscriberOverflow     = "subscriber_overflow"
 	EvBadLastEventID         = "bad_last_event_id"
 	EvBoardClosed            = "board_closed"
+	EvStartupFailed          = "startup_failed"
 )
 
 // New returns a JSON logger writing to w. Use the event constant as the

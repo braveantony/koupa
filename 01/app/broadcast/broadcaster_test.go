@@ -494,3 +494,56 @@ func TestRegisterWaitsForReady(t *testing.T) {
 		t.Fatalf("subs left: %d", left)
 	}
 }
+
+func TestListeningTracksConnection(t *testing.T) {
+	pool, dsn := setup(t)
+	b := New(pool, dsn, time.Hour, quietLog(), nil)
+	pids := make(chan uint32, 4)
+	b.listenHook = func(_ context.Context, c *pgx.Conn) error {
+		pids <- c.PgConn().PID()
+		return nil
+	}
+	reconnecting := make(chan struct{})
+	release := make(chan struct{})
+	b.connectHook = func(attempt int) {
+		if attempt == 1 {
+			close(reconnecting)
+			<-release
+		}
+	}
+	if b.Listening() {
+		t.Fatal("Listening before Run")
+	}
+	start(t, b)
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(release) }) })
+	if !b.Listening() {
+		t.Fatal("not Listening after Ready")
+	}
+	pid := <-pids
+
+	admin, err := pgx.Connect(context.Background(), os.Getenv("KOUPA_TEST_DSN"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close(context.Background())
+	var ok bool
+	if err := admin.QueryRow(context.Background(), `SELECT pg_terminate_backend($1)`, int32(pid)).Scan(&ok); err != nil || !ok {
+		t.Fatalf("terminate %d: %v %v", pid, ok, err)
+	}
+	select {
+	case <-reconnecting:
+	case <-time.After(waitTimeout):
+		t.Fatal("listener did not try to reconnect")
+	}
+	if b.Listening() {
+		t.Fatal("still Listening while the LISTEN connection is down")
+	}
+	once.Do(func() { close(release) })
+	select {
+	case <-pids:
+	case <-time.After(waitTimeout):
+		t.Fatal("LISTEN not re-established")
+	}
+	waitFor(t, b.Listening)
+}

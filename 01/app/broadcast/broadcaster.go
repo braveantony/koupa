@@ -11,6 +11,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -65,6 +66,7 @@ type Broadcaster struct {
 
 	ready     chan struct{}
 	readyOnce sync.Once
+	listening atomic.Bool // a LISTEN connection is active
 
 	// mu guards progress and subs. Dispatch, Register and Unregister all
 	// take it, so a subscriber registered at progress P receives exactly
@@ -99,6 +101,11 @@ func New(pool *pgxpool.Pool, listenDSN string, poll time.Duration, log *slog.Log
 // Ready is closed once LISTEN is first active and progress is set to the
 // then-current MAX(ready_seq).
 func (b *Broadcaster) Ready() <-chan struct{} { return b.ready }
+
+// Listening reports whether a LISTEN connection is active right now: false
+// before the first LISTEN and from a connection loss until LISTEN is
+// re-established. Readiness (/healthz) uses it.
+func (b *Broadcaster) Listening() bool { return b.listening.Load() }
 
 // Register waits until the broadcaster is Ready, then adds ch and returns
 // its id and the progress at that instant: every event with ready_seq >
@@ -305,6 +312,8 @@ func (b *Broadcaster) listenOnce(ctx context.Context, listenUp, notified chan<- 
 		return false, err
 	}
 	b.log.Info(applog.EvListenActive, "pid", conn.PgConn().PID())
+	b.listening.Store(true)
+	defer b.listening.Store(false)
 	signal(listenUp)
 	for {
 		if _, err := conn.WaitForNotification(ctx); err != nil {
