@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# settings: off on
 # Design 5.5 row 2 / plan A12 timing 2: SIGTERM while a request is being
 # handled.
 #   arm request.mid -> send -> wait for the report -> watch, then

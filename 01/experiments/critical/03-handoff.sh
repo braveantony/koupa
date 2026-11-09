@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# settings: off on
 # Design 5.5 row 3 / plan A12 timing 3: a board has its hello, the App has
 # not started the backfill yet, and a new call commits.
 #   arm sse.after_hello -> board connects -> wait for the report -> mark one

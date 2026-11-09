@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# settings: off on
 # Design 5.5 row 4 / plan A12 timing 4: a call commits while the board is
 # disconnected.
 #   board connects and gets hello -> board closes -> mark one order ready

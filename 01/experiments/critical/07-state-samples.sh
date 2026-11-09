@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# settings: off-graceful
 # Plan A10 must-test: with A12 pause points, make one attempt in each of
 # the states 「送到了，App 沒有結束這個請求」 (reached_not_ended) and 「App
 # 回報寫入和 flush 成功」 (write_flush_ok), and classify both with

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# settings: after-timeout past-limit
 # Plan A10 must-test "the App commits after the client timed out", with a
 # real Rush Hour run (ingress, timeline collectors, wind-down, scorecard),
 # all mechanisms on.

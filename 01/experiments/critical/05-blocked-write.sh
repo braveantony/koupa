@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# settings: on
 # Design 5.5 row 5 / plan A12 timing 5: one board stops reading, a write to
 # it is really blocked, and the program gets SIGTERM.
 #   slow-board (a test Pod) connects straight to one koupa Pod's IP, no

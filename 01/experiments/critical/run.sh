@@ -11,6 +11,10 @@
 #
 # Before the first run (and after changing the App or slow-board):
 #   experiments/critical/build-images.sh
+#
+# Test seams (experiments/critical/test): CRIT_EXP_DIR (where NN-*.sh are,
+# default this directory) and CRIT_RESTORE (command run instead of the
+# step-4 restore).
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 stage=$(cd "$here/../.." && pwd)
@@ -19,6 +23,7 @@ export CRIT_SUMMARY=$CRIT_EVIDENCE/summary.txt
 mkdir -p "$CRIT_EVIDENCE"
 : >"$CRIT_SUMMARY"
 child=""
+exp_dir=${CRIT_EXP_DIR:-$here}
 
 parent_cleanup() {
 	local rc=$?
@@ -37,7 +42,12 @@ parent_cleanup() {
 	fi
 	# Restore once (lib.sh's restore_step4: step 4, v1, no TEST_HOOKS, test
 	# Pods and the pull secret deleted).
-	if ! (CRIT_NO_RESTORE=1 && . "$here/lib.sh" && restore_step4) 2>>"$CRIT_EVIDENCE/run.log"; then
+	if [ -n "${CRIT_RESTORE:-}" ]; then
+		restore_ok() { $CRIT_RESTORE; }
+	else
+		restore_ok() { (CRIT_NO_RESTORE=1 && . "$here/lib.sh" && restore_step4); }
+	fi
+	if ! restore_ok 2>>"$CRIT_EVIDENCE/run.log"; then
 		echo "FAIL restore" >>"$CRIT_SUMMARY"
 		rc=1
 	fi
@@ -52,13 +62,23 @@ trap 'exit 130' INT TERM
 sel=("$@")
 [ ${#sel[@]} -gt 0 ] || sel=(01 02 03 04 05 06 07)
 for n in "${sel[@]}"; do
-	cur=$(ls "$here/$n"-*.sh 2>/dev/null | head -1)
+	cur=$(ls "$exp_dir/$n"-*.sh 2>/dev/null | head -1)
 	[ -n "$cur" ] || { echo "FAIL no-experiment-$n" >>"$CRIT_SUMMARY"; continue; }
 	echo "=== $(basename "$cur")" >&2
 	CRIT_NO_RESTORE=1 setsid timeout 1800 "$cur" 2>>"$CRIT_EVIDENCE/run.log" &
 	child=$!
 	wait "$child"
+	code=$?
 	child=""
-	grep -q "$(basename "$cur" .sh)" "$CRIT_SUMMARY" ||
-		echo "FAIL $(basename "$cur" .sh) - (no verdict; see run.log)" >>"$CRIT_SUMMARY"
+	exp=$(basename "$cur" .sh)
+	# A non-zero exit (124: timeout) fails the experiment even when it
+	# already wrote PASS for some setting; so does any expected setting
+	# (its "# settings:" line) without a verdict line.
+	[ "$code" = 0 ] || echo "FAIL $exp - (exited $code; see run.log)" >>"$CRIT_SUMMARY"
+	settings=$(sed -n 's/^# settings: *//p' "$cur" | head -1)
+	[ -n "$settings" ] || echo "FAIL $exp - (no \"# settings:\" line)" >>"$CRIT_SUMMARY"
+	for st in $settings; do
+		grep -qE "^(PASS|FAIL) $exp $st " "$CRIT_SUMMARY" ||
+			echo "FAIL $exp $st (no verdict; see run.log)" >>"$CRIT_SUMMARY"
+	done
 done

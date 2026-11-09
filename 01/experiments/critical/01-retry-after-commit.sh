@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# settings: off on
 # Design 5.5 row 1 / plan A12 timing 1: the order is committed, the
 # response not yet sent, the customer gives up and resends.
 #   arm order.after_commit -> send -> wait for the report -> the client
