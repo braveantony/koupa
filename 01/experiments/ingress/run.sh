@@ -132,10 +132,18 @@ cleanup() {
 	trap - EXIT
 	trap "" INT TERM
 	# Only what this run created; each failure is recorded.
-	if [ -n "$envoy_created" ] && podman container exists "$ENVOY_NAME" 2>/dev/null; then
-		podman logs "$ENVOY_NAME" >"$EVID/envoy/envoy.log" 2>&1
-		podman rm -f "$ENVOY_NAME" >>"$EVID/cleanup.log" 2>&1 ||
-			echo "FAIL cleanup - cannot remove container $ENVOY_NAME (see cleanup.log)" >>"$SUMMARY"
+	if [ -n "$envoy_created" ]; then
+		# `podman container exists`: 0 present, 1 absent, else an error.
+		podman container exists "$ENVOY_NAME" 2>>"$EVID/cleanup.log"
+		case $? in
+		0)
+			podman logs "$ENVOY_NAME" >"$EVID/envoy/envoy.log" 2>&1
+			podman rm -f "$ENVOY_NAME" >>"$EVID/cleanup.log" 2>&1 ||
+				echo "FAIL cleanup - cannot remove container $ENVOY_NAME (see cleanup.log)" >>"$SUMMARY"
+			;;
+		1) ;;
+		*) echo "FAIL cleanup - cannot tell whether container $ENVOY_NAME exists (see cleanup.log)" >>"$SUMMARY" ;;
+		esac
 	fi
 	stop_pid harness "$harness_pid"
 	stop_pid App "$app_pid"
@@ -193,13 +201,28 @@ setup_and_run() {
 
 	# 1. Test database. scripts/test-db.sh force-recreates its container,
 	# so it runs only when there is none; an existing container is used as
-	# it is or the setup fails, never removed.
-	if ! podman container exists "$DB_CONTAINER"; then
+	# it is or the setup fails, never removed. The absence check and
+	# test-db.sh run under a lock, so two runs starting together create it
+	# once (the second sees it inside the lock).
+	local lock=${XDG_RUNTIME_DIR:-/tmp}/koupa-test-db.lock st
+	exec 9>>"$lock" || fail_setup "cannot open lock $lock"
+	flock -w 300 9 || fail_setup "timed out waiting for lock $lock"
+	podman container exists "$DB_CONTAINER" 2>>"$EVID/setup.log"
+	st=$?
+	case $st in
+	0) ;;
+	1)
 		[ "$DB_CONTAINER" = "$DEFAULT_DB_CONTAINER" ] ||
 			fail_setup "database container $DB_CONTAINER does not exist (only $DEFAULT_DB_CONTAINER is created)"
 		log "starting the test database"
-		(cd "$stage" && scripts/test-db.sh >/dev/null) || fail_setup "scripts/test-db.sh failed"
-	fi
+		(cd "$stage" && scripts/test-db.sh >/dev/null 2>>"$EVID/setup.log") ||
+			fail_setup "scripts/test-db.sh failed (see setup.log)"
+		echo "note: this run created $DB_CONTAINER (scripts/test-db.sh)" >>"$EVID/setup.log"
+		;;
+	*) fail_setup "cannot tell whether container $DB_CONTAINER exists (podman exit $st, see setup.log)" ;;
+	esac
+	flock -u 9
+	exec 9>&-
 	if [ "$(podman exec "$DB_CONTAINER" psql -tA -U postgres -d postgres \
 		-c "SELECT 1 FROM pg_database WHERE datname = 'koupa_template'" 2>/dev/null)" != 1 ]; then
 		fail_setup "container $DB_CONTAINER exists but is not a usable test DB (not running or no koupa_template); left untouched"
@@ -254,12 +277,12 @@ setup_and_run() {
 	sed -e "s/__ADMIN_PORT__/$ADMIN_PORT/" -e "s/__LISTEN_PORT__/$ENVOY_PORT/" \
 		-e "s/__PROXY_PORT__/$proxy_port/" "$here/envoy.yaml" >"$EVID/envoy/envoy.yaml"
 	: >"$EVID/envoy/access.log"
-	podman container exists "$ENVOY_NAME" && fail_setup "container $ENVOY_NAME already exists"
-	envoy_created=1 # the name is this run's own: whatever podman leaves under it is ours
+	# podman refuses an existing name, so a successful run means it is ours.
 	podman run -d --name "$ENVOY_NAME" --network host -e ENVOY_UID=0 \
 		-v "$EVID/envoy:/logs:Z" "$ENVOY_IMAGE" \
-		-c /logs/envoy.yaml --disable-hot-restart --file-flush-interval-msec 100 --log-level warn >/dev/null ||
-		fail_setup "podman run envoy failed"
+		-c /logs/envoy.yaml --disable-hot-restart --file-flush-interval-msec 100 --log-level warn \
+		>/dev/null 2>>"$EVID/setup.log" || fail_setup "podman run envoy failed (see setup.log)"
+	envoy_created=1
 
 	wait "$harness_pid"
 	local code=$?
