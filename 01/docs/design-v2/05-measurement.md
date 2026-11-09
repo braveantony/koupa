@@ -157,6 +157,8 @@ Pod 1   開始終止  （有 preStop 就等它結束）SIGTERM   程式結束
 
 這兩種情況和升級不完全一樣：drain 可能同時影響其他 Pod；縮減時沒有新的 Pod 補上，剩下的 Pod 要承擔全部流量。所以比的是**同樣的條件**（不漏號、不重複、送出沒有成功回應的張數），數字和升級分開報告。每次量完都會恢復原狀並確認，細節見[實作計畫 A15](../plan.md)（待實測）。
 
+drain 的「變更完成」和升級不同：升級要等 rollout 完成，drain 則是 `kubectl drain` 在第 D − 10 秒前結束（worker 上的 Pod 都已驅逐並結束）就算完成。koupa 的 topology spread 規則是每個 worker 最多差 1 個 Pod（`DoNotSchedule`），worker 被 cordon 的這段期間，替代的 Pod 可能一直排不上去（Pending），要等 uncordon 才會排程，所以 drain 期間可能只有 2 個 Pod 在服務。這不算量測失敗，但會記在證據包和成績單上。為了能在不加 `--delete-emptydir-data` 的情況下 drain，`setup.sh` 會把資料庫和 CNPG operator 固定在一台 infra worker 上，drain 永遠不選它。
+
 ---
 
 > [← 目錄](README.md) ｜ [上一篇](04-step-mechanisms.md) ｜ [下一篇](06-reference.md)
