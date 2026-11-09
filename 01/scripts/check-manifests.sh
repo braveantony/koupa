@@ -49,7 +49,7 @@ BASE = {
     "readinessProbe": ABSENT,
     "imageTag": "v1",
 }
-STEP1 = {**BASE, "preStop": 15}
+STEP1 = {**BASE, "preStop": 7}  # calibrated on tkha (Task 23)
 STEP2 = {**STEP1, "GRACEFUL_SHUTDOWN": "1", "SHUTDOWN_TIMEOUT": "15s",
          "terminationGracePeriodSeconds": 40}
 STEP3 = {**STEP2, "RESUME_FROM_LAST_ID": "1"}
