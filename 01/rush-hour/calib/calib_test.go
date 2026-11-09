@@ -64,7 +64,7 @@ func build(pre, post []bool, after int) scenario {
 	tail := last.SentAt.Add(spacing)
 	probes = append(probes, seq(tail, make([]bool, after))...)
 	return scenario{
-		in: Input{Probes: probes, TargetPodUID: target, DeletionStart: del,
+		in: Input{Probes: probes, TargetPodUID: target, DeletionStart: del, FreshConnections: true,
 			PreStopEnd: del.Add(20 * time.Second)},
 		lastHit:  last,
 		deletion: del,
@@ -289,5 +289,111 @@ func TestCandidateNeedsFive(t *testing.T) {
 	sec, ok := Candidate(five)
 	if !ok || sec != 7.5 {
 		t.Fatalf("got %v %v, want 7.5 true (invalid 30s sample ignored)", sec, ok)
+	}
+}
+
+func TestOverlappingProbesRaiseModelUpper(t *testing.T) {
+	s := build(goodPre(), goodPost(), 30)
+	// A probe sent before the 18th miss is answered much later: U must follow it.
+	late := s.lastHit.SentAt.Add(5 * spacing)
+	for i := range s.in.Probes {
+		if s.in.Probes[i].SentAt.Equal(late) {
+			s.in.Probes[i].RespondedAt = late.Add(2 * time.Second)
+		}
+	}
+	got := Estimate(s.in, cfg())
+	want := late.Add(2 * time.Second)
+	if got.UpperKind != "model" || !got.Upper.Equal(want) {
+		t.Fatalf("kind %q upper %v, want %v", got.UpperKind, got.Upper, want)
+	}
+	// A hit answered after the k-th miss also lifts U.
+	s = build(goodPre(), goodPost(), 30)
+	for i := range s.in.Probes {
+		if s.in.Probes[i].SentAt.Equal(s.lastHit.SentAt) {
+			s.in.Probes[i].RespondedAt = s.lastHit.SentAt.Add(5 * time.Second)
+		}
+	}
+	got = Estimate(s.in, cfg())
+	want = s.lastHit.SentAt.Add(5 * time.Second)
+	if got.Upper == nil || !got.Upper.Equal(want) {
+		t.Fatalf("upper %v, want %v", got.Upper, want)
+	}
+}
+
+func TestDirectUpperBeforeLastHitRejected(t *testing.T) {
+	s := build(goodPre(), goodPost(), 30)
+	d := s.lastHit.SentAt.Add(-time.Second)
+	s.in.DirectUpper = &d
+	got := Estimate(s.in, cfg())
+	if got.UpperKind == "direct" || !got.DirectRejected {
+		t.Fatalf("kind %q rejected %v", got.UpperKind, got.DirectRejected)
+	}
+}
+
+func TestEmptyRateGroupNoModel(t *testing.T) {
+	// Last hit is before deletion: no probes in [DeletionStart, L].
+	pre := goodPre()
+	pre[len(pre)-1] = true
+	s := build(pre, make([]bool, 90), 30)
+	got := Estimate(s.in, cfg())
+	if got.UpperKind != "none" || got.RateComputed {
+		t.Fatalf("kind %q rateComputed %v", got.UpperKind, got.RateComputed)
+	}
+}
+
+func TestEvidenceFlagsExposed(t *testing.T) {
+	got := Estimate(build(goodPre(), goodPost(), 30).in, cfg())
+	if !got.RunsComputed || !got.RateComputed || got.RunsP <= 0 || got.RateP <= 0 {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestInconsistentTiming(t *testing.T) {
+	mut := map[string]func(p *Probe){
+		"zero responded": func(p *Probe) { p.RespondedAt = time.Time{} },
+		"zero sent":      func(p *Probe) { p.SentAt = time.Time{} },
+		"resp<sent":      func(p *Probe) { p.RespondedAt = p.SentAt.Add(-time.Millisecond) },
+		"ingress<sent":   func(p *Probe) { x := p.SentAt.Add(-time.Millisecond); p.IngressSelectedAt = &x },
+		"ingress>resp":   func(p *Probe) { x := p.RespondedAt.Add(time.Millisecond); p.IngressSelectedAt = &x },
+	}
+	for name, f := range mut {
+		s := build(goodPre(), goodPost(), 30)
+		f(&s.in.Probes[10])
+		got := Estimate(s.in, cfg())
+		if got.Valid || got.InvalidReason != "inconsistent_timing" {
+			t.Errorf("%s: valid %v reason %q", name, got.Valid, got.InvalidReason)
+		}
+	}
+}
+
+func TestConnectionReuseInvalid(t *testing.T) {
+	s := build(goodPre(), goodPost(), 30)
+	s.in.FreshConnections = false
+	got := Estimate(s.in, cfg())
+	if got.Valid || got.InvalidReason != "connection_reuse" {
+		t.Fatalf("valid %v reason %q", got.Valid, got.InvalidReason)
+	}
+}
+
+func TestPostDeletionHitUsesIngressTime(t *testing.T) {
+	// Last hit sent before deletion but selected after it.
+	pre := goodPre()
+	pre[len(pre)-1] = true
+	s := build(pre, make([]bool, 90), 30)
+	s.in.PerAttemptIngress = true
+	d := s.deletion.Add(10 * time.Millisecond)
+	s.in.DirectUpper = &d
+	sel := s.deletion.Add(time.Millisecond)
+	last := len(pre) - 1
+	s.in.Probes[last].SentAt = s.deletion.Add(-time.Millisecond)
+	s.in.Probes[last].RespondedAt = s.deletion.Add(5 * time.Millisecond)
+	s.in.Probes[last].IngressSelectedAt = &sel
+	got := Estimate(s.in, cfg())
+	if got.InvalidReason == "no_hit_after_deletion" {
+		t.Fatalf("ingress-selected-after-deletion hit not counted: %q", got.InvalidReason)
+	}
+	s.in.PerAttemptIngress = false
+	if got := Estimate(s.in, cfg()); got.InvalidReason != "no_hit_after_deletion" {
+		t.Fatalf("SentAt mode must not count it: %q", got.InvalidReason)
 	}
 }

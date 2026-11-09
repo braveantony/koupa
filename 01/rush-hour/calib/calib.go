@@ -28,6 +28,8 @@ type Input struct {
 	// DirectUpper is U from endpoint/config update records, nil when unknown.
 	DirectUpper       *time.Time
 	PerAttemptIngress bool
+	// FreshConnections records that every probe used a new client connection.
+	FreshConnections bool
 }
 
 // Config holds the pre-registered thresholds.
@@ -57,20 +59,27 @@ const (
 	ReasonNoHitAfterDeletion = "no_hit_after_deletion"
 	ReasonNoUpperBound       = "no_upper_bound"
 	ReasonUpperTooClose      = "upper_too_close_to_prestop_end"
+	ReasonInconsistentTiming = "inconsistent_timing"
+	ReasonConnectionReuse    = "connection_reuse"
 )
 
 // Sample is the estimate for one terminated Pod.
 type Sample struct {
-	DeletionStart time.Time // copied from Input so Candidate can compute U - deletion
-	Lower         time.Time // L; zero when the Pod was never hit
-	Upper         *time.Time
-	UpperKind     string // direct | model | none
-	P             float64
-	K             int
-	N             int     // responded probes in the pre-deletion window
-	RunsZ         float64 // runs-test z; 0 when the test could not be computed
-	Valid         bool
-	InvalidReason string
+	DeletionStart  time.Time // copied from Input so Candidate can compute U - deletion
+	Lower          time.Time // L; zero when the Pod was never hit
+	Upper          *time.Time
+	UpperKind      string // direct | model | none
+	P              float64
+	K              int
+	N              int     // responded probes in the pre-deletion window
+	RunsZ          float64 // runs-test z; 0 when the test could not be computed
+	RunsP          float64 // runs-test p-value; valid only if RunsComputed
+	RunsComputed   bool
+	RateP          float64 // pre/post hit-rate two-proportion p-value; valid only if RateComputed
+	RateComputed   bool
+	DirectRejected bool // direct evidence was earlier than an observed hit
+	Valid          bool
+	InvalidReason  string
 }
 
 // Estimate applies A11 steps 3-5 to one Pod.
@@ -81,16 +90,24 @@ func Estimate(in Input, cfg Config) Sample {
 	s := Sample{DeletionStart: in.DeletionStart, UpperKind: UpperNone}
 
 	probes := make([]Probe, 0, len(in.Probes))
+	badTiming := false
 	for _, p := range in.Probes {
-		if p.PodUID != "" {
-			probes = append(probes, p)
+		if p.PodUID == "" {
+			continue
 		}
+		if p.SentAt.IsZero() || p.RespondedAt.IsZero() || p.RespondedAt.Before(p.SentAt) ||
+			(p.IngressSelectedAt != nil &&
+				(p.IngressSelectedAt.Before(p.SentAt) || p.IngressSelectedAt.After(p.RespondedAt))) {
+			badTiming = true
+		}
+		probes = append(probes, p)
 	}
 	sort.SliceStable(probes, func(i, j int) bool { return probes[i].SentAt.Before(probes[j].SentAt) })
 	hit := func(p Probe) bool { return p.PodUID == in.TargetPodUID }
 
 	// Lower bound L: never the App receive time.
 	hitAfterDeletion := false
+	var hitBound time.Time // latest selection or response time of any hit
 	for _, p := range probes {
 		if !hit(p) {
 			continue
@@ -102,8 +119,14 @@ func Estimate(in Input, cfg Config) Sample {
 		if l.After(s.Lower) {
 			s.Lower = l
 		}
-		if p.SentAt.After(in.DeletionStart) {
+		if l.After(in.DeletionStart) {
 			hitAfterDeletion = true
+		}
+		if l.After(hitBound) {
+			hitBound = l
+		}
+		if p.RespondedAt.After(hitBound) {
+			hitBound = p.RespondedAt
 		}
 	}
 
@@ -125,7 +148,14 @@ func Estimate(in Input, cfg Config) Sample {
 		s.P = float64(preHits) / float64(s.N)
 	}
 
-	if in.DirectUpper != nil {
+	if badTiming {
+		s.InvalidReason = ReasonInconsistentTiming
+		return s
+	}
+	if in.DirectUpper != nil && in.DirectUpper.Before(hitBound) {
+		s.DirectRejected = true // contradicted by an observed hit
+	}
+	if in.DirectUpper != nil && !s.DirectRejected {
 		u := *in.DirectUpper
 		s.Upper, s.UpperKind = &u, UpperDirect
 	} else if !s.Lower.IsZero() {
@@ -136,6 +166,8 @@ func Estimate(in Input, cfg Config) Sample {
 	}
 
 	switch {
+	case !in.FreshConnections:
+		s.InvalidReason = ReasonConnectionReuse
 	case !hitAfterDeletion:
 		s.InvalidReason = ReasonNoHitAfterDeletion
 	case s.Upper == nil:
@@ -159,7 +191,7 @@ func modelUpper(probes []Probe, hit func(Probe) bool, in Input, cfg Config,
 	if math.IsNaN(z) || math.IsNaN(rp) {
 		return 0, nil // cannot be tested -> model not used
 	}
-	s.RunsZ = z
+	s.RunsZ, s.RunsP, s.RunsComputed = z, rp, true
 	if rp < cfg.Alpha {
 		return 0, nil
 	}
@@ -173,7 +205,12 @@ func modelUpper(probes []Probe, hit func(Probe) bool, in Input, cfg Config,
 			}
 		}
 	}
-	if pp, ok := twoProportionP(preHits, s.N, postHits, postN); ok && pp < cfg.Alpha {
+	pp, ok := twoProportionP(preHits, s.N, postHits, postN)
+	if !ok {
+		return 0, nil // cannot compare rates -> model not used
+	}
+	s.RateP, s.RateComputed = pp, true
+	if pp < cfg.Alpha {
 		return 0, nil
 	}
 	k := minK(s.P, cfg.MissProb)
@@ -189,7 +226,17 @@ func modelUpper(probes []Probe, hit func(Probe) bool, in Input, cfg Config,
 		}
 		run++
 		if run == k {
+			// Conservative: no probe sent up to the k-th miss, and no hit, may
+			// still be unanswered at U (overlapping probes).
 			u := p.RespondedAt
+			for _, q := range probes {
+				if !q.SentAt.After(p.SentAt) && q.RespondedAt.After(u) {
+					u = q.RespondedAt
+				}
+				if hit(q) && q.RespondedAt.After(u) {
+					u = q.RespondedAt
+				}
+			}
 			return k, &u
 		}
 	}
