@@ -76,8 +76,11 @@ func RunWriteTx(ctx context.Context, pool *pgxpool.Pool, opts TxOptions, fn func
 	}()
 
 	lt := opts.LockTimeout
-	if lt <= 0 {
+	switch {
+	case lt <= 0:
 		lt = DefaultLockTimeout
+	case lt < time.Millisecond:
+		lt = time.Millisecond // lock_timeout = 0 would disable it
 	}
 	// SET cannot take parameters; an integer millisecond count is safe to format.
 	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL lock_timeout = %d", lt.Milliseconds())); err != nil {
@@ -89,16 +92,11 @@ func RunWriteTx(ctx context.Context, pool *pgxpool.Pool, opts TxOptions, fn func
 
 	res.CommitSentAt = time.Now()
 	err = tx.Commit(ctx)
-	switch {
-	case err == nil:
-		res.Outcome = TxCommitted
-		return res, nil
-	case commitDefinitelyFailed(err):
-		res.Outcome = TxRolledBack
-	default:
-		res.Outcome = TxCommitUnknown
+	res.Outcome = commitOutcome(err)
+	if err != nil {
+		return res, fmt.Errorf("commit: %w", err)
 	}
-	return res, fmt.Errorf("commit: %w", err)
+	return res, nil
 }
 
 // rollback ends a transaction that will not commit. A failing ROLLBACK (for
@@ -111,15 +109,33 @@ func rollback(ctx context.Context, tx pgx.Tx, cause error) (TxResult, error) {
 	return TxResult{Outcome: TxRolledBack}, cause
 }
 
-// commitDefinitelyFailed reports whether a COMMIT error proves the
-// transaction did not commit: the server answered with an error, or the
-// transaction was already aborted. pgconn.SafeToRetry is deliberately not
-// used: pgx v5.12 returns its "conn closed" lock error (SafeToRetry true)
-// from a read after COMMIT was already written, which would hide exactly
-// the commit_unknown case.
-func commitDefinitelyFailed(err error) bool {
+// commitOutcome maps the error from tx.Commit to an outcome. Only proof of
+// rollback gives rolled_back: an ERROR-severity server error (the server
+// answered COMMIT and the transaction ended without committing), or
+// pgx.ErrTxCommitRollback (the transaction was already aborted). A
+// FATAL/PANIC error ends the session while COMMIT may be in flight (e.g.
+// 57P01 admin shutdown), so it proves nothing: commit_unknown, like any
+// connection error. pgconn.SafeToRetry is deliberately not used: pgx v5.12
+// returns its "conn closed" lock error (SafeToRetry true) from a read after
+// COMMIT was already written, which would hide exactly this case.
+func commitOutcome(err error) TxOutcome {
+	if err == nil {
+		return TxCommitted
+	}
+	if errors.Is(err, pgx.ErrTxCommitRollback) {
+		return TxRolledBack
+	}
 	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) || errors.Is(err, pgx.ErrTxCommitRollback)
+	if errors.As(err, &pgErr) {
+		sev := pgErr.SeverityUnlocalized
+		if sev == "" {
+			sev = pgErr.Severity
+		}
+		if sev != "FATAL" && sev != "PANIC" {
+			return TxRolledBack
+		}
+	}
+	return TxCommitUnknown
 }
 
 // IsLockTimeout reports whether err is a lock_timeout cancellation (55P03).

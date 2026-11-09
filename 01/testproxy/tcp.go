@@ -7,13 +7,13 @@
 package testproxy
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -48,6 +48,8 @@ const (
 type TCP struct {
 	upstream string
 	ln       net.Listener
+	ctx      context.Context // cancelled by Close; aborts pending upstream dials
+	cancel   context.CancelFunc
 
 	mu     sync.Mutex
 	hook   func(msg []byte) Action
@@ -64,7 +66,8 @@ func NewTCP(upstream string) *TCP {
 	if err != nil {
 		panic(fmt.Sprintf("testproxy: listen: %v", err))
 	}
-	p := &TCP{upstream: upstream, ln: ln, conns: map[net.Conn]struct{}{}}
+	ctx, cancel := context.WithCancel(context.Background())
+	p := &TCP{upstream: upstream, ln: ln, ctx: ctx, cancel: cancel, conns: map[net.Conn]struct{}{}}
 	p.wg.Add(1)
 	go p.accept()
 	return p
@@ -86,6 +89,7 @@ func (p *TCP) OnClientMessage(f func(msg []byte) Action) {
 // Close stops listening, closes every proxied connection and waits for
 // all proxy goroutines to finish.
 func (p *TCP) Close() {
+	p.cancel()
 	p.mu.Lock()
 	p.closed = true
 	for c := range p.conns {
@@ -142,7 +146,8 @@ func (p *TCP) handle(client net.Conn) {
 		return
 	}
 	defer p.untrack(client)
-	server, err := net.Dial("tcp", p.upstream)
+	var d net.Dialer
+	server, err := d.DialContext(p.ctx, "tcp", p.upstream)
 	if err != nil {
 		return
 	}
@@ -152,18 +157,18 @@ func (p *TCP) handle(client net.Conn) {
 	}
 	defer p.untrack(server)
 
-	var cut atomic.Bool
+	c := &cutState{}
 	done := make(chan struct{})
 	go func() { // server → client
 		defer close(done)
 		buf := make([]byte, 32<<10)
 		for {
 			n, err := server.Read(buf)
-			if n > 0 && !cut.Load() {
-				if _, werr := client.Write(buf[:n]); werr != nil && !cut.Load() {
-					server.Close()
-					return
-				}
+			if n > 0 {
+				// A failed client write needs no action here: the client
+				// reader sees the dead connection and closes the server
+				// side, and until then replies are just discarded.
+				c.writeUnlessCut(client, buf[:n])
 			}
 			if err != nil {
 				client.Close()
@@ -172,7 +177,7 @@ func (p *TCP) handle(client net.Conn) {
 		}
 	}()
 
-	if p.clientToServer(client, server, &cut) {
+	if p.clientToServer(client, server, c) {
 		// Keep draining the server for a moment so it processes the
 		// message instead of seeing the connection vanish mid-request.
 		server.SetReadDeadline(time.Now().Add(cutGrace))
@@ -184,7 +189,7 @@ func (p *TCP) handle(client net.Conn) {
 
 // clientToServer copies framed messages until the client goes away (false)
 // or the hook asks for a cut (true, client already closed).
-func (p *TCP) clientToServer(client, server net.Conn, cut *atomic.Bool) bool {
+func (p *TCP) clientToServer(client, server net.Conn, c *cutState) bool {
 	untypedNext := true
 	for {
 		msg, err := readMessage(client, untypedNext)
@@ -198,16 +203,43 @@ func (p *TCP) clientToServer(client, server net.Conn, cut *atomic.Bool) bool {
 				binary.BigEndian.Uint32(msg[4:]) == gssEncRequestCode)
 		act := p.action(msg)
 		if act == ForwardThenCutClient {
-			cut.Store(true) // before writing, so no reply slips through
+			// Cut before forwarding: the mutex guarantees no client write
+			// is in progress or can start, so no reply can reach the client.
+			c.cutAndClose(client)
 		}
 		if _, err := server.Write(msg); err != nil {
 			return false
 		}
 		if act == ForwardThenCutClient {
-			client.Close()
 			return true
 		}
 	}
+}
+
+// cutState makes the cut decision and server→client writes mutually
+// exclusive.
+type cutState struct {
+	mu  sync.Mutex
+	cut bool
+}
+
+// writeUnlessCut writes b to client unless the connection was cut, in
+// which case b is discarded. Write errors are ignored (see handle).
+func (c *cutState) writeUnlessCut(client net.Conn, b []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.cut {
+		_, _ = client.Write(b)
+	}
+}
+
+func (c *cutState) cutAndClose(client net.Conn) {
+	// Closing first unblocks a writeUnlessCut stuck on a client that is
+	// not reading, so taking the lock cannot hang.
+	client.Close()
+	c.mu.Lock()
+	c.cut = true
+	c.mu.Unlock()
 }
 
 // readMessage reads one frontend message. untyped means the message has no

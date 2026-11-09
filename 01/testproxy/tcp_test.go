@@ -148,27 +148,62 @@ func TestTCPForwardThenCutClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	q := typed('Q', "commit\x00")
-	if _, err := c.Write(append(untyped("startup"), q...)); err != nil {
+
+	// Step 1: the startup message is forwarded and its reply delivered.
+	start := untyped("startup")
+	if _, err := c.Write(start); err != nil {
 		t.Fatal(err)
 	}
-	// The client side must be closed; any bytes it reads must not include
-	// the upstream's reply to the cut message.
+	c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	reply := make([]byte, 2)
+	if _, err := io.ReadFull(c, reply); err != nil || string(reply) != "ok" {
+		t.Fatalf("startup reply = %q, %v; want ok", reply, err)
+	}
+
+	// Step 2: the cut message reaches the upstream, which replies, but the
+	// client only sees its side closed with no further bytes.
+	q := typed('Q', "commit\x00")
+	if _, err := c.Write(q); err != nil {
+		t.Fatal(err)
+	}
 	c.SetReadDeadline(time.Now().Add(3 * time.Second))
 	got, err := io.ReadAll(c)
 	if ne, ok := err.(net.Error); ok && ne.Timeout() {
 		t.Fatal("client side was not closed")
 	}
-	if strings.Count(string(got), "ok") > 1 {
-		t.Fatalf("client received the reply after the cut: %q", got)
+	if len(got) != 0 {
+		t.Fatalf("client received %q after the cut, want nothing", got)
 	}
-	// The cut message itself still reached the upstream.
+	want := append(append([]byte(nil), start...), q...)
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && !bytes.HasSuffix(up.bytes(), q) {
+	for time.Now().Before(deadline) && !bytes.Equal(up.bytes(), want) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if !bytes.HasSuffix(up.bytes(), q) {
-		t.Fatalf("upstream got %q, want it to end with %q", up.bytes(), q)
+	if !bytes.Equal(up.bytes(), want) {
+		t.Fatalf("upstream got %q, want %q", up.bytes(), want)
+	}
+}
+
+// TestTCPCloseDuringPendingDial checks that Close does not wait for the OS
+// connect timeout when an upstream dial never completes.
+func TestTCPCloseDuringPendingDial(t *testing.T) {
+	// 10.255.255.1 is non-routable: SYNs go unanswered, so the dial hangs
+	// (or fails at once if the host has no route; then Close is fast anyway).
+	p := NewTCP("10.255.255.1:5432")
+	c, err := net.Dial("tcp", p.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	time.Sleep(200 * time.Millisecond) // let handle start dialling
+	closed := make(chan struct{})
+	start := time.Now()
+	go func() { p.Close(); close(closed) }()
+	select {
+	case <-closed:
+		t.Logf("Close returned after %v", time.Since(start))
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close blocked on a pending upstream dial")
 	}
 }
 

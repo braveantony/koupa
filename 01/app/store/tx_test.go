@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"koupa/internal/testdb"
@@ -258,8 +260,12 @@ func TestDBContextIgnoresRequestCancel(t *testing.T) {
 				return err
 			}
 			close(started)
-			<-r.Context().Done() // the client has gone away
-			return nil
+			select {
+			case <-r.Context().Done(): // the client has gone away
+				return nil
+			case <-time.After(10 * time.Second):
+				return errors.New("request context was never cancelled")
+			}
 		})
 		done <- res
 	}))
@@ -271,7 +277,8 @@ func TestDBContextIgnoresRequestCancel(t *testing.T) {
 		<-started
 		rcancel()
 	}()
-	if _, err := http.DefaultClient.Do(req); err == nil {
+	client := &http.Client{Timeout: 15 * time.Second}
+	if _, err := client.Do(req); err == nil {
 		t.Fatal("request should have been cancelled")
 	}
 	select {
@@ -291,5 +298,42 @@ func TestDBContextIgnoresRequestCancel(t *testing.T) {
 	dl, ok := dctx.Deadline()
 	if left := time.Until(dl); !ok || left < 59*time.Second || left > 60*time.Second {
 		t.Fatalf("DBContext deadline in %v (ok=%v), want ~60s", left, ok)
+	}
+}
+
+func TestCommitOutcomeClassification(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want TxOutcome
+	}{
+		{"nil", nil, TxCommitted},
+		{"serialization ERROR", &pgconn.PgError{Severity: "ERROR", SeverityUnlocalized: "ERROR", Code: "40001"}, TxRolledBack},
+		{"localized ERROR only", &pgconn.PgError{Severity: "ERROR", Code: "23505"}, TxRolledBack},
+		{"already aborted", pgx.ErrTxCommitRollback, TxRolledBack},
+		{"admin shutdown FATAL", &pgconn.PgError{Severity: "FATAL", SeverityUnlocalized: "FATAL", Code: "57P01"}, TxCommitUnknown},
+		{"localized FATAL", &pgconn.PgError{Severity: "SCHWERWIEGEND", SeverityUnlocalized: "FATAL", Code: "57P01"}, TxCommitUnknown},
+		{"PANIC", &pgconn.PgError{Severity: "PANIC", SeverityUnlocalized: "PANIC", Code: "XX000"}, TxCommitUnknown},
+		{"wrapped FATAL", fmt.Errorf("x: %w", &pgconn.PgError{SeverityUnlocalized: "FATAL", Code: "57P01"}), TxCommitUnknown},
+		{"conn closed", pgconn.ErrConnClosed, TxCommitUnknown},
+		{"deadline", context.DeadlineExceeded, TxCommitUnknown},
+	}
+	for _, c := range cases {
+		if got := commitOutcome(c.err); got != c.want {
+			t.Errorf("%s: commitOutcome = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+func TestSubMillisecondLockTimeoutRoundsUp(t *testing.T) {
+	pool := testdb.New(t)
+	dctx, cancel := DBContext()
+	defer cancel()
+	var got string
+	_, err := RunWriteTx(dctx, pool, TxOptions{LockTimeout: 500 * time.Microsecond}, func(c context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(c, `SHOW lock_timeout`).Scan(&got)
+	})
+	if err != nil || got != "1ms" {
+		t.Fatalf("lock_timeout = %q, %v; want 1ms (not 0 = disabled)", got, err)
 	}
 }
