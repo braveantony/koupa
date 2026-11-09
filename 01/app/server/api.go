@@ -128,6 +128,7 @@ func (s *Server) handlePlaceOrder(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err, txr)
 		return
 	}
+	recordFields(r, "order_id", res.Order.ID, "replayed", res.Replayed)
 	status := http.StatusCreated
 	if res.Replayed {
 		status = http.StatusOK
@@ -161,12 +162,16 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := store.DBContext()
 	defer cancel()
+	recordFields(r, "order_id", id)
 	res, txr, err := store.MarkReady(ctx, s.deps.Pool, id, r.Header.Get(wire.HeaderAttempt), 0)
 	recordTx(r, txr)
 	if err != nil {
 		writeStoreError(w, err, txr)
 		return
 	}
+	// Whether this attempt assigned the number or got the earlier one (A10).
+	recordFields(r, "ready_seq", res.ReadySeq, "newly_assigned", res.NewlyAssigned,
+		"lock_wait_ms", float64(res.LockWait.Microseconds())/1000)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"order_id": res.OrderID, "ready_seq": res.ReadySeq, "number": res.Number, "newly_assigned": res.NewlyAssigned,
 	})

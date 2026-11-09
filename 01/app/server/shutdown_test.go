@@ -626,3 +626,89 @@ func logTime(t *testing.T, l map[string]any) time.Time {
 	}
 	return ts
 }
+
+// TestSigtermDuringStartup: the database accepts TCP but never answers,
+// so NewPool blocks; SIGTERM must still be handled at once.
+func TestSigtermDuringStartup(t *testing.T) {
+	for _, graceful := range []bool{false, true} {
+		t.Run(fmt.Sprintf("graceful=%v", graceful), func(t *testing.T) {
+			if testing.Short() {
+				t.Skip("builds the app binary")
+			}
+			bin := appBinary(t)
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ln.Close()
+			accepted := make(chan net.Conn, 4)
+			go func() {
+				for {
+					c, err := ln.Accept()
+					if err != nil {
+						return
+					}
+					accepted <- c // hold it open, never answer
+				}
+			}()
+			defer func() {
+				for len(accepted) > 0 {
+					(<-accepted).Close()
+				}
+			}()
+			p := &proc{log: &syncBuf{}, stderr: &syncBuf{}, exited: make(chan struct{})}
+			p.cmd = exec.Command(bin)
+			p.cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "GORACE=atexit_sleep_ms=0",
+				"DATABASE_URL=postgres://koupa:koupa@" + ln.Addr().String() + "/koupa?sslmode=disable",
+				"LISTEN_ADDR=" + freeAddr(t), "POD_UID=uid-start"}
+			if graceful {
+				p.cmd.Env = append(p.cmd.Env, "GRACEFUL_SHUTDOWN=1")
+			}
+			p.cmd.Stdout, p.cmd.Stderr = p.log, p.stderr
+			if err := p.cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			go func() {
+				p.waitEr = p.cmd.Wait()
+				p.exitAt = time.Now()
+				close(p.exited)
+			}()
+			t.Cleanup(func() {
+				select {
+				case <-p.exited:
+				default:
+					p.cmd.Process.Kill()
+					<-p.exited
+				}
+				if t.Failed() {
+					t.Logf("stdout:\n%s\nstderr:\n%s", p.log.b.String(), p.stderr.b.String())
+				}
+			})
+			select {
+			case c := <-accepted:
+				accepted <- c
+			case <-time.After(waitTimeout):
+				t.Fatal("app never connected to the database")
+			}
+			p.sigterm(t)
+			if d := p.waitExit(t, 5*time.Second); d > time.Second {
+				t.Errorf("exit %v after SIGTERM during startup", d)
+			}
+			lines := p.log.lines(t)
+			var got []string
+			for _, l := range lines {
+				got = append(got, l["event"].(string))
+			}
+			want := []string{applog.EvStartup, applog.EvSigterm}
+			if graceful {
+				want = append(want, applog.EvExit)
+			}
+			if strings.Join(got, ",") != strings.Join(want, ",") {
+				t.Errorf("events %v, want %v", got, want)
+			}
+			if s := find(lines, applog.EvSigterm); len(s) != 1 || s[0]["phase"] != "startup" {
+				t.Errorf("sigterm line %v", s)
+			}
+		})
+	}
+}

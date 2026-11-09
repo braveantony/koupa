@@ -13,9 +13,10 @@ import (
 
 // txRecorder carries a handler's transaction outcome to the middleware.
 type txRecorder struct {
-	mu  sync.Mutex
-	res store.TxResult
-	set bool
+	mu     sync.Mutex
+	res    store.TxResult
+	set    bool
+	fields []any // extra request_end attributes (recordFields)
 }
 
 type recorderKey struct{}
@@ -28,6 +29,23 @@ func recordTx(r *http.Request, res store.TxResult) {
 		rec.res, rec.set = res, true
 		rec.mu.Unlock()
 	}
+}
+
+// recordFields adds key/value attributes to the request_end log line,
+// e.g. the order_id and newly_assigned of a ready attempt (plan A10).
+func recordFields(r *http.Request, kv ...any) {
+	if rec, ok := r.Context().Value(recorderKey{}).(*txRecorder); ok {
+		rec.mu.Lock()
+		rec.fields = append(rec.fields, kv...)
+		rec.mu.Unlock()
+	}
+}
+
+// isWrite reports whether the method could create or change data. Such a
+// request rejected before any transaction logs tx_outcome=not_started, so
+// the wind-down (A9) can treat it as settled.
+func isWrite(method string) bool {
+	return method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions
 }
 
 // respWriter records the status and the first write and flush errors. It
@@ -100,9 +118,12 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 			status = http.StatusOK // net/http sends 200 for a handler that wrote nothing
 		}
 		rec.mu.Lock()
-		txr, hasTx := rec.res, rec.set
+		txr, hasTx, extra := rec.res, rec.set, rec.fields
 		rec.mu.Unlock()
 		outcome, commitAt := "", ""
+		if !hasTx && isWrite(r.Method) {
+			outcome = string(store.TxNotStarted)
+		}
 		if hasTx {
 			outcome = string(txr.Outcome)
 			if !txr.CommitSentAt.IsZero() {
@@ -112,7 +133,7 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 		if txr.Outcome == store.TxCommitUnknown {
 			s.log.Warn(applog.EvCommitUnknown, "attempt", attempt, "path", path, "commit_sent_at", commitAt)
 		}
-		s.log.Info(applog.EvRequestEnd,
+		args := []any{
 			"attempt", attempt,
 			"method", r.Method,
 			"path", path,
@@ -122,7 +143,8 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 			"ctx_canceled", r.Context().Err() != nil,
 			"tx_outcome", outcome,
 			"commit_sent_at", commitAt,
-			"duration_ms", float64(time.Since(start).Microseconds())/1000,
-		)
+			"duration_ms", float64(time.Since(start).Microseconds()) / 1000,
+		}
+		s.log.Info(applog.EvRequestEnd, append(args, extra...)...)
 	})
 }

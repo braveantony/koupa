@@ -417,3 +417,63 @@ func TestPagesPlaceholder(t *testing.T) {
 		t.Errorf("/nope: %d", resp.StatusCode)
 	}
 }
+
+func TestRejectedWriteNotStarted(t *testing.T) {
+	e := newEnv(t, testConfig("v2"), nil)
+	for i, c := range []struct{ path, body string }{
+		{"/orders", `{"items":`},
+		{"/orders/abc/ready", ""},
+		{"/api/menu/x/available", `{"available":false}`},
+		{"/api/menu/1/available", `{}`},
+		{"/no-such-write", ""},
+	} {
+		att := fmt.Sprintf("rej-%d", i)
+		resp := e.do(t, "POST", c.path, att, c.body, nil)
+		if resp.StatusCode < 400 {
+			t.Fatalf("%s: status %d", c.path, resp.StatusCode)
+		}
+		end := awaitLog(t, e.log, applog.EvRequestEnd, "attempt", att)
+		if end["tx_outcome"] != "not_started" || end["commit_sent_at"] != "" {
+			t.Errorf("%s: request_end = %v", c.path, end)
+		}
+	}
+	// Reads have no transaction and keep an empty outcome.
+	e.do(t, "GET", "/api/menu", "rd-1", "", nil)
+	if end := awaitLog(t, e.log, applog.EvRequestEnd, "attempt", "rd-1"); end["tx_outcome"] != "" {
+		t.Errorf("read request_end = %v", end)
+	}
+}
+
+func TestReadyRequestEndFields(t *testing.T) {
+	e := newEnv(t, testConfig("v1"), nil)
+	var o orderResp
+	e.do(t, "POST", "/orders", "o-1", orderBody("rf-1", 1, 1), &o)
+	end := awaitLog(t, e.log, applog.EvRequestEnd, "attempt", "o-1")
+	if end["order_id"] != float64(o.OrderID) || end["replayed"] != false {
+		t.Errorf("order request_end = %v", end)
+	}
+
+	var r1 readyResp
+	e.do(t, "POST", fmt.Sprintf("/orders/%d/ready", o.OrderID), "rdy-1", "", &r1)
+	e.do(t, "POST", fmt.Sprintf("/orders/%d/ready", o.OrderID), "rdy-2", "", nil)
+	first := awaitLog(t, e.log, applog.EvRequestEnd, "attempt", "rdy-1")
+	again := awaitLog(t, e.log, applog.EvRequestEnd, "attempt", "rdy-2")
+	for name, c := range map[string]struct {
+		l     map[string]any
+		newly bool
+	}{"first": {first, true}, "again": {again, false}} {
+		l := c.l
+		if l["order_id"] != float64(o.OrderID) || l["ready_seq"] != float64(r1.ReadySeq) ||
+			l["newly_assigned"] != c.newly || l["tx_outcome"] != "committed" {
+			t.Errorf("%s ready request_end = %v", name, l)
+		}
+		if _, ok := l["lock_wait_ms"].(float64); !ok {
+			t.Errorf("%s: lock_wait_ms missing: %v", name, l)
+		}
+	}
+	// Unknown order: order_id from the path is still logged.
+	e.do(t, "POST", "/orders/987654/ready", "rdy-3", "", nil)
+	if l := awaitLog(t, e.log, applog.EvRequestEnd, "attempt", "rdy-3"); l["order_id"] != float64(987654) || l["status"] != float64(404) {
+		t.Errorf("unknown order request_end = %v", l)
+	}
+}

@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"koupa/app/applog"
 	"koupa/app/broadcast"
 	"koupa/app/config"
@@ -56,8 +58,31 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Startup can block on the database; SIGTERM is handled meanwhile.
 	sctx, scancel := context.WithTimeout(ctx, startupTimeout)
-	pool, err := store.NewPool(sctx, cfg, log)
+	type opened struct {
+		pool *pgxpool.Pool
+		err  error
+	}
+	openc := make(chan opened, 1)
+	go func() {
+		p, err := store.NewPool(sctx, cfg, log)
+		openc <- opened{p, err}
+	}()
+	var pool *pgxpool.Pool
+	select {
+	case o := <-openc:
+		pool, err = o.pool, o.err
+	case sig := <-sigs:
+		if !cfg.GracefulShutdown {
+			finalLog.Info(applog.EvSigterm, "signal", sig.String(), "graceful", false, "phase", "startup")
+			os.Exit(0)
+		}
+		log.Info(applog.EvSigterm, "signal", sig.String(), "graceful", true, "phase", "startup")
+		scancel()
+		finalLog.Info(applog.EvExit, "clean", true, "phase", "startup")
+		os.Exit(0)
+	}
 	scancel()
 	if err != nil {
 		log.Error(applog.EvStartupFailed, "err", err.Error())
