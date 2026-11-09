@@ -100,11 +100,18 @@ func TestAppLogCoverage(t *testing.T) {
 		`{"ts":"2026-11-09T10:00:01Z","event":"request_end","pod_uid":"pc","attempt":"x1","status":201,"write_err":"","flush_err":"","ctx_canceled":false,"tx_outcome":"committed"}`,
 		sigterm("pc"))
 
+	// a damaged line with no JSON at all (a lost record).
+	writeLog(t, dir, "pd", startup("pd", false), `2026-11-09T10:00:01Z request_rec`, sigterm("pd"))
+	// meta for another Pod: ignored, so the running Pod is not covered.
+	writeLog(t, dir, "pm", startup("pm", true))
+	if err := os.WriteFile(filepath.Join(dir, "pm.meta.json"), []byte(`{"pod_uid":"other","complete":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	app := ReadAppLogs(dir)
 	if !app.Available {
 		t.Fatal(app.Err)
 	}
-	want := map[string]bool{"p0": true, "pg": false, "pe": true, "pr": true, "pn": false, "pb": false, "pc": true}
+	want := map[string]bool{"p0": true, "pg": false, "pe": true, "pr": true, "pn": false, "pb": false, "pc": true, "pd": false, "pm": false}
 	for uid, w := range want {
 		p := app.Pods[uid]
 		if p == nil {
@@ -117,6 +124,9 @@ func TestAppLogCoverage(t *testing.T) {
 	}
 	if !app.Contradictory["x1"] {
 		t.Error("request_end without request_received not contradictory")
+	}
+	if m := app.Pods["pm"]; m.Meta != nil || m.MetaErr == "" {
+		t.Errorf("mismatched meta accepted: %+v", m)
 	}
 	if f := app.Pods["p0"].TestFlags; len(f) != 0 {
 		t.Errorf("test flags %v for zero values", f)

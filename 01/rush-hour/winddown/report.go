@@ -323,7 +323,11 @@ func Evaluate(f Facts, ev Evidence) Scorecard {
 	}
 	for _, ref := range f.ClientInFlight {
 		if refs[ref] == nil {
-			sc.Items.Orders.Unknown++ // scheduled, never recorded
+			// Cancelled before its first record: it may still have
+			// reached the App and created an order.
+			sc.Items.Orders.Unknown++
+			unsettledRefs[ref] = true
+			sc.Diag.Unsettled = append(sc.Diag.Unsettled, UnsettledAttempt{Kind: record.KindOrder, ClientRef: ref, Reason: reasonNoRecord})
 		}
 	}
 	sc.Diag.ClientInFlight = append([]string{}, f.ClientInFlight...)
@@ -600,6 +604,9 @@ func (sc Scorecard) Text(verbose bool) string {
 		w("本次量測無效：%s", sc.InvalidReason)
 	}
 	w("Rush Hour 成績單　量測編號 %s", sc.Run)
+	if m := sc.unknownCount(); sc.HasUnknown && !sc.Invalid {
+		w("本次有 %d 項結果無法確定，見診斷資訊；未標示未知的項目不受影響", m)
+	}
 	if sc.NoIngress {
 		w("注意：使用了 --no-ingress（直接連 App，只供本機測試）：每次嘗試的上游嘗試次數一律當成 1，不可用於正式量測")
 	}
@@ -618,10 +625,6 @@ func (sc Scorecard) Text(verbose bool) string {
 		w("大螢幕漏號（每台看板）：")
 		for _, name := range sortedKeys(it.Missing) {
 			w("  %s：%s", name, it.Missing[name].count().StringUnit("個叫號"))
-		}
-		if sc.HasUnknown {
-			w("")
-			w("有無法判定的項目（加上 --verbose 看原因）；有未知時不可以當成 0。")
 		}
 	}
 	if verbose {
@@ -711,7 +714,11 @@ func (sc Scorecard) writeDiag(b *strings.Builder) {
 		if len(d.Unsettled) > 0 {
 			w("  伺服器端結果未知（%d 次嘗試）：", len(d.Unsettled))
 			for _, u := range d.Unsettled {
-				w("    %s %s %s：%s", u.Attempt, u.Kind, u.ClientRef, u.Reason)
+				att := u.Attempt
+				if att == "" {
+					att = "（沒有嘗試紀錄）"
+				}
+				w("    %s %s %s：%s", att, u.Kind, u.ClientRef, reasonText(u.Reason))
 			}
 		}
 	}
@@ -757,6 +764,56 @@ func (sc Scorecard) writeDiag(b *strings.Builder) {
 	if d.ResourceTight {
 		w("同時觀察到資源吃緊（門檻暫定：CPU ≥ %.0f%%、可用記憶體 ≤ %.0f%%、排程延遲 p99 ≥ %d ms）；這不是原因判定", cpuTightPct, memTightPct, schedLagTightMs)
 	}
+}
+
+// unknownCount is M in the banner: the undecided items listed under
+// 未確定的項目 (unsettled attempts, client in-flight refs that have an
+// attempt record, boards not caught up).
+func (sc Scorecard) unknownCount() int {
+	d := sc.Diag
+	inFlightCounted := map[string]bool{}
+	for _, u := range d.Unsettled {
+		if u.Attempt == "" {
+			inFlightCounted[u.ClientRef] = true
+		}
+	}
+	n := len(d.Unsettled) + len(d.NotCaughtUp)
+	for _, r := range d.ClientInFlight {
+		if !inFlightCounted[r] {
+			n++
+		}
+	}
+	return n
+}
+
+// reasonNoRecord: an in-flight ref cancelled before any attempt was recorded.
+const reasonNoRecord = "cancelled at the client limit before any attempt was recorded"
+
+// reasonZh maps verdict.Settle's reason codes (kept as-is in scorecard.json)
+// to the text shown in scorecard.txt.
+var reasonZh = map[string]string{
+	"ingress record missing":                                      "入口紀錄沒有這次嘗試",
+	"attempt not finished at ingress":                             "這次嘗試在入口還沒結束",
+	"upstream attempt count missing":                              "入口紀錄沒有上游嘗試次數",
+	"ingress retried upstream; App cannot tell the tries apart":   "入口重試過上游，App 分不出是哪一次上游嘗試",
+	"commit_unknown without a COMMIT time":                        "提交結果未知，而且沒有記下送出 COMMIT 的時間",
+	"transaction_timeout unknown":                                 "不知道 transaction_timeout",
+	"commit_unknown within transaction_timeout":                   "提交結果未知，從送出 COMMIT 起還沒超過 transaction_timeout",
+	"App has no received line; request may still arrive":          "App log 沒有「收到」：請求可能之後才抵達",
+	"received without end, but Pod log incomplete":                "有「收到」、沒有「請求結束」，而且這個 Pod 的 log 不完整",
+	"received without end; Pod program not known to have exited":  "有「收到」、沒有「請求結束」，不知道 Pod 程式已經結束",
+	"received without end; Pod exited within transaction_timeout": "有「收到」、沒有「請求結束」，Pod 程式結束還沒超過 transaction_timeout",
+	reasonNoRecord: "用戶端等待到上限時被中止，連第一次嘗試都沒有紀錄",
+}
+
+func reasonText(r string) string {
+	if z, ok := reasonZh[r]; ok {
+		return z
+	}
+	if rest, ok := strings.CutPrefix(r, "request ended with unrecognised outcome "); ok {
+		return "「請求結束」的交易結果無法辨識：" + rest
+	}
+	return r
 }
 
 func sortedKeys[V any](m map[string]V) []string {

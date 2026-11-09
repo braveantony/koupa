@@ -213,3 +213,36 @@ func TestRunInvalidWhenNoHello(t *testing.T) {
 		t.Errorf("exit %d\n%s", sc.ExitCode(), sc.Text(false))
 	}
 }
+
+func TestRunSendsUntilD(t *testing.T) {
+	if testing.Short() {
+		t.Skip("sends for a few seconds")
+	}
+	srv := httptest.NewServer(newFakeShop())
+	defer srv.Close()
+	l := DefaultLimits(time.Second)
+	l.Poll, l.Server, l.Kitchen = 50*time.Millisecond, 200*time.Millisecond, 4*time.Second
+	const d = 2500 * time.Millisecond // rate 1: the last slot is at 2s
+	sc, err := Run(context.Background(), Config{
+		Base: srv.URL, Run: "rd", Duration: d, Rate: 1, Boards: 1, Out: filepath.Join(t.TempDir(), "run"),
+		TxTimeout: time.Second, NoIngress: true, Limits: l,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var start, stop time.Time
+	for _, e := range sc.Facts.Timeline {
+		switch e.What {
+		case "開始送單":
+			start = e.At
+		case "停止送新單":
+			stop = e.At
+		}
+	}
+	if start.IsZero() || stop.IsZero() || stop.Sub(start) < d {
+		t.Errorf("sending lasted %v, want at least %v", stop.Sub(start), d)
+	}
+	if sc.Items.Orders.Confirmed != 3 {
+		t.Errorf("orders %+v", sc.Items.Orders)
+	}
+}

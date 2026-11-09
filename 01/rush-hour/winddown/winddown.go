@@ -325,6 +325,10 @@ func (c *Config) sendAndWindDown(ctx, wctx context.Context, client *http.Client,
 			mu.Unlock()
 		}(seq, at)
 	}
+	// The sending period lasts until D even when the last slot is earlier.
+	if ctx.Err() == nil && !load.Wait(ctx.Done(), end) {
+		invalid("量測被中斷，送單時段沒有跑完")
+	}
 	// Step 1: no new orders.
 	mark("停止送新單")
 

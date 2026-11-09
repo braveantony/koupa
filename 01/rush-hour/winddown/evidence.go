@@ -329,7 +329,9 @@ type AppLogs struct {
 // ReadAppLogs reads every <pod-uid>.log in dir and its optional meta file.
 //
 // Coverage (A11, until Task 20 refines it): a Pod's log is covered when it
-// has a startup line, every JSON line parsed, and either its final marker
+// has a startup line, every non-blank line is JSON that parsed (a prefix
+// before the first '{' is allowed), the meta file (if any) names the same
+// Pod, and either its final marker
 // is present (exit when graceful_shutdown, otherwise sigterm) or the meta
 // file says complete. For covered Pods the contradiction check runs:
 // request_end without request_received, or more than one of either line,
@@ -357,6 +359,9 @@ func ReadAppLogs(dir string) *AppLogs {
 			var m PodMeta
 			if err := json.Unmarshal(b, &m); err != nil {
 				p.MetaErr = err.Error()
+			} else if m.PodUID != uid {
+				// Meta for another Pod proves nothing about this log.
+				p.MetaErr = fmt.Sprintf("meta pod_uid %q 和檔名 %q 不符，不採用", m.PodUID, uid)
 			} else {
 				p.Meta = &m
 				if p.Name == "" {
@@ -370,6 +375,11 @@ func ReadAppLogs(dir string) *AppLogs {
 		err := scanLines(f, func(line []byte) {
 			js, ok := jsonPart(line)
 			if !ok {
+				// Every App line is JSON (stderr included only on startup
+				// failure); anything else is a damaged or lost record.
+				if len(bytes.TrimSpace(line)) > 0 {
+					p.Bad++
+				}
 				return
 			}
 			var l appLine

@@ -292,3 +292,85 @@ func TestSummarizeMedianRange(t *testing.T) {
 		t.Errorf("invalid run counted\n%s", out)
 	}
 }
+
+func TestReportMixedUnknownBanner(t *testing.T) {
+	// One order attempt retried at the ingress (unsettled) and board-2 not
+	// caught up; everything else is decided.
+	f, ev := okCase(t)
+	two := 2
+	ev.Ingress.Recs["r1-a1-t1"].UpstreamAttempts = &two
+	f.CaughtUp["board-2"] = false
+	sc := Evaluate(f, ev)
+	if sc.Invalid || !sc.HasUnknown {
+		t.Fatalf("invalid %v unknown %v", sc.Invalid, sc.HasUnknown)
+	}
+	text := sc.Text(false)
+	lines := strings.Split(text, "\n")
+	if lines[1] != "本次有 2 項結果無法確定，見診斷資訊；未標示未知的項目不受影響" {
+		t.Errorf("banner line %q\n%s", lines[1], text)
+	}
+	got := mainLines(t, text)
+	want := map[string]string{
+		"訂單":                 "3 張",
+		"第一次送出沒有成功回應":        "1 張",
+		"重試後仍沒有成功回應":         "0 張",
+		"重複訂單（client_ref 數）": "已確認 1；另有 1 筆伺服器端結果未知，可能增加",
+		"多出的訂單張數":            "已確認 1；另有 1 筆伺服器端結果未知，可能增加",
+		"board-1":            "0",
+		"board-2":            "已確認 0；另有 1 個叫號未知",
+		"board-3":            "0",
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %q, want %q", k, got[k], v)
+		}
+	}
+	// Reasons are shown in Traditional Chinese; JSON keeps the code.
+	v := sc.Text(true)
+	if !strings.Contains(v, "入口重試過上游") || strings.Contains(v, "ingress retried upstream") {
+		t.Errorf("reason not translated\n%s", v)
+	}
+	if sc.Diag.Unsettled[0].Reason != "ingress retried upstream; App cannot tell the tries apart" {
+		t.Errorf("json reason %q", sc.Diag.Unsettled[0].Reason)
+	}
+}
+
+func TestNoBannerWhenAllKnown(t *testing.T) {
+	f, ev := okCase(t)
+	if strings.Contains(Evaluate(f, ev).Text(false), "無法確定") {
+		t.Error("banner without unknowns")
+	}
+}
+
+func TestInFlightWithoutRecordIsUnsettled(t *testing.T) {
+	// r1-c9 was cancelled before its first attempt was recorded: it may
+	// still create an order, so duplicates cannot be a confirmed 0/1.
+	f, ev := okCase(t)
+	f.ClientInFlight = []string{"r1-c9"}
+	at := f.EvaluatedAt
+	f.ClientCancelAt = &at
+	sc := Evaluate(f, ev)
+	if sc.Items.Orders != (Item{3, 1}) || sc.Items.DuplicateRefs != (Item{1, 1}) || sc.Items.DuplicateExtra != (Item{1, 1}) {
+		t.Errorf("items %+v", sc.Items)
+	}
+}
+
+func TestEveryUnsettledReasonTranslated(t *testing.T) {
+	src, err := os.ReadFile("../verdict/settle.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := regexp.MustCompile(`unsettled\("([^"]+)"`)
+	ms := re.FindAllStringSubmatch(string(src), -1)
+	if len(ms) < 10 {
+		t.Fatalf("found only %d reasons", len(ms))
+	}
+	for _, m := range ms {
+		if reasonText(m[1]) == m[1] {
+			t.Errorf("reason %q has no Traditional Chinese text", m[1])
+		}
+	}
+	if !strings.Contains(reasonText("request ended with unrecognised outcome weird"), "weird") {
+		t.Error("prefix reason")
+	}
+}
