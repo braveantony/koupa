@@ -35,22 +35,33 @@ func DropReady(n int, log *slog.Logger) func(subID uint64, seq int64) bool {
 	}
 }
 
-// DuplicateOrder returns a store.PlaceOptions.DuplicateOrder that is true
-// for the next n client_refs and logs each. n <= 0 returns nil.
-func DuplicateOrder(n int, log *slog.Logger) func(clientRef string) bool {
+// DuplicateOrder returns the store.PlaceOptions pair for duplicate-order=n.
+// reserve is true for the next n client_refs and takes one from the count;
+// done settles it: committed logs the injection, otherwise the count is
+// given back. Both are nil when n <= 0. Safe for concurrent use.
+func DuplicateOrder(n int, log *slog.Logger) (reserve func(clientRef string) bool, done func(clientRef string, committed bool)) {
 	if n <= 0 {
-		return nil
+		return nil, nil
 	}
 	var mu sync.Mutex
 	left := n
-	return func(ref string) bool {
+	reserve = func(string) bool {
 		mu.Lock()
 		defer mu.Unlock()
 		if left == 0 {
 			return false
 		}
 		left--
-		log.Warn(applog.EvMutationDuplicateOrder, "client_ref", ref)
 		return true
 	}
+	done = func(ref string, committed bool) {
+		if committed {
+			log.Warn(applog.EvMutationDuplicateOrder, "client_ref", ref)
+			return
+		}
+		mu.Lock()
+		left++
+		mu.Unlock()
+	}
+	return reserve, done
 }

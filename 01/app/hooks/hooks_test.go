@@ -75,8 +75,8 @@ func TestDisabledHooksNoPort(t *testing.T) {
 	}
 	addr := ln.Addr().String()
 	ln.Close()
-	if err := r.Run(context.Background(), addr); err != nil {
-		t.Fatalf("Run: %v", err)
+	if err := r.Start(context.Background(), addr); err != nil {
+		t.Fatalf("Start: %v", err)
 	}
 	if c, err := net.DialTimeout("tcp", addr, time.Second); err == nil {
 		c.Close()
@@ -182,7 +182,7 @@ func TestUnknownHook404(t *testing.T) {
 	}
 }
 
-func TestRunServesWhenEnabled(t *testing.T) {
+func TestStartServesWhenEnabled(t *testing.T) {
 	log, _ := newLog()
 	r := New(true, log)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -192,16 +192,11 @@ func TestRunServesWhenEnabled(t *testing.T) {
 	addr := ln.Addr().String()
 	ln.Close()
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- r.Run(ctx, addr) }()
-	var resp *http.Response
-	for i := 0; i < 100; i++ {
-		resp, err = http.Post("http://"+addr+"/hooks/nope/arm", "", nil)
-		if err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
+	defer cancel()
+	if err := r.Start(ctx, addr); err != nil {
+		t.Fatal(err)
 	}
+	resp, err := http.Post("http://"+addr+"/hooks/nope/arm", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,10 +204,93 @@ func TestRunServesWhenEnabled(t *testing.T) {
 	if resp.StatusCode != 404 {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
+	// A second Start on the same address fails: startup must see it.
+	if err := r.Start(ctx, addr); err == nil {
+		t.Fatal("listen conflict not reported")
+	}
+}
+
+func wait1(t *testing.T, h http.Handler, timeout string) (int, map[string]string) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hooks/request.mid/wait?timeout="+timeout, nil))
+	var m map[string]string
+	_ = json.Unmarshal(rec.Body.Bytes(), &m)
+	return rec.Code, m
+}
+
+func waitPaused(t *testing.T, buf *syncBuf, n int) {
+	t.Helper()
+	deadline := time.Now().Add(wait)
+	for time.Now().Before(deadline) {
+		c := 0
+		for _, l := range buf.lines() {
+			if l["event"] == applog.EvHookPaused {
+				c++
+			}
+		}
+		if c >= n {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("fewer than %d hook_paused lines", n)
+}
+
+// Armed stays armed: every request pauses, wait reports each once, oldest
+// first, and release frees all and logs one line each.
+func TestStaysArmedUntilRelease(t *testing.T) {
+	log, buf := newLog()
+	r := New(true, log)
+	r.SetPod("u", "p")
+	h := r.Handler()
+	post(t, h, "/hooks/request.mid/arm")
+	var wg sync.WaitGroup
+	for _, a := range []string{"a1", "a2"} {
+		wg.Add(1)
+		go func() { defer wg.Done(); r.Pause(context.Background(), "request.mid", a) }()
+		waitPaused(t, buf, map[string]int{"a1": 1, "a2": 2}[a])
+	}
+	for _, want := range []string{"a1", "a2"} {
+		code, m := wait1(t, h, "5s")
+		if code != 200 || m["attempt"] != want {
+			t.Fatalf("wait = %d %v, want %s", code, m, want)
+		}
+	}
+	if code, _ := wait1(t, h, "50ms"); code != http.StatusRequestTimeout {
+		t.Fatalf("third wait = %d, each pause is reported once", code)
+	}
+	post(t, h, "/hooks/request.mid/release")
+	wg.Wait()
+	rel := map[any]bool{}
+	for _, l := range buf.lines() {
+		if l["event"] == applog.EvHookReleased {
+			if l["hook"] != "request.mid" || l["pod_uid"] != "uid-1" {
+				t.Errorf("release line = %v", l)
+			}
+			rel[l["attempt"]] = true
+		}
+	}
+	if !rel["a1"] || !rel["a2"] || len(rel) != 2 {
+		t.Errorf("release lines = %v", rel)
+	}
+	// Disarmed by release.
+	r.Pause(context.Background(), "request.mid", "a3")
+}
+
+// A pause whose ctx ends is never reported afterwards.
+func TestCancelledPauseNotReported(t *testing.T) {
+	log, buf := newLog()
+	r := New(true, log)
+	h := r.Handler()
+	post(t, h, "/hooks/request.mid/arm")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { r.Pause(ctx, "request.mid", "gone"); close(done) }()
+	waitPaused(t, buf, 1)
 	cancel()
-	select {
-	case <-done:
-	case <-time.After(wait):
-		t.Fatal("Run did not stop")
+	<-done
+	if code, m := wait1(t, h, "50ms"); code != http.StatusRequestTimeout {
+		t.Fatalf("wait named a cancelled pause: %d %v", code, m)
 	}
 }

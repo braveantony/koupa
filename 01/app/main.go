@@ -90,13 +90,11 @@ func main() {
 
 	hk := hooks.New(cfg.TestHooks, log)
 	hk.SetPod(cfg.PodUID, cfg.PodName)
-	if cfg.TestHooks {
-		// Separate port, never on the main mux.
-		go func() {
-			if err := hk.Run(ctx, cfg.HooksAddr); err != nil {
-				log.Error(applog.EvStartupFailed, "err", "hooks control port: "+err.Error())
-			}
-		}()
+	// Separate port, never on the main mux; nothing opens unless TEST_HOOKS.
+	if err := hk.Start(ctx, cfg.HooksAddr); err != nil {
+		log.Error(applog.EvStartupFailed, "err", "hooks control port: "+err.Error())
+		fmt.Fprintln(os.Stderr, "koupa: hooks control port:", err)
+		os.Exit(1)
 	}
 	var drop broadcast.DropFunc
 	if f := hooks.DropReady(cfg.TestMutation.DropReady, log); f != nil {
@@ -106,13 +104,15 @@ func main() {
 	go func() { _ = b.Run(ctx) }()
 	go store.RunKeyCleanup(ctx, pool, store.CleanupInterval, log)
 
+	dupOrder, dupDone := hooks.DuplicateOrder(cfg.TestMutation.DuplicateOrder, log)
 	err = server.Run(ctx, cfg, server.Deps{
 		Pool:           pool,
 		Broadcaster:    b,
 		Log:            log,
 		FinalLog:       finalLog,
 		Hooks:          hk,
-		DuplicateOrder: hooks.DuplicateOrder(cfg.TestMutation.DuplicateOrder, log),
+		DuplicateOrder: dupOrder,
+		DuplicateDone:  dupDone,
 		Pages:          web.Pages(),
 		Signals:        sigs,
 	})

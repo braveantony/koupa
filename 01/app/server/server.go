@@ -41,6 +41,8 @@ type Deps struct {
 	// DuplicateOrder is the TEST_MUTATION hook passed to PlaceOrder; nil
 	// in normal use.
 	DuplicateOrder func(clientRef string) bool
+	// DuplicateDone settles DuplicateOrder after the transaction ends.
+	DuplicateDone func(clientRef string, committed bool)
 	// Signals delivers SIGTERM to Run; nil makes Run subscribe to
 	// SIGTERM and SIGINT itself.
 	Signals <-chan os.Signal

@@ -32,11 +32,23 @@ func TestDropReadyLogsSeqs(t *testing.T) {
 
 func TestDuplicateOrderLogsClientRefs(t *testing.T) {
 	log, buf := newLog()
-	dup := DuplicateOrder(2, log)
-	if !dup("r-1") || !dup("r-2") {
-		t.Fatal("first two must duplicate")
+	reserve, done := DuplicateOrder(2, log)
+	if !reserve("r-1") || !reserve("r-2") {
+		t.Fatal("first two must reserve")
 	}
-	if dup("r-3") {
+	if reserve("r-3") {
+		t.Fatal("reserved more than n")
+	}
+	if len(buf.lines()) != 0 {
+		t.Fatal("logged before the commit was confirmed")
+	}
+	done("r-1", true)
+	done("r-2", false) // rolled back: gives the count back
+	if !reserve("r-4") {
+		t.Fatal("count not given back after rollback")
+	}
+	done("r-4", true)
+	if reserve("r-5") {
 		t.Fatal("duplicated more than n")
 	}
 	var refs []string
@@ -45,14 +57,15 @@ func TestDuplicateOrderLogsClientRefs(t *testing.T) {
 			refs = append(refs, l["client_ref"].(string))
 		}
 	}
-	if len(refs) != 2 || refs[0] != "r-1" || refs[1] != "r-2" {
+	if len(refs) != 2 || refs[0] != "r-1" || refs[1] != "r-4" {
 		t.Fatalf("logged refs = %v", refs)
 	}
 }
 
 func TestMutationZeroIsNil(t *testing.T) {
 	log, _ := newLog()
-	if DropReady(0, log) != nil || DuplicateOrder(0, log) != nil {
+	r, d := DuplicateOrder(0, log)
+	if DropReady(0, log) != nil || r != nil || d != nil {
 		t.Fatal("n=0 should return nil")
 	}
 }

@@ -46,6 +46,12 @@ type PlaceOptions struct {
 	// extra order is inserted in the same transaction, bypassing
 	// idempotency_keys.
 	DuplicateOrder func(clientRef string) bool
+	// DuplicateDone settles a true DuplicateOrder: committed says whether the
+	// transaction holding the extra order committed. nil in normal use.
+	DuplicateDone func(clientRef string, committed bool)
+	// RequestCtx is the request's context, used for the order.before_commit
+	// pause (DB work keeps its own context); nil means the DB context.
+	RequestCtx context.Context
 	// Hooks is the test pause point (order.before_commit); nil means none.
 	Hooks hooks.Point
 	// AttemptID is the request's X-Koupa-Attempt, passed to Hooks.
@@ -90,6 +96,20 @@ var (
 // any other non-committed outcome.
 func PlaceOrder(ctx context.Context, pool *pgxpool.Pool, req OrderRequest, opts PlaceOptions) (PlaceResult, TxResult, error) {
 	txo := TxOptions{LockTimeout: opts.LockTimeout}
+	// Track a reserved duplicate so it is settled once the outcome is known.
+	var dupReserved bool
+	if orig := opts.DuplicateOrder; orig != nil {
+		opts.DuplicateOrder = func(ref string) bool {
+			dupReserved = orig(ref)
+			return dupReserved
+		}
+	}
+	settle := func(ref string, txr TxResult, err error) {
+		if dupReserved && opts.DuplicateDone != nil {
+			opts.DuplicateDone(ref, err == nil && txr.Outcome == TxCommitted)
+		}
+		dupReserved = false
+	}
 	if !opts.Idempotency {
 		var res PlaceResult
 		txr, err := RunWriteTx(ctx, pool, txo, func(c context.Context, tx pgx.Tx) (err error) {
@@ -98,6 +118,7 @@ func PlaceOrder(ctx context.Context, pool *pgxpool.Pool, req OrderRequest, opts 
 			}
 			return runHookBeforeCommit(c, tx, opts)
 		})
+		settle(req.ClientRef, txr, err)
 		if err != nil {
 			return PlaceResult{}, txr, err
 		}
@@ -139,6 +160,7 @@ func PlaceOrder(ctx context.Context, pool *pgxpool.Pool, req OrderRequest, opts 
 				return err
 			}
 		})
+		settle(req.ClientRef, txr, err)
 		if !errors.Is(err, ErrKeyVanished) {
 			break
 		}
@@ -195,7 +217,11 @@ func createOrder(ctx context.Context, tx pgx.Tx, req OrderRequest, opts PlaceOpt
 
 func runHookBeforeCommit(ctx context.Context, tx pgx.Tx, opts PlaceOptions) error {
 	if opts.Hooks != nil {
-		opts.Hooks.Pause(ctx, hooks.OrderBeforeCommit, opts.AttemptID)
+		pc := opts.RequestCtx
+		if pc == nil {
+			pc = ctx
+		}
+		opts.Hooks.Pause(pc, hooks.OrderBeforeCommit, opts.AttemptID)
 	}
 	if hookBeforeCommit == nil {
 		return nil

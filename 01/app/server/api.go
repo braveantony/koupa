@@ -136,6 +136,8 @@ func (s *Server) handlePlaceOrder(w http.ResponseWriter, r *http.Request) {
 		CheckSoldOut:   s.cfg.Version == "v2",
 		LockTimeout:    s.cfg.LockTimeout,
 		DuplicateOrder: s.deps.DuplicateOrder,
+		DuplicateDone:  s.deps.DuplicateDone,
+		RequestCtx:     r.Context(),
 		Hooks:          s.deps.Hooks,
 		AttemptID:      attempt,
 	})

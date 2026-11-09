@@ -3,7 +3,6 @@ package hooks
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -23,21 +22,31 @@ const (
 
 var names = []string{OrderBeforeCommit, OrderAfterCommit, RequestMid, SSEAfterHello}
 
-const (
-	defaultWait = 30 * time.Second
-	hitBuffer   = 1024
-)
+const defaultWait = 30 * time.Second
+
+// pause is one request held at a point.
+type pause struct {
+	attempt  string
+	rel      chan struct{} // closed by release
+	reported bool          // already returned by a wait
+}
 
 // point is the state of one named pause point.
 type point struct {
-	armed  bool
-	paused []chan struct{} // closed by release
-	hits   chan string     // attempt ids of paused requests, for waiters
+	armed   bool
+	pauses  []*pause      // live pauses, oldest first
+	changed chan struct{} // closed and replaced when pauses change
 }
 
-// Registry is the TEST_HOOKS implementation of Point. arm makes the next
-// request that reaches a point pause there; wait reports it; release lets
-// every paused request go and disarms the point.
+func (p *point) notify() {
+	close(p.changed)
+	p.changed = make(chan struct{})
+}
+
+// Registry is the TEST_HOOKS implementation of Point. arm makes every
+// request that reaches a point pause there until release; wait reports each
+// live pause once, oldest first; release lets all paused requests go,
+// logging one line per request, and disarms the point.
 type Registry struct {
 	enabled bool
 	log     *slog.Logger
@@ -50,15 +59,15 @@ type Registry struct {
 
 var _ Point = (*Registry)(nil)
 
-// New returns a Registry. With enabled=false, Pause returns at once and Run
-// opens no port.
+// New returns a Registry. With enabled=false, Pause returns at once and
+// Start opens no port.
 func New(enabled bool, log *slog.Logger) *Registry {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
 	r := &Registry{enabled: enabled, log: log, points: map[string]*point{}}
 	for _, n := range names {
-		r.points[n] = &point{hits: make(chan string, hitBuffer)}
+		r.points[n] = &point{changed: make(chan struct{})}
 	}
 	return r
 }
@@ -70,8 +79,8 @@ func (r *Registry) SetPod(uid, name string) {
 	r.mu.Unlock()
 }
 
-// Pause blocks while the point is armed (consuming the arming) until release
-// or ctx ends.
+// Pause blocks while the point is armed until release or ctx ends. A pause
+// whose ctx ends is removed and never reported afterwards.
 func (r *Registry) Pause(ctx context.Context, name, attemptID string) {
 	if r == nil || !r.enabled {
 		return
@@ -82,19 +91,24 @@ func (r *Registry) Pause(ctx context.Context, name, attemptID string) {
 		r.mu.Unlock()
 		return
 	}
-	p.armed = false
-	rel := make(chan struct{})
-	p.paused = append(p.paused, rel)
+	ps := &pause{attempt: attemptID, rel: make(chan struct{})}
+	p.pauses = append(p.pauses, ps)
+	p.notify()
 	r.mu.Unlock()
 
 	r.log.Info(applog.EvHookPaused, "hook", name, "attempt", attemptID)
 	select {
-	case p.hits <- attemptID:
-	default:
-	}
-	select {
-	case <-rel:
+	case <-ps.rel:
 	case <-ctx.Done():
+		r.mu.Lock()
+		for i, q := range p.pauses {
+			if q == ps {
+				p.pauses = append(p.pauses[:i], p.pauses[i+1:]...)
+				p.notify()
+				break
+			}
+		}
+		r.mu.Unlock()
 	}
 }
 
@@ -116,19 +130,12 @@ func (r *Registry) release(name string) bool {
 		return false
 	}
 	p.armed = false
-	for _, c := range p.paused {
-		close(c)
+	for _, ps := range p.pauses {
+		r.log.Info(applog.EvHookReleased, "hook", name, "attempt", ps.attempt)
+		close(ps.rel)
 	}
-	p.paused = nil
-	// Drop reports of requests that are no longer paused.
-	for {
-		select {
-		case <-p.hits:
-			continue
-		default:
-		}
-		break
-	}
+	p.pauses = nil
+	p.notify()
 	return true
 }
 
@@ -178,15 +185,27 @@ func (r *Registry) handleWait(w http.ResponseWriter, q *http.Request) {
 	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
-	select {
-	case attempt := <-p.hits:
+	for {
 		r.mu.Lock()
-		uid, name := r.podUID, r.podName
+		for _, ps := range p.pauses {
+			if !ps.reported {
+				ps.reported = true
+				uid, name := r.podUID, r.podName
+				r.mu.Unlock()
+				writeJSON(w, http.StatusOK, map[string]string{"pod_uid": uid, "pod_name": name, "attempt": ps.attempt})
+				return
+			}
+		}
+		changed := p.changed
 		r.mu.Unlock()
-		writeJSON(w, http.StatusOK, map[string]string{"pod_uid": uid, "pod_name": name, "attempt": attempt})
-	case <-timer.C:
-		http.Error(w, "timeout", http.StatusRequestTimeout)
-	case <-q.Context().Done():
+		select {
+		case <-changed:
+		case <-timer.C:
+			http.Error(w, "timeout", http.StatusRequestTimeout)
+			return
+		case <-q.Context().Done():
+			return
+		}
 	}
 }
 
@@ -196,10 +215,10 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// Run serves the control API on addr until ctx ends. When the Registry is
-// disabled it returns nil at once and opens no port. The listener is open
-// when Run starts serving; a listen error is returned.
-func (r *Registry) Run(ctx context.Context, addr string) error {
+// Start opens the control port and serves it in the background until ctx
+// ends. When the Registry is disabled it returns nil and opens no port. The
+// listener is open when Start returns; a listen error is returned.
+func (r *Registry) Start(ctx context.Context, addr string) error {
 	if !r.enabled {
 		return nil
 	}
@@ -208,16 +227,7 @@ func (r *Registry) Run(ctx context.Context, addr string) error {
 		return err
 	}
 	srv := &http.Server{Handler: r.Handler(), ReadHeaderTimeout: 10 * time.Second}
-	errc := make(chan error, 1)
-	go func() { errc <- srv.Serve(ln) }()
-	select {
-	case err := <-errc:
-		return err
-	case <-ctx.Done():
-		_ = srv.Close()
-		if err := <-errc; err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return err
-		}
-		return nil
-	}
+	go func() { _ = srv.Serve(ln) }()
+	go func() { <-ctx.Done(); _ = srv.Close() }()
+	return nil
 }

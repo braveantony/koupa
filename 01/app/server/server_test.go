@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -158,8 +159,12 @@ func TestRequestEndFields(t *testing.T) {
 // countingTracer counts statements sent on a pool.
 type countingTracer struct{ n atomic.Int64 }
 
-func (c *countingTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
-	c.n.Add(1)
+func (c *countingTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
+	// Only audit statements: a new connection's setup query and the
+	// broadcaster's polls are not part of what the test measures.
+	if strings.Contains(d.SQL, "client_ref LIKE") {
+		c.n.Add(1)
+	}
 	return ctx
 }
 func (c *countingTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}

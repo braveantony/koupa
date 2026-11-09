@@ -773,3 +773,46 @@ func TestBeforeCommitPausesBeforeCommit(t *testing.T) {
 		t.Fatalf("orders after release = %d", n)
 	}
 }
+
+// A12: the duplicate is settled only after the outcome is known: rolled
+// back gives committed=false, committed gives true.
+func TestDuplicateDoneReportsOutcome(t *testing.T) {
+	pool := testdb.New(t)
+	var got []bool
+	opts := idemOpts()
+	opts.DuplicateOrder = func(string) bool { return true }
+	opts.DuplicateDone = func(_ string, c bool) { got = append(got, c) }
+	setHook(t, &hookBeforeCommit, func(context.Context, pgx.Tx) error { return errors.New("boom") })
+	if _, _, err := place(t, pool, "dd-1", oneTea, opts); err == nil {
+		t.Fatal("want error")
+	}
+	hookBeforeCommit = nil
+	if _, _, err := place(t, pool, "dd-2", oneTea, opts); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] || !got[1] {
+		t.Fatalf("settled = %v, want [false true]", got)
+	}
+}
+
+// The before_commit pause uses the request context: cancelling it ends the
+// pause, and the order still commits.
+func TestBeforeCommitPauseUsesRequestContext(t *testing.T) {
+	pool := testdb.New(t)
+	ph := &pauseHooks{name: "order.before_commit", at: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() { close(ph.release) })
+	rctx, cancel := context.WithCancel(context.Background())
+	opts := idemOpts()
+	opts.Hooks = ph
+	opts.RequestCtx = rctx
+	done := make(chan error, 1)
+	go func() { _, _, err := place(t, pool, "rc-1", oneTea, opts); done <- err }()
+	recv(t, ph.at, "request paused")
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if n := countOrders(t, pool, "rc-1"); n != 1 {
+		t.Fatalf("orders = %d", n)
+	}
+}
