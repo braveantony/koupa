@@ -17,7 +17,8 @@ log() { echo "test-db: $*" >&2; }
 podman rm -f "$NAME" >/dev/null 2>&1 || true
 log "starting $NAME on 127.0.0.1:$PORT"
 podman run -d --name "$NAME" -p "127.0.0.1:$PORT:5432" \
-  -e POSTGRES_PASSWORD="$SUPER_PW" "$IMAGE" >/dev/null
+  -e POSTGRES_PASSWORD="$SUPER_PW" "$IMAGE" \
+  -c track_commit_timestamp=on >/dev/null
 
 psql_su() { podman exec -i "$NAME" psql -v ON_ERROR_STOP=1 -q -U postgres "$@" >&2; }
 

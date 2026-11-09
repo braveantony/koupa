@@ -25,6 +25,9 @@ type ReadyResult struct {
 	ReadySeq      int64
 	Number        string
 	NewlyAssigned bool
+	// LockWait is how long taking the advisory lock took (zero when the
+	// order was already ready and the lock was not needed).
+	LockWait time.Duration
 }
 
 // MarkReady marks an order ready and assigns its call-number (plan A1):
@@ -61,9 +64,11 @@ func MarkReady(ctx context.Context, pool *pgxpool.Pool, orderID int64, attemptID
 			return nil
 		}
 
+		lockStart := time.Now() // monotonic
 		if _, err := tx.Exec(c, `SELECT pg_advisory_xact_lock($1)`, readyLockKey); err != nil {
 			return err
 		}
+		res.LockWait = time.Since(lockStart)
 		if delayAfterLock > 0 {
 			select {
 			case <-time.After(delayAfterLock):

@@ -162,9 +162,8 @@ func TestConcurrentReadySameOrder(t *testing.T) {
 // starts while A holds it; pg_locks confirms B is waiting on the advisory
 // lock and B has not finished. The sequence value is drawn only after the
 // lock is held and the lock is released only by A's commit, so B cannot
-// draw its value before A has committed. Hence seq(A) < seq(B), A committed
-// first (B's CommitSentAt is later than A's, and A's row is visible as
-// ready while B is still blocked or just released).
+// draw its value before A has committed. The real server-side commit
+// order is then read back with pg_xact_commit_timestamp.
 func TestCommitOrderMatchesSeq(t *testing.T) {
 	pool := testdb.New(t)
 	oa, ob := makeOrder(t, pool), makeOrder(t, pool)
@@ -205,17 +204,63 @@ func TestCommitOrderMatchesSeq(t *testing.T) {
 	if a.r.ReadySeq != 1 || b.r.ReadySeq != 2 {
 		t.Fatalf("seqs A=%d B=%d, want 1 and 2", a.r.ReadySeq, b.r.ReadySeq)
 	}
-	if !b.tr.CommitSentAt.After(a.tr.CommitSentAt) {
-		t.Fatalf("B commit sent %v not after A's %v", b.tr.CommitSentAt, a.tr.CommitSentAt)
+	if a.tr.Outcome != TxCommitted || b.tr.Outcome != TxCommitted {
+		t.Fatalf("outcomes A=%v B=%v", a.tr.Outcome, b.tr.Outcome)
 	}
-	// ready_at is clock_timestamp() taken under the lock, so it orders too.
-	var atA, atB time.Time
-	if err := pool.QueryRow(ctx(t), `SELECT (SELECT ready_at FROM orders WHERE id=$1), (SELECT ready_at FROM orders WHERE id=$2)`, oa.ID, ob.ID).Scan(&atA, &atB); err != nil {
+	// Real commit order from the server: commit timestamps (the test
+	// database runs with track_commit_timestamp=on).
+	rows, err := pool.Query(ctx(t),
+		`SELECT ready_seq, pg_xact_commit_timestamp(xmin) FROM orders WHERE id = ANY($1) ORDER BY ready_seq`,
+		[]int64{oa.ID, ob.ID})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if !atB.After(atA) {
-		t.Fatalf("ready_at A=%v B=%v", atA, atB)
+	defer rows.Close()
+	var seqs []int64
+	var cts []time.Time
+	for rows.Next() {
+		var s int64
+		var ct *time.Time
+		if err := rows.Scan(&s, &ct); err != nil {
+			t.Fatal(err)
+		}
+		if ct == nil {
+			t.Fatal("commit timestamp is NULL: start postgres with track_commit_timestamp=on (scripts/test-db.sh)")
+		}
+		seqs = append(seqs, s)
+		cts = append(cts, *ct)
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(cts) != 2 || !cts[0].Before(cts[1]) {
+		t.Fatalf("commit timestamps by ready_seq %v = %v, want strictly increasing", seqs, cts)
+	}
+	t.Logf("ready_seq %v committed at %v", seqs, cts)
+}
+
+// TestReadyLockWait holds the advisory lock in another transaction for
+// 200ms and checks that LockWait reports the wait.
+func TestReadyLockWait(t *testing.T) {
+	pool := testdb.New(t)
+	oa, ob := makeOrder(t, pool), makeOrder(t, pool)
+	aCh := make(chan error, 1)
+	go func() {
+		_, _, err := markReady(pool, oa.ID, "a", 200*time.Millisecond)
+		aCh <- err
+	}()
+	waitFor(t, func() bool { return advisoryLocks(t, pool, true) == 1 })
+	rb, _, err := markReady(pool, ob.ID, "b", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-aCh; err != nil {
+		t.Fatal(err)
+	}
+	if rb.LockWait < 100*time.Millisecond || rb.LockWait > 5*time.Second {
+		t.Fatalf("LockWait = %v, want about 200ms minus startup skew", rb.LockWait)
+	}
+	t.Logf("LockWait = %v", rb.LockWait)
 }
 
 func advisoryLocks(t testing.TB, pool *pgxpool.Pool, granted bool) int {
@@ -252,6 +297,7 @@ func BenchmarkReadyUnderLoad(b *testing.B) {
 	const perSec = 20
 	var lat []time.Duration
 	var mu sync.Mutex
+	var waits []time.Duration
 	var samples, contended, maxWaiters int
 
 	for i := 0; i < b.N; i++ {
@@ -293,7 +339,7 @@ func BenchmarkReadyUnderLoad(b *testing.B) {
 			go func() {
 				defer wg.Done()
 				t0 := time.Now()
-				_, _, err := markReady(pool, o.ID, "bench", 0)
+				r, _, err := markReady(pool, o.ID, "bench", 0)
 				d := time.Since(t0)
 				if err != nil {
 					b.Error(err)
@@ -301,6 +347,7 @@ func BenchmarkReadyUnderLoad(b *testing.B) {
 				}
 				mu.Lock()
 				lat = append(lat, d)
+				waits = append(waits, r.LockWait)
 				mu.Unlock()
 			}()
 		}
@@ -321,6 +368,15 @@ func BenchmarkReadyUnderLoad(b *testing.B) {
 	b.ReportMetric(ms(sum/time.Duration(len(lat))), "mean_ms")
 	b.ReportMetric(ms(lat[len(lat)*99/100]), "p99_ms")
 	b.ReportMetric(ms(lat[len(lat)-1]), "max_ms")
+	sort.Slice(waits, func(i, j int) bool { return waits[i] < waits[j] })
+	var wsum time.Duration
+	for _, d := range waits {
+		wsum += d
+	}
+	b.ReportMetric(ms(wsum/time.Duration(len(waits))), "lockwait_mean_ms")
+	b.ReportMetric(ms(waits[len(waits)/2]), "lockwait_p50_ms")
+	b.ReportMetric(ms(waits[len(waits)*99/100]), "lockwait_p99_ms")
+	b.ReportMetric(ms(waits[len(waits)-1]), "lockwait_max_ms")
 	if samples > 0 {
 		b.ReportMetric(100*float64(contended)/float64(samples), "lockwait_sample_%")
 	}
