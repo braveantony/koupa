@@ -429,21 +429,63 @@ rebalance() {
 # it (A15): uncordon + node schedulable + 3 available (+ rebalance when
 # REBALANCE=1), or scale back to 3 + 3 available. Writes restore.json;
 # returns 1 when the cluster is not back.
+# node_unschedulable NODE: 0 when NODE is cordoned (or cannot be read).
+node_unschedulable() {
+	"$KUBECTL" get nodes -o json 2>/dev/null | python3 -I -c '
+import json, sys
+try:
+    items = json.load(sys.stdin)["items"]
+except (ValueError, KeyError):
+    sys.exit(0)
+n = [x for x in items if x["metadata"]["name"] == sys.argv[1]]
+sys.exit(0 if not n or n[0].get("spec", {}).get("unschedulable") else 1)' "$1"
+}
+deploy_replicas() {
+	"$KUBECTL" -n "$NS" get deploy koupa -o json 2>/dev/null | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["spec"].get("replicas"))' 2>/dev/null
+}
+
+# retry_restore WHAT CHECK CMD...: run CMD until it succeeds and CHECK
+# (a command) confirms, RESTORE_RETRIES times at most. 0 restored.
+RESTORE_RETRIES=${MEASURE_RESTORE_RETRIES:-3}
+RESTORE_RETRY_SLEEP_S=${MEASURE_RESTORE_RETRY_SLEEP_S:-3}
+retry_restore() {
+	local what=$1 check=$2 i
+	shift 2
+	for i in $(seq 1 "$RESTORE_RETRIES"); do
+		if "$@" >>"$cur_dir/measure.log" 2>&1 && eval "$check"; then
+			return 0
+		fi
+		warn "$what failed (attempt $i/$RESTORE_RETRIES)"
+		[ "$i" -lt "$RESTORE_RETRIES" ] && sleep "$RESTORE_RETRY_SLEEP_S"
+	done
+	return 1
+}
+
 restore_cluster() {
-	local rebal=${1:-0} actions=() ok=1 why="" node=$drained
+	local rebal=${1:-0} actions=() pending=() ok=1 why="" node=$drained
 	[ -n "$drained" ] || [ "$scaled" = 1 ] || return 0
 	if [ -n "$drained" ]; then
 		stop_drain_cmd
 		log "uncordon $drained"
-		"$KUBECTL" uncordon "$drained" >>"$cur_dir/measure.log" 2>&1 || { ok=0; why="kubectl uncordon $drained 失敗"; }
-		actions+=("uncordon $drained")
-		drained=""
+		# drained stays set until the node is confirmed schedulable, so the
+		# EXIT trap tries again.
+		if retry_restore "kubectl uncordon $drained" '! node_unschedulable "$drained"' "$KUBECTL" uncordon "$drained"; then
+			actions+=("uncordon $drained")
+			drained=""
+		else
+			ok=0 why="kubectl uncordon $drained 失敗（試了 $RESTORE_RETRIES 次），$drained 仍然不可排程"
+			pending+=("uncordon $drained")
+		fi
 	fi
 	if [ "$scaled" = 1 ]; then
 		log "scale deploy/koupa back to 3 replicas"
-		"$KUBECTL" -n "$NS" scale deploy/koupa --replicas=3 >>"$cur_dir/measure.log" 2>&1 || { ok=0; why="kubectl scale --replicas=3 失敗"; }
-		actions+=("scale deploy/koupa --replicas=3")
-		scaled=0
+		if retry_restore "kubectl scale --replicas=3" '[ "$(deploy_replicas)" = 3 ]' "$KUBECTL" -n "$NS" scale deploy/koupa --replicas=3; then
+			actions+=("scale deploy/koupa --replicas=3")
+			scaled=0
+		else
+			ok=0 why="${why:+$why；}kubectl scale deploy/koupa --replicas=3 失敗（試了 $RESTORE_RETRIES 次）"
+			pending+=("scale deploy/koupa --replicas=3")
+		fi
 	fi
 	if [ "$ok" = 1 ] && ! wait_available 3; then
 		ok=0 why="Deployment 在 ${RESTORE_TIMEOUT_S} 秒內沒有回到 3 個可用 Pod（$(deploy_status)）"
@@ -455,19 +497,20 @@ restore_cluster() {
 	if [ "$ok" = 1 ] && [ "$rebal" = 1 ] && ! rebalance "$cur_dir/.dist.json"; then
 		ok=0 why="重新平衡 $rebalance_attempts 次後，koupa Pod 仍然沒有每個 worker 剛好一個（$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["workers"])' "$cur_dir/.dist.json")）"
 	fi
-	python3 -I - "$cur_dir/restore.json" "$cur_dir/.dist.json" "$ok" "$why" "$rebalance_attempts" "$(printf '%s\n' "${actions[@]}")" <<'PY'
+	python3 -I - "$cur_dir/restore.json" "$cur_dir/.dist.json" "$ok" "$why" "$rebalance_attempts" "$(printf '%s\n' "${actions[@]}")" "$(printf '%s\n' "${pending[@]}")" <<'PY'
 import datetime, json, sys
-out, dist, ok, why, att, actions = sys.argv[1:]
+out, dist, ok, why, att, actions, pending = sys.argv[1:]
 d = json.load(open(dist))
 json.dump({"at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "ok": ok == "1",
            "reason": why or None, "actions": [a for a in actions.split("\n") if a],
+           "pending": [a for a in pending.split("\n") if a],
            "replicas": sum(d["workers"].values()), "distribution": d["workers"],
            "unschedulable": d["unschedulable"], "rebalance_deletions": int(att)},
           open(out, "w"), indent=2, ensure_ascii=False)
 PY
 	rm -f "$cur_dir/.dist.json"
 	if [ "$ok" = 1 ]; then
-		log "cluster restored: $(printf '%s; ' "${actions[@]}")3 Pods available"
+		log "cluster restored: ${actions[*]}; 3 Pods available"
 		return 0
 	fi
 	warn "cluster not restored: $why"
@@ -541,7 +584,15 @@ on_exit() {
 		kill -TERM "$all_child" 2>/dev/null
 		wait "$all_child" 2>/dev/null
 	fi
-	[ "$in_run" = 1 ] || exit "$rc"
+	if [ "$in_run" != 1 ]; then
+		# A restoration that failed after a finished run: one more try.
+		if { [ -n "$drained" ] || [ "$scaled" = 1 ]; } && [ -d "$cur_dir" ]; then
+			warn "the cluster is still not restored: trying once more"
+			restore_cluster 0 || warn "叢集仍未恢復：$restore_failed（見 $cur_dir/restore.json），請手動處理"
+			[ "$rc" -ne 0 ] || rc=1
+		fi
+		exit "$rc"
+	fi
 	in_run=0
 	local sig=${interrupted_sig:-EXIT}
 	warn "the run $cur_id did not finish: stopping rush-hour and the collectors"
@@ -899,14 +950,18 @@ PY
 
 	# 7. collectors, cluster restored (drain, scale-down), evidence.
 	stop_collect || abort_run "時間線收集停止失敗（見 measure.log）"
+	local restore_invalid=""
 	if ! restore_cluster 1; then
 		echo "cluster not restored after the run: $restore_failed" >>"$cur_dir/measure.log"
+		# A15: restoring and confirming is part of the run.
+		restore_invalid="量測後叢集沒有恢復：$restore_failed"
 	fi
 	if [ ! -f "$cur_dir/scorecard.json" ]; then
 		abort_run "rush-hour 沒有寫出成績單（結束狀態 $rc，見 rush-hour.stderr）"
 	elif [ -n "$rollout_invalid" ]; then
 		scorecard_py "$cur_dir" invalid "$rollout_invalid"
 	fi
+	[ -z "$restore_invalid" ] || scorecard_py "$cur_dir" invalid "$restore_invalid"
 	if ! "$stage/scripts/evidence.sh" "$cur_dir" >>"$cur_dir/measure.log" 2>&1; then
 		scorecard_py "$cur_dir" is-invalid ||
 			scorecard_py "$cur_dir" invalid "證據包不完整（見 evidence-index.txt）"

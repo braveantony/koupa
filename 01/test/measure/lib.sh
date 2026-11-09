@@ -113,10 +113,23 @@ drain)
 	[ -f "$FAKE/drain-moves" ] && python3 -I "$FAKE/nodes.py" evict "$node"
 	echo "node/$node drained"
 	exit "$(cat "$FAKE/drain-rc" 2>/dev/null || echo 0)" ;;
-uncordon) python3 -I "$FAKE/nodes.py" uncordon "$2"; echo "node/$2 uncordoned"; exit 0 ;;
+uncordon)
+	# $FAKE/uncordon-fail holds how many calls fail before one works.
+	if [ "$(cat "$FAKE/uncordon-fail" 2>/dev/null || echo 0)" -gt 0 ]; then
+		echo $(($(cat "$FAKE/uncordon-fail") - 1)) >"$FAKE/uncordon-fail"
+		echo "error: the server is currently unable to handle the request" >&2
+		exit 1
+	fi
+	python3 -I "$FAKE/nodes.py" uncordon "$2"; echo "node/$2 uncordoned"; exit 0 ;;
 scale)
-	# scale deploy/koupa --replicas=N
+	# scale deploy/koupa --replicas=N; $FAKE/scale-fail: how many
+	# scale-backs to 3 fail before one works.
 	n=${3#--replicas=}
+	if [ "$n" = 3 ] && [ "$(cat "$FAKE/scale-fail" 2>/dev/null || echo 0)" -gt 0 ]; then
+		echo $(($(cat "$FAKE/scale-fail") - 1)) >"$FAKE/scale-fail"
+		echo "error: the server is currently unable to handle the request" >&2
+		exit 1
+	fi
 	python3 -I - "$FAKE/deploy.json" "$n" <<'PY'
 import json, sys
 path, n = sys.argv[1], int(sys.argv[2])

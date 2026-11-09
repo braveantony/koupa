@@ -103,4 +103,66 @@ check "calibrate: exit 130 (rc=$rc)" [ "$rc" = 130 ]
 check "calibrate: probe stopped" bash -c '! kill -0 "$(cat "$1")" 2>/dev/null' _ "$FAKE/probe-pid"
 check "calibrate: collectors stopped" grep -q "^collect-timeline stop $run" "$FAKE/calls.log"
 check "calibrate: no uncordon or scale (nothing to restore)" bash -c '! grep -Eq "uncordon|scale deploy" "$1"' _ "$FAKE/calls.log"
+# 5. Restoration that fails: retried; when it never works the run is
+#    invalid, restore.json says so, the invocation exits 1, and the
+#    pending restoration is retried once more on exit.
+export MEASURE_RESTORE_RETRY_SLEEP_S=0
+run_mode() { # MODE: one run, sets rc and run
+	rm -rf "$MEASURE_EVIDENCE_DIR"/*
+	: >"$FAKE/calls.log"
+	"$STAGE/measure.sh" "$1" --runs 1 --duration 30 >"$T/out" 2>&1
+	rc=$?
+	run=$(latest_run)
+}
+echo 1 >"$FAKE/rh-sleep"
+make_live step-4
+echo 2 >"$FAKE/uncordon-fail"
+run_mode drain
+check "uncordon fails twice: retried, exit 0 (rc=$rc)" [ "$rc" -eq 0 ]
+check "uncordon fails twice: 3 uncordon calls" [ "$(grep -c '^kubectl uncordon' "$FAKE/calls.log")" -eq 3 ]
+check "uncordon fails twice: restore ok" python3 -I -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["ok"] else 1)' "$run/restore.json"
+
+make_live step-4
+echo 99 >"$FAKE/uncordon-fail"
+run_mode drain
+check "uncordon never works: exit 1 (rc=$rc)" [ "$rc" -eq 1 ]
+check "uncordon never works: run invalid, says restoration" bash -c 'head -1 "$1" | grep -q "^本次量測無效：.*uncordon"' _ "$run/scorecard.txt"
+check "uncordon never works: scorecard.json invalid" python3 -I -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["invalid"] else 1)' "$run/scorecard.json"
+check "uncordon never works: restore.json not ok, node still cordoned" python3 -I -c '
+import json, sys
+r = json.load(open(sys.argv[1]))
+sys.exit(0 if not r["ok"] and "tkha-worker-2" in r["unschedulable"] and r["pending"] == ["uncordon tkha-worker-2"] else 1)' "$run/restore.json"
+check "uncordon never works: tried again on exit" [ "$(grep -c '^kubectl uncordon' "$FAKE/calls.log")" -ge 4 ]
+check "uncordon never works: reported" grep -q 'tkha-worker-2.*uncordon\|uncordon.*tkha-worker-2' "$T/out"
+rm -f "$FAKE/uncordon-fail"
+
+make_live step-4
+echo 99 >"$FAKE/scale-fail"
+run_mode scale-down
+check "scale-back never works: exit 1 (rc=$rc)" [ "$rc" -eq 1 ]
+check "scale-back never works: run invalid" bash -c 'head -1 "$1" | grep -q "^本次量測無效：.*scale"' _ "$run/scorecard.txt"
+check "scale-back never works: restore.json not ok, pending scale" python3 -I -c '
+import json, sys
+r = json.load(open(sys.argv[1]))
+sys.exit(0 if not r["ok"] and r["pending"] == ["scale deploy/koupa --replicas=3"] else 1)' "$run/restore.json"
+rm -f "$FAKE/scale-fail"
+
+# 6. SIGINT after the drain while uncordon keeps failing: still exits 130
+#    and interrupted.json shows the restoration did not succeed.
+rm -rf "$MEASURE_EVIDENCE_DIR"/*
+: >"$FAKE/calls.log"
+make_live step-4
+echo 60 >"$FAKE/rh-sleep"
+echo 99 >"$FAKE/uncordon-fail"
+start_measure drain --runs 1 --duration 30
+wait_for "$FAKE/calls.log" '^kubectl drain tkha-worker-2 --ignore-daemonsets --timeout' 20 || fail "trap/uncordon-fail: never drained"
+sleep 0.5
+stop_measure INT
+run=$(latest_run)
+check "trap, uncordon fails: exit 130 (rc=$rc)" [ "$rc" = 130 ]
+check "trap, uncordon fails: interrupted.json restored.ok false" python3 -I -c '
+import json, sys
+r = json.load(open(sys.argv[1]))["restored"]
+sys.exit(0 if r and not r["ok"] and r["pending"] else 1)' "$run/interrupted.json"
+rm -f "$FAKE/uncordon-fail"
 finish
