@@ -188,3 +188,37 @@ func TestCustomerPropagatesWriteError(t *testing.T) {
 		t.Fatal("writer Err not set")
 	}
 }
+
+func placeWithBody(t *testing.T, body string) record.Attempt {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(201)
+		io.WriteString(w, body)
+	}))
+	defer srv.Close()
+	var buf bytes.Buffer
+	c := &Customer{Client: srv.Client(), Base: srv.URL, Run: "r", Timeout: time.Second, Retries: 1,
+		W: record.NewWriter(&buf), MenuIDs: []int{1}, Seed: 1}
+	if err := c.Place(context.Background(), 1, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	recs := readRecords(t, &buf)
+	if len(recs) != 1 {
+		t.Fatalf("records %d", len(recs))
+	}
+	return recs[0]
+}
+
+func TestCustomerRecordsObservedZeroOrderID(t *testing.T) {
+	r := placeWithBody(t, `{"order_id":0,"number":1,"total":1}`)
+	if r.OrderID == nil || *r.OrderID != 0 {
+		t.Fatalf("order_id = %v, want observed 0", r.OrderID)
+	}
+}
+
+func TestCustomerOmitsAbsentOrderID(t *testing.T) {
+	r := placeWithBody(t, `{"number":1,"total":1}`)
+	if r.OrderID != nil {
+		t.Fatalf("order_id = %v, want absent", *r.OrderID)
+	}
+}

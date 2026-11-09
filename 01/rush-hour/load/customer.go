@@ -140,13 +140,10 @@ func (c *Customer) attempt(ctx context.Context, seq uint64, try int, ref string,
 	rec.FullResponse = true
 	if resp.StatusCode/100 == 2 {
 		var out struct {
-			OrderID int64 `json:"order_id"`
+			OrderID *int64 `json:"order_id"`
 		}
 		if json.Unmarshal(data, &out) == nil {
-			if out.OrderID != 0 {
-				id := out.OrderID
-				rec.OrderID = &id
-			}
+			rec.OrderID = out.OrderID
 		}
 	}
 	return rec
