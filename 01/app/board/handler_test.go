@@ -1050,3 +1050,80 @@ func TestBlockedWriterDeadline(t *testing.T) {
 		})
 	}
 }
+
+// Shutdown while the FIRST (start point) query is blocked: the board still
+// gets 200, retry: and the shutdown event, and the handler unregisters.
+func TestShutdownDuringFirstQuery(t *testing.T) {
+	e := newEnv(t, time.Hour)
+	e.mark()
+	rb := newRecording(e.b)
+	shutdown := make(chan struct{})
+	u := e.serve(&Handler{Broadcaster: rb, Cfg: baseCfg(true), Shutdown: shutdown})
+
+	tx, err := e.pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { tx.Rollback(context.Background()) })
+	if _, err := tx.Exec(context.Background(), `LOCK TABLE orders IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+
+	type result struct {
+		resp *http.Response
+		err  error
+	}
+	res := make(chan result, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*waitTimeout)
+	defer cancel()
+	go func() {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		resp, err := http.DefaultClient.Do(req)
+		res <- result{resp, err}
+	}()
+	waitDeadline := time.Now().Add(waitTimeout)
+	for {
+		var n int
+		if err := e.pool.QueryRow(context.Background(),
+			`SELECT count(*) FROM pg_stat_activity
+			 WHERE wait_event_type = 'Lock' AND query LIKE '%MAX(ready_seq)%' AND pid <> pg_backend_pid()`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n > 0 {
+			break
+		}
+		if time.Now().After(waitDeadline) {
+			t.Fatal("first query never blocked")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	ids := rb.subIDs()
+	if len(ids) != 1 {
+		t.Fatalf("subscribers %v", ids)
+	}
+	close(shutdown)
+	var r result
+	select {
+	case r = <-res:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no response within 2s of shutdown")
+	}
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	defer r.resp.Body.Close()
+	if r.resp.StatusCode != http.StatusOK || r.resp.Header.Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("status %d, Content-Type %q", r.resp.StatusCode, r.resp.Header.Get("Content-Type"))
+	}
+	body, err := io.ReadAll(r.resp.Body) // EOF means the handler returned
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "retry: 1500\nevent: shutdown\ndata:\n\n" {
+		t.Fatalf("body %q", body)
+	}
+	rb.awaitUnregister(t, ids[0], 2*time.Second)
+	if !strings.Contains(e.logs.String(), `"reason":"shutdown"`) {
+		t.Fatalf("no shutdown close logged:\n%s", e.logs.String())
+	}
+}

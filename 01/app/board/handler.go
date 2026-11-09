@@ -120,12 +120,41 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		qcancel()
 	}()
 
+	var sent int64
+	closed := func(reason string, err error) {
+		args := []any{"reason", reason, "sent", sent}
+		if err != nil {
+			args = append(args, "err", err.Error())
+		}
+		log.Info(applog.EvBoardClosed, args...)
+	}
+	sw := &streamWriter{w: w, rc: http.NewResponseController(w), deadline: h.Cfg.WriteDeadline, log: log, trace: h.Cfg.TestHooks}
+	startStream := func() {
+		hdr := w.Header()
+		hdr.Set("Content-Type", "text/event-stream")
+		hdr.Set("Cache-Control", "no-cache")
+		hdr.Set("X-Accel-Buffering", "no")
+		w.WriteHeader(http.StatusOK)
+	}
+
 	// 2. Start point: the current max (new statement), or a validated
 	// Last-Event-ID when resuming is on.
 	cur, err := h.maxReadySeq(qctx)
 	if err != nil {
-		log.Warn(applog.EvBoardClosed, "reason", reasonDBError, "err", err.Error())
-		http.Error(w, "database unavailable", http.StatusServiceUnavailable)
+		select {
+		case <-h.Shutdown:
+			// Shutdown before hello: still tell the board to reconnect.
+			startStream()
+			defer sw.refreshDeadline()
+			h.sendShutdown(sw, closed)
+		case <-ctx.Done():
+			closed(reasonClientGone, nil)
+		case <-overflow:
+			closed(reasonOverflow, nil)
+		default:
+			log.Warn(applog.EvBoardClosed, "reason", reasonDBError, "err", err.Error())
+			http.Error(w, "database unavailable", http.StatusServiceUnavailable)
+		}
 		return
 	}
 	start := cur
@@ -142,29 +171,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		start = n
 	}
 
-	hdr := w.Header()
-	hdr.Set("Content-Type", "text/event-stream")
-	hdr.Set("Cache-Control", "no-cache")
-	hdr.Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
-
+	startStream()
 	hbData := heartbeat
 	if h.heartbeat != nil {
 		hbData = h.heartbeat
 	}
-	sw := &streamWriter{w: w, rc: http.NewResponseController(w), deadline: h.Cfg.WriteDeadline, log: log, trace: h.Cfg.TestHooks}
 	// Bound the final chunk net/http writes after we return.
 	defer sw.refreshDeadline()
 
 	// 3. and 4.
-	sent := start
-	closed := func(reason string, err error) {
-		args := []any{"reason", reason, "sent", sent}
-		if err != nil {
-			args = append(args, "err", err.Error())
-		}
-		log.Info(applog.EvBoardClosed, args...)
-	}
+	sent = start
 	if err := sw.write(encodeHello(start, h.Cfg.Version)); err != nil {
 		closed(reasonWriteError, err)
 		return
