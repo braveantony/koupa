@@ -50,6 +50,7 @@ type TCP struct {
 	ln       net.Listener
 	ctx      context.Context // cancelled by Close; aborts pending upstream dials
 	cancel   context.CancelFunc
+	dial     dialFunc
 
 	mu     sync.Mutex
 	hook   func(msg []byte) Action
@@ -62,12 +63,21 @@ type TCP struct {
 // connection to upstream (host:port). It panics if it cannot listen, which
 // in a test is the most useful failure.
 func NewTCP(upstream string) *TCP {
+	var d net.Dialer
+	return newTCP(upstream, d.DialContext)
+}
+
+// dialFunc opens the upstream connection; ctx is cancelled by Close.
+type dialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
+
+// newTCP is NewTCP with an injectable dialer, for tests.
+func newTCP(upstream string, dial dialFunc) *TCP {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		panic(fmt.Sprintf("testproxy: listen: %v", err))
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	p := &TCP{upstream: upstream, ln: ln, ctx: ctx, cancel: cancel, conns: map[net.Conn]struct{}{}}
+	p := &TCP{upstream: upstream, ln: ln, ctx: ctx, cancel: cancel, dial: dial, conns: map[net.Conn]struct{}{}}
 	p.wg.Add(1)
 	go p.accept()
 	return p
@@ -146,8 +156,7 @@ func (p *TCP) handle(client net.Conn) {
 		return
 	}
 	defer p.untrack(client)
-	var d net.Dialer
-	server, err := d.DialContext(p.ctx, "tcp", p.upstream)
+	server, err := p.dial(p.ctx, "tcp", p.upstream)
 	if err != nil {
 		return
 	}

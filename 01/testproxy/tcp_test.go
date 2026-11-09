@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/url"
@@ -32,13 +34,13 @@ func untyped(payload string) []byte {
 	return append(b, payload...)
 }
 
-// fakeUpstream accepts one connection, records everything it receives and
-// replies "ok" after each read.
+// fakeUpstream accepts one connection, records everything it receives and,
+// framing the stream like the proxy does, replies "r<i>;" to the i-th
+// complete message (startup = 0), so every reply names its message.
 type fakeUpstream struct {
 	ln  net.Listener
 	mu  sync.Mutex
 	got bytes.Buffer
-	eof chan struct{}
 }
 
 func newFakeUpstream(t *testing.T) *fakeUpstream {
@@ -46,7 +48,7 @@ func newFakeUpstream(t *testing.T) *fakeUpstream {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &fakeUpstream{ln: ln, eof: make(chan struct{})}
+	f := &fakeUpstream{ln: ln}
 	t.Cleanup(func() { ln.Close() })
 	go func() {
 		c, err := ln.Accept()
@@ -54,17 +56,15 @@ func newFakeUpstream(t *testing.T) *fakeUpstream {
 			return
 		}
 		defer c.Close()
-		defer close(f.eof)
-		buf := make([]byte, 1024)
-		for {
-			n, err := c.Read(buf)
-			if n > 0 {
-				f.mu.Lock()
-				f.got.Write(buf[:n])
-				f.mu.Unlock()
-				c.Write([]byte("ok"))
-			}
+		for i := 0; ; i++ {
+			msg, err := readMessage(c, i == 0)
 			if err != nil {
+				return
+			}
+			f.mu.Lock()
+			f.got.Write(msg)
+			f.mu.Unlock()
+			if _, err := fmt.Fprintf(c, "r%d;", i); err != nil {
 				return
 			}
 		}
@@ -110,7 +110,7 @@ func TestTCPSplitsMessagesAndForwards(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	c.SetReadDeadline(time.Now().Add(2 * time.Second))
-	if _, err := io.ReadAtLeast(c, make([]byte, 2), 2); err != nil {
+	if _, err := io.ReadAtLeast(c, make([]byte, 3), 3); err != nil {
 		t.Fatalf("no reply through proxy: %v", err)
 	}
 
@@ -155,9 +155,9 @@ func TestTCPForwardThenCutClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.SetReadDeadline(time.Now().Add(3 * time.Second))
-	reply := make([]byte, 2)
-	if _, err := io.ReadFull(c, reply); err != nil || string(reply) != "ok" {
-		t.Fatalf("startup reply = %q, %v; want ok", reply, err)
+	reply := make([]byte, 3)
+	if _, err := io.ReadFull(c, reply); err != nil || string(reply) != "r0;" {
+		t.Fatalf("startup reply = %q, %v; want r0;", reply, err)
 	}
 
 	// Step 2: the cut message reaches the upstream, which replies, but the
@@ -171,8 +171,8 @@ func TestTCPForwardThenCutClient(t *testing.T) {
 	if ne, ok := err.(net.Error); ok && ne.Timeout() {
 		t.Fatal("client side was not closed")
 	}
-	if len(got) != 0 {
-		t.Fatalf("client received %q after the cut, want nothing", got)
+	if bytes.Contains(got, []byte("r1;")) || len(got) != 0 {
+		t.Fatalf("client received %q after the cut, want nothing (never r1;)", got)
 	}
 	want := append(append([]byte(nil), start...), q...)
 	deadline := time.Now().Add(2 * time.Second)
@@ -184,26 +184,42 @@ func TestTCPForwardThenCutClient(t *testing.T) {
 	}
 }
 
-// TestTCPCloseDuringPendingDial checks that Close does not wait for the OS
-// connect timeout when an upstream dial never completes.
+// TestTCPCloseDuringPendingDial checks that Close cancels an upstream dial
+// that is still pending instead of waiting for the OS connect timeout.
 func TestTCPCloseDuringPendingDial(t *testing.T) {
-	// 10.255.255.1 is non-routable: SYNs go unanswered, so the dial hangs
-	// (or fails at once if the host has no route; then Close is fast anyway).
-	p := NewTCP("10.255.255.1:5432")
+	started := make(chan struct{})
+	cancelled := make(chan error, 1)
+	p := newTCP("upstream.invalid:5432", func(ctx context.Context, _, _ string) (net.Conn, error) {
+		close(started)
+		<-ctx.Done() // a dial that only ends when cancelled
+		cancelled <- ctx.Err()
+		return nil, ctx.Err()
+	})
 	c, err := net.Dial("tcp", p.Addr())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	time.Sleep(200 * time.Millisecond) // let handle start dialling
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream dial never started")
+	}
+
 	closed := make(chan struct{})
-	start := time.Now()
 	go func() { p.Close(); close(closed) }()
 	select {
 	case <-closed:
-		t.Logf("Close returned after %v", time.Since(start))
 	case <-time.After(2 * time.Second):
 		t.Fatal("Close blocked on a pending upstream dial")
+	}
+	select {
+	case err := <-cancelled:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("dial ctx err = %v, want context.Canceled", err)
+		}
+	default:
+		t.Fatal("Close returned but the dial ctx was not cancelled")
 	}
 }
 
