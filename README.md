@@ -9,3 +9,8 @@
 | 03 | 用 Cilium Gateway API 分流做金絲雀部署 |
 
 目前進度：01 設計與實作計畫已完成，尚未實作
+
+## 文件
+
+- [設計文件](01/docs/design-v2/README.md)
+- [實作計畫](01/docs/plan.md)
