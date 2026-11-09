@@ -35,17 +35,19 @@ workers=$(kubectl get nodes -l '!node-role.kubernetes.io/control-plane' -o jsonp
 INFRA_NODE=${INFRA_NODE:-$(echo "$workers" | head -1)}
 echo "$workers" | grep -qx "$INFRA_NODE" || die "INFRA_NODE=$INFRA_NODE is not a worker (workers: $(echo $workers))"
 log "0/3 infra worker $INFRA_NODE ($INFRA_LABEL=true): database and CNPG operator"
-for n in $(kubectl get nodes -l "$INFRA_LABEL=true" -o jsonpath='{.items[*].metadata.name}'); do
-  [ "$n" = "$INFRA_NODE" ] || kubectl label node "$n" "$INFRA_LABEL-"
-done
-kubectl label node "$INFRA_NODE" "$INFRA_LABEL=true" --overwrite
-# The database volume is local-path: it cannot move. Refuse a pin elsewhere.
+# A local-path volume with node affinity cannot move: refuse a pin
+# elsewhere, before any label changes. (tk8s' local-path uses a shared host
+# directory and sets no node affinity; then there is nothing to check.)
 pv=$(kubectl -n "$NS" get pvc koupa-db-1 -o jsonpath='{.spec.volumeName}' 2>/dev/null || true)
 if [ -n "$pv" ]; then
   pv_node=$(kubectl get pv "$pv" -o jsonpath='{.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values[0]}' 2>/dev/null || true)
   [ -z "$pv_node" ] || [ "$pv_node" = "$INFRA_NODE" ] ||
     die "the koupa-db volume $pv is on $pv_node, not INFRA_NODE=$INFRA_NODE (local-path); use INFRA_NODE=$pv_node"
 fi
+for n in $(kubectl get nodes -l "$INFRA_LABEL=true" -o jsonpath='{.items[*].metadata.name}'); do
+  [ "$n" = "$INFRA_NODE" ] || kubectl label node "$n" "$INFRA_LABEL-"
+done
+kubectl label node "$INFRA_NODE" "$INFRA_LABEL=true" --overwrite
 
 # --- 1. database --------------------------------------------------------------
 log "1/3 CloudNativePG operator v${CNPG_VERSION}"
