@@ -239,3 +239,21 @@ func TestRunRendersTables(t *testing.T) {
 		t.Error("no json written")
 	}
 }
+
+// A collector that re-reads an access-log stream from the same second
+// writes some lines twice (collect-timeline.sh missing.jsonl says so):
+// identical lines count once, and the number removed is reported.
+func TestDedupeRereadLines(t *testing.T) {
+	text := strings.Join([]string{
+		line("r1-a1-t1", "POST", "/orders", 201, "-", 1, t0, 3),
+		line("r1-a1-t1", "POST", "/orders", 201, "-", 1, t0, 3),
+		line("", "GET", "/api/orders", 200, "-", 1, t0, 3),
+		line("", "GET", "/api/orders", 200, "-", 1, t0, 3),
+		line("", "GET", "/api/orders", 200, "-", 1, t0, 4),
+	}, "\n")
+	lines, _ := ParseIngress(strings.NewReader(text))
+	got, dups := DedupeLines(lines)
+	if len(got) != 3 || dups != 2 {
+		t.Errorf("got %d lines, %d duplicates; want 3, 2", len(got), dups)
+	}
+}

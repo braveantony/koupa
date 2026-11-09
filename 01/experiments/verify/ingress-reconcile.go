@@ -138,6 +138,24 @@ func ParseIngress(r io.Reader) ([]IngressLine, int) {
 	return out, bad
 }
 
+// DedupeLines drops lines identical to an earlier one (all fields): a
+// collector that restarts an access-log stream re-reads from the same
+// second (collect-timeline.sh records that in missing.jsonl). Returns the
+// lines kept and how many were dropped.
+func DedupeLines(lines []IngressLine) ([]IngressLine, int) {
+	seen := map[string]bool{}
+	out := make([]IngressLine, 0, len(lines))
+	for _, l := range lines {
+		b, _ := json.Marshal(l)
+		if seen[string(b)] {
+			continue
+		}
+		seen[string(b)] = true
+		out = append(out, l)
+	}
+	return out, len(lines) - len(out)
+}
+
 // ---------------------------------------------------------------- per attempt
 
 // AttemptTable is the /orders per-attempt reconciliation.
@@ -488,6 +506,7 @@ type Result struct {
 	Dir            string       `json:"dir"`
 	Run            string       `json:"run"`
 	IngressBad     int          `json:"ingress_bad_lines"`
+	RereadLines    int          `json:"reread_duplicate_lines"`
 	Attempts       AttemptTable `json:"attempts"`
 	Stats          *StatsTable  `json:"stats,omitempty"`
 	StatsError     string       `json:"stats_error,omitempty"`
@@ -497,6 +516,9 @@ type Result struct {
 func render(w io.Writer, r Result) {
 	a := r.Attempts
 	fmt.Fprintf(w, "入口對帳（A14）　量測編號 %s\n證據：%s\n\n", r.Run, r.Dir)
+	if r.RereadLines > 0 {
+		fmt.Fprintf(w, "入口紀錄裡完全相同的重複行 %d 行已去掉（收集端重新讀取串流，見 missing.jsonl）\n\n", r.RereadLines)
+	}
 	fmt.Fprintln(w, "【一】逐筆：POST /orders，同一次量測（X-Koupa-Attempt 屬於這次），最終回應")
 	fmt.Fprintf(w, "  Rush Hour 下單嘗試           %6d\n", a.RushHour)
 	fmt.Fprintf(w, "  入口紀錄（access log）        %6d\n", a.Ingress)
@@ -570,6 +592,7 @@ func runMain(args []string, stdout, stderr io.Writer) int {
 	}
 	lines, bad := ParseIngress(f)
 	f.Close()
+	lines, reread := DedupeLines(lines)
 	if len(lines) == 0 {
 		fmt.Fprintln(stdout, "入口紀錄取不到（ingress.log 沒有任何紀錄）")
 		return 3
@@ -593,7 +616,7 @@ func runMain(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "ingress-reconcile:", err)
 		return 2
 	}
-	res := Result{Dir: dir, Run: run, IngressBad: bad, Attempts: ReconcileAttempts(run, atts, lines), TimeoutSeconds: timeout.Seconds()}
+	res := Result{Dir: dir, Run: run, IngressBad: bad, RereadLines: reread, Attempts: ReconcileAttempts(run, atts, lines), TimeoutSeconds: timeout.Seconds()}
 	s0, err0 := readStats(filepath.Join(dir, "envoy-stats-start.txt"))
 	s1, err1 := readStats(filepath.Join(dir, "envoy-stats-end.txt"))
 	if err := errors.Join(err0, err1); err != nil {
