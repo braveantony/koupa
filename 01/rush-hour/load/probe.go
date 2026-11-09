@@ -16,8 +16,9 @@ import (
 // wire.NewAttemptID(RunID+"-p", seq, 1) with seq counting from 1; pod_uid is
 // empty (null) when no response arrived.
 type Prober struct {
-	// Any client works: every probe is sent with Connection: close, so no
-	// connection is reused. Nil means a plain client with keep-alives off.
+	// Only the client's Timeout is used (when Timeout is 0). Probes always go
+	// through the prober's own transport with keep-alives disabled, so a
+	// supplied client's idle connections are never picked up.
 	Client  *http.Client
 	Base    string
 	RunID   string
@@ -29,16 +30,18 @@ type Prober struct {
 // Run sends probes until ctx is done, then waits for the ones still in
 // flight. It returns the first record-write error, if any.
 func (p *Prober) Run(ctx context.Context) error {
-	rate, timeout, client := p.Rate, p.Timeout, p.Client
+	rate, timeout := p.Rate, p.Timeout
 	if rate == 0 {
 		rate = 50
+	}
+	if timeout == 0 && p.Client != nil {
+		timeout = p.Client.Timeout
 	}
 	if timeout == 0 {
 		timeout = 2 * time.Second
 	}
-	if client == nil {
-		client = &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
-	}
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	defer client.CloseIdleConnections()
 	sched := &Scheduler{Rate: rate, Start: time.Now()}
 	var wg sync.WaitGroup
 	var mu sync.Mutex

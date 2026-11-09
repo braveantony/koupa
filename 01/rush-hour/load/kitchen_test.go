@@ -26,6 +26,7 @@ type fakeShop struct {
 	failFor map[int64]int    // order id -> number of leading POSTs to fail with 503
 	seq     int64
 	attIDs  []string
+	getNull int // leading GETs that answer 200 with JSON null
 	getFail int // leading GETs of the pending list that fail with 503
 	gets    int
 	queries []string
@@ -61,6 +62,10 @@ func (f *fakeShop) handler() http.Handler {
 		f.queries = append(f.queries, r.URL.RawQuery)
 		if f.gets <= f.getFail {
 			http.Error(w, "down", 503)
+			return
+		}
+		if f.gets <= f.getNull {
+			io.WriteString(w, "null")
 			return
 		}
 		var parts []string
@@ -347,5 +352,57 @@ func TestKitchenNoRequestStartsAfterStop(t *testing.T) {
 			t.Fatalf("round %d: %d requests, %d attempts registered at Stop", round, shop.totalPosts(), atStop)
 		}
 		srv.Close()
+	}
+}
+
+func TestKitchenDrainTreatsNullPollAsInvalid(t *testing.T) {
+	shop := newShop()
+	shop.add(1, "runK-c1")
+	shop.getNull = 3
+	srv := httptest.NewServer(shop.handler())
+	defer srv.Close()
+	k := newKitchen(srv, &bytes.Buffer{})
+	if err := k.Drain(context.Background(), 3*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if shop.totalPosts() != 1 {
+		t.Fatalf("posts = %d, want 1 (null body was taken as an empty list)", shop.totalPosts())
+	}
+}
+
+// slowTransport delays every request before it reaches the server, widening
+// the gap between "attempt registered" and "server sees it".
+type slowTransport struct{ d time.Duration }
+
+func (s slowTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Method == http.MethodPost {
+		time.Sleep(s.d)
+	}
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+func TestKitchenStopReturnsAfterRegisteredAttemptsFinish(t *testing.T) {
+	shop := newShop()
+	for i := int64(1); i <= 10; i++ {
+		shop.add(i, fmt.Sprintf("runK-c%d", i))
+	}
+	srv := httptest.NewServer(shop.handler())
+	defer srv.Close()
+	var buf bytes.Buffer
+	k := newKitchen(srv, &buf)
+	k.Client = &http.Client{Transport: slowTransport{80 * time.Millisecond}}
+	k.Delay = func() time.Duration { return 0 }
+	done := make(chan error, 1)
+	go func() { done <- k.Run(context.Background()) }()
+	waitFor(t, 2*time.Second, func() bool { return len(k.Attempts()) >= 1 })
+	k.Stop()
+	atStop := shop.totalPosts()
+	if got := len(k.Attempts()); got != atStop {
+		t.Fatalf("at Stop return: %d attempts registered, server saw %d", got, atStop)
+	}
+	<-done
+	time.Sleep(150 * time.Millisecond)
+	if after := shop.totalPosts(); after != atStop {
+		t.Fatalf("server-observed requests grew after Stop returned: %d -> %d", atStop, after)
 	}
 }

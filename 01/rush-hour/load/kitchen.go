@@ -40,6 +40,7 @@ type Kitchen struct {
 	stopCh   chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup // in-flight per-order goroutines
+	sending  sync.WaitGroup // requests registered and not yet finished
 
 	mu       sync.Mutex
 	seen     map[int64]bool
@@ -92,6 +93,10 @@ func (k *Kitchen) Stop() {
 	k.stop = true
 	k.mu.Unlock()
 	k.stopOnce.Do(func() { close(k.stopCh) })
+	// Every attempt registered before the flag was set finishes (bounded by
+	// Timeout); none can register afterwards, so no request starts once Stop
+	// has returned.
+	k.sending.Wait()
 }
 
 func (k *Kitchen) stopped() bool {
@@ -204,7 +209,8 @@ func (k *Kitchen) scan(ctx context.Context) (int, bool) {
 	defer resp.Body.Close()
 	data, err := io.ReadAll(resp.Body)
 	var list []pendingOrder
-	if err != nil || resp.StatusCode != http.StatusOK || json.Unmarshal(data, &list) != nil {
+	// A 200 with null or a non-array body is a broken poll, not an empty list.
+	if err != nil || resp.StatusCode != http.StatusOK || json.Unmarshal(data, &list) != nil || list == nil {
 		return fresh, false
 	}
 	return fresh + k.schedule(ctx, list), true
@@ -265,7 +271,9 @@ func (k *Kitchen) markLater(ctx context.Context, o pendingOrder, n uint64) {
 		}
 		issued = true
 		k.attempts = append(k.attempts, id)
+		k.sending.Add(1)
 		k.mu.Unlock()
+		defer k.sending.Done()
 		rec := record.Attempt{Run: k.RunID, Kind: record.KindReady, ClientRef: o.ClientRef, Attempt: id, Try: try, ScheduledAt: scheduled}
 		return send(sctx, call{Client: k.Client, Timeout: k.Timeout, Method: http.MethodPost, URL: readyURL}, rec,
 			func(r *record.Attempt, body []byte) {

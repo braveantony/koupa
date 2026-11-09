@@ -106,7 +106,7 @@ func TestProberRecordsNoResponse(t *testing.T) {
 	}
 }
 
-func TestProberForcesNewConnectionWithSuppliedKeepAliveClient(t *testing.T) {
+func TestProberIgnoresSuppliedClientIdleConnection(t *testing.T) {
 	var conns, reqs atomic.Int64
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqs.Add(1)
@@ -119,16 +119,24 @@ func TestProberForcesNewConnectionWithSuppliedKeepAliveClient(t *testing.T) {
 	}
 	srv.Start()
 	defer srv.Close()
-	keepAlive := &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: 10}} // would reuse connections
+	supplied := &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: 10}}
+	resp, err := supplied.Get(srv.URL) // leaves one idle keep-alive connection in the supplied client
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	warm := conns.Load()
 	var buf bytes.Buffer
-	p := &Prober{Client: keepAlive, Base: srv.URL, RunID: "runP", Rate: 100, W: record.NewWriter(&buf)}
+	p := &Prober{Client: supplied, Base: srv.URL, RunID: "runP", Rate: 100, W: record.NewWriter(&buf)}
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	if err := p.Run(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if reqs.Load() < 10 || conns.Load() != reqs.Load() {
-		t.Fatalf("connections %d, requests %d: want equal", conns.Load(), reqs.Load())
+	probes := reqs.Load() - 1
+	if probes < 10 || conns.Load()-warm != probes {
+		t.Fatalf("probes %d, new connections %d: want equal", probes, conns.Load()-warm)
 	}
 }
 
