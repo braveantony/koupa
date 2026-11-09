@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -79,7 +80,7 @@ func fixture() ([]record.Attempt, []IngressLine) {
 
 func TestReconcileAttempts(t *testing.T) {
 	atts, lines := fixture()
-	r := ReconcileAttempts(run, atts, lines)
+	r := ReconcileAttempts(run, atts, lines, nil)
 	check := func(name string, got, want int) {
 		t.Helper()
 		if got != want {
@@ -241,36 +242,84 @@ func TestRunRendersTables(t *testing.T) {
 	}
 }
 
-// A collector that re-reads an access-log stream from a second (its
-// missing.jsonl entry says from when, and when it restarted) writes the
-// lines logged since then twice. Only a copy received after the restart of
-// a line logged inside [from, restart] is dropped; any other identical line
-// stays (two real requests can look alike) and is counted as ambiguous.
-func TestDedupeRereadLines(t *testing.T) {
-	stamped := func(stamp, l string) string { return stamp + l[strings.IndexByte(l, ' '):] }
-	in := "2026-11-09T13:14:05.300Z" // logged 13:14:05.303, inside the reread window
+const missingRestart = `{"source":"hubble","reason":"x","at":"2026-11-09T13:14:05.999Z"}
+{"source":"ingress","reason":"cilium-envoy-6rzcp 的 access log 串流中斷（rc=1），從 2026-11-09T13:14:05Z 重新讀取；同一秒內可能重複或缺行","at":"2026-11-09T13:14:05.999167822Z"}
+`
+
+func stamped(stamp, l string) string { return stamp + l[strings.IndexByte(l, ' '):] }
+
+// No line is ever dropped. A line identical to an earlier one with a
+// collector restart (missing.jsonl) between the two receive stamps is
+// flagged "possible reread"; identical lines without a restart between
+// them are not flagged (two requests can look alike).
+func TestMarkRereads(t *testing.T) {
+	in := "2026-11-09T13:14:05.300Z"
 	out := "2026-11-09T13:13:00.000Z"
 	text := strings.Join([]string{
 		stamped("1794230045.31", line("r1-a1-t1", "POST", "/orders", 201, "-", 1, in, 3)),
-		stamped("1794230046.10", line("r1-a1-t1", "POST", "/orders", 201, "-", 1, in, 3)), // reread copy
+		stamped("1794230046.10", line("r1-a1-t1", "POST", "/orders", 201, "-", 1, in, 3)), // after the restart
 		stamped("1794229980.01", line("", "GET", "/api/orders", 200, "-", 1, out, 3)),
-		stamped("1794229980.02", line("", "GET", "/api/orders", 200, "-", 1, out, 3)), // look-alike, no reread
-		stamped("1794229980.03", line("", "GET", "/api/orders", 200, "-", 1, out, 4)),
+		stamped("1794229980.02", line("", "GET", "/api/orders", 200, "-", 1, out, 3)), // look-alike, no restart between
 	}, "\n")
 	lines, _ := ParseIngress(strings.NewReader(text))
-	missing := `{"source":"hubble","reason":"x","at":"2026-11-09T13:14:05.999Z"}
-{"source":"ingress","reason":"cilium-envoy-6rzcp 的 access log 串流中斷（rc=1），從 2026-11-09T13:14:05Z 重新讀取；同一秒內可能重複或缺行","at":"2026-11-09T13:14:05.999167822Z"}
-`
-	rr := ParseRereads(strings.NewReader(missing))
+	rr := ParseRereads(strings.NewReader(missingRestart))
 	if len(rr) != 1 || rr[0].From.Format(time.RFC3339) != "2026-11-09T13:14:05Z" {
 		t.Fatalf("rereads %+v", rr)
 	}
-	got, dropped, ambiguous := DedupeLines(lines, rr)
-	if len(got) != 4 || dropped != 1 || ambiguous != 1 {
-		t.Errorf("kept %d, dropped %d, ambiguous %d; want 4, 1, 1", len(got), dropped, ambiguous)
+	got := MarkRereads(lines, rr)
+	if len(got) != 4 {
+		t.Fatalf("%d lines, want all 4 kept", len(got))
 	}
-	if _, d, a := DedupeLines(lines, nil); d != 0 || a != 2 {
-		t.Errorf("without reread evidence: dropped %d ambiguous %d; want 0, 2", d, a)
+	var flags []bool
+	for _, l := range got {
+		flags = append(flags, l.PossibleReread)
+	}
+	if fmt.Sprint(flags) != "[false true false false]" {
+		t.Errorf("possible reread flags %v, want [false true false false]", flags)
+	}
+	if n := len(MarkRereads(lines, nil)); n != 4 {
+		t.Errorf("without restarts: %d lines", n)
+	}
+}
+
+// A second /orders line for the same attempt id: "possible reread" (shown
+// with its id, not matched again) when a restart lies between the two
+// receive stamps, otherwise a real extra entry (unexplained).
+func TestReconcileSecondLineForAttempt(t *testing.T) {
+	text := strings.Join([]string{
+		stamped("1794230045.31", line("r1-a1-t1", "POST", "/orders", 201, "-", 1, t0, 3)),
+		stamped("1794230046.10", line("r1-a1-t1", "POST", "/orders", 201, "-", 1, t0, 3)), // restart between
+		stamped("1794230050.00", line("r1-a2-t1", "POST", "/orders", 201, "-", 1, t0, 3)),
+		stamped("1794230050.50", line("r1-a2-t1", "POST", "/orders", 503, "UF", 1, t0, 3)), // no restart between
+	}, "\n")
+	lines, _ := ParseIngress(strings.NewReader(text))
+	lines = MarkRereads(lines, ParseRereads(strings.NewReader(missingRestart)))
+	atts := []record.Attempt{att("r1-a1-t1", 1, ip(201), ""), att("r1-a2-t1", 1, ip(201), "")}
+	r := ReconcileAttempts(run, atts, lines, ParseRereads(strings.NewReader(missingRestart)))
+	if r.Matched != 2 || r.SameStatus != 2 {
+		t.Errorf("matched %d same %d, want 2 2", r.Matched, r.SameStatus)
+	}
+	if r.PossibleReread != 1 || fmt.Sprint(r.PossibleRereadIDs) != "[r1-a1-t1]" {
+		t.Errorf("possible reread %d %v, want 1 [r1-a1-t1]", r.PossibleReread, r.PossibleRereadIDs)
+	}
+	if r.Diff[CatUnexplained] != 1 || len(r.UnexplainedList) != 1 || !strings.Contains(r.UnexplainedList[0], "r1-a2-t1") {
+		t.Errorf("unexplained %d %v, want the second r1-a2-t1 line", r.Diff[CatUnexplained], r.UnexplainedList)
+	}
+}
+
+// Possible-reread lines are left out of the statistics comparison but
+// counted and shown.
+func TestCompareStatsSkipsPossibleReread(t *testing.T) {
+	st := "# collected_at=1794214400 node=w1 pod=a\nenvoy_cluster_upstream_rq_completed{envoy_cluster_name=\"koupa/x\"} 0\n"
+	en := "# collected_at=1794214500 node=w1 pod=a\nenvoy_cluster_upstream_rq_completed{envoy_cluster_name=\"koupa/x\"} 1\n"
+	s0, _ := ParseStats(strings.NewReader(st))
+	s1, _ := ParseStats(strings.NewReader(en))
+	in := "2026-11-09T08:53:30.000Z"
+	lines, _ := ParseIngress(strings.NewReader(line("r1-a1-t1", "POST", "/orders", 201, "-", 1, in, 3) + "\n" + line("r1-a1-t1", "POST", "/orders", 201, "-", 1, in, 3)))
+	lines[1].PossibleReread = true
+	c := CompareStats(s0, s1, lines)
+	if c.PossibleReread != 1 || c.InWindow != 1 {
+		t.Errorf("possible reread %d, in window %d; want 1, 1", c.PossibleReread, c.InWindow)
 	}
 }
 

@@ -69,6 +69,9 @@ type IngressLine struct {
 	// Stamp: the collector's receive time (rush-hour stamp prefix, Unix
 	// seconds); zero when the line has no numeric prefix.
 	Stamp float64 `json:"-"`
+	// PossibleReread: identical to an earlier line with a collector
+	// restart between the two receive stamps (MarkRereads). Never dropped.
+	PossibleReread bool `json:"-"`
 }
 
 func rawInt(r json.RawMessage) (int, bool) {
@@ -178,40 +181,38 @@ func ParseRereads(r io.Reader) []Reread {
 
 func stampTime(f float64) time.Time { return time.Unix(0, int64(f*1e9)) }
 
-// DedupeLines drops a line only with evidence that the collector re-read
-// it: identical (every field) to an earlier line, the earlier copy received
-// (collector stamp) inside a restart's [From, At] and this copy received
-// after At. (Envoy buffers its access log, so start_time + duration is not
-// when the line was written; the collector's own receive stamps are the
-// evidence.) Other identical lines are kept (two requests can look alike,
-// e.g. without an attempt id) and counted as ambiguous.
-func DedupeLines(lines []IngressLine, rereads []Reread) (kept []IngressLine, dropped, ambiguous int) {
+// restartBetween: a recorded collector restart lies between two receive
+// stamps (a < At <= b).
+func restartBetween(a, b float64, rereads []Reread) bool {
+	if a <= 0 || b <= 0 {
+		return false
+	}
+	for _, r := range rereads {
+		if stampTime(a).Before(r.At) && !stampTime(b).Before(r.At) {
+			return true
+		}
+	}
+	return false
+}
+
+// MarkRereads flags (never drops) each line identical in every field to an
+// earlier one when a collector restart lies between their receive stamps:
+// the collector may have read it twice. Identical lines without a restart
+// between them stay unflagged (two requests can look alike).
+func MarkRereads(lines []IngressLine, rereads []Reread) []IngressLine {
 	first := map[string]float64{}
-	kept = make([]IngressLine, 0, len(lines))
-	for _, l := range lines {
+	out := make([]IngressLine, len(lines))
+	for i, l := range lines {
 		b, _ := json.Marshal(l)
 		k := string(b)
-		f, dup := first[k]
-		if !dup {
+		if f, dup := first[k]; dup && restartBetween(f, l.Stamp, rereads) {
+			l.PossibleReread = true
+		} else if !dup {
 			first[k] = l.Stamp
-			kept = append(kept, l)
-			continue
 		}
-		reread := false
-		for _, r := range rereads {
-			if f > 0 && l.Stamp > 0 && !stampTime(f).Before(r.From) && !stampTime(f).After(r.At) && !stampTime(l.Stamp).Before(r.At) {
-				reread = true
-				break
-			}
-		}
-		if reread {
-			dropped++
-			continue
-		}
-		ambiguous++
-		kept = append(kept, l)
+		out[i] = l
 	}
-	return kept, dropped, ambiguous
+	return out
 }
 
 // ---------------------------------------------------------------- per attempt
@@ -222,7 +223,11 @@ type AttemptTable struct {
 	Ingress    int // POST /orders lines with an attempt id of the run
 	Matched    int // attempt id in both
 	SameStatus int // matched, Rush Hour got the complete response with the logged status
-	DupLines   int // attempt ids logged more than once (collector re-read)
+	// A second line for an attempt id: with a collector restart between
+	// the two, a possible reread (shown with its id, not matched again);
+	// otherwise a real extra entry, listed as unexplained.
+	PossibleReread    int
+	PossibleRereadIDs []string
 	// Diff counts per category. CatIngressRetry is informational (the line
 	// matched; the ingress sent it upstream more than once).
 	Diff            map[string]int
@@ -241,29 +246,32 @@ func rhOK(a record.Attempt) bool {
 }
 
 // ReconcileAttempts matches the run's order attempts with the access log.
-func ReconcileAttempts(run string, atts []record.Attempt, lines []IngressLine) AttemptTable {
+func ReconcileAttempts(run string, atts []record.Attempt, lines []IngressLine, rereads []Reread) AttemptTable {
 	t := AttemptTable{Diff: map[string]int{CatClientTimeout: 0, CatIngressRetry: 0, CatOther: 0, CatNotViaIngress: 0, CatUnexplained: 0}}
+	unexplained := func(format string, a ...any) {
+		t.Diff[CatUnexplained]++
+		t.UnexplainedList = append(t.UnexplainedList, fmt.Sprintf(format, a...))
+	}
 	prefix := run + "-a" // order attempts; the kitchen's are <run>-k-a...
 	byID := map[string]IngressLine{}
-	seen := map[string]int{}
 	for _, l := range lines {
 		a := l.attempt()
 		if !l.isOrders() || !strings.HasPrefix(a, prefix) {
 			t.Diff[CatOther]++
 			continue
 		}
-		seen[a]++
-		if seen[a] > 1 {
-			t.DupLines++
+		if prev, dup := byID[a]; dup {
+			if restartBetween(prev.Stamp, l.Stamp, rereads) {
+				t.PossibleReread++
+				t.PossibleRereadIDs = append(t.PossibleRereadIDs, a)
+			} else {
+				unexplained("%s：入口對同一個嘗試編號有第二筆紀錄（%d %s），兩筆之間沒有收集端重新讀取", a, l.status(), l.ResponseFlags)
+			}
 			continue
 		}
 		byID[a] = l
 	}
 	t.Ingress = len(byID)
-	unexplained := func(format string, a ...any) {
-		t.Diff[CatUnexplained]++
-		t.UnexplainedList = append(t.UnexplainedList, fmt.Sprintf(format, a...))
-	}
 	rhIDs := map[string]bool{}
 	type refState struct{ first, last *record.Attempt }
 	refs := map[string]*refState{}
@@ -452,8 +460,10 @@ type StatsTable struct {
 	Agents        int
 	InWindow      int // access-log lines that started and ended inside the window
 	OutsideWindow int
-	PathCounts    map[string]int // in-window lines per path group
-	Rows          []StatsRow
+	// PossibleReread lines (MarkRereads) are not counted, only shown.
+	PossibleReread int
+	PathCounts     map[string]int // in-window lines per path group
+	Rows           []StatsRow
 }
 
 func pathGroup(l IngressLine) string {
@@ -483,6 +493,10 @@ func CompareStats(start, end Stats, lines []IngressLine) StatsTable {
 		ordersLines, ordersRetry  int
 	)
 	for _, l := range lines {
+		if l.PossibleReread {
+			t.PossibleReread++
+			continue
+		}
 		st, ok := l.start()
 		fin := st.Add(time.Duration(l.durationMs()) * time.Millisecond)
 		if !ok || st.Before(start.First) || fin.After(end.Last) {
@@ -561,31 +575,36 @@ func CompareStats(start, end Stats, lines []IngressLine) StatsTable {
 
 // Result is what --json writes.
 type Result struct {
-	Dir            string       `json:"dir"`
-	Run            string       `json:"run"`
-	IngressBad     int          `json:"ingress_bad_lines"`
-	AttemptsBad    int          `json:"attempts_bad_lines"`
-	RereadLines    int          `json:"reread_duplicate_lines"`
-	AmbiguousDups  int          `json:"identical_lines_kept"`
-	Rereads        []Reread     `json:"ingress_rereads"`
-	Attempts       AttemptTable `json:"attempts"`
-	Stats          *StatsTable  `json:"stats,omitempty"`
-	StatsError     string       `json:"stats_error,omitempty"`
-	TimeoutSeconds float64      `json:"rush_hour_timeout_s"`
+	Dir                 string       `json:"dir"`
+	Run                 string       `json:"run"`
+	IngressBad          int          `json:"ingress_bad_lines"`
+	AttemptsBad         int          `json:"attempts_bad_lines"`
+	PossibleRereadLines int          `json:"possible_reread_lines"`
+	PossibleRereadList  []string     `json:"possible_reread_list"`
+	Rereads             []Reread     `json:"ingress_rereads"`
+	Attempts            AttemptTable `json:"attempts"`
+	Stats               *StatsTable  `json:"stats,omitempty"`
+	StatsError          string       `json:"stats_error,omitempty"`
+	TimeoutSeconds      float64      `json:"rush_hour_timeout_s"`
 }
 
 func render(w io.Writer, r Result) {
 	a := r.Attempts
 	fmt.Fprintf(w, "入口對帳（A14）　量測編號 %s\n證據：%s\n\n", r.Run, r.Dir)
 	fmt.Fprintf(w, "無法解析的紀錄：attempts.jsonl 無法解析 %d 行；ingress.log 無法解析 %d 行\n", r.AttemptsBad, r.IngressBad)
-	fmt.Fprintf(w, "入口串流重新讀取 %d 次（missing.jsonl）；在重讀時間窗內收到的重複行 %d 行已去掉；其他完全相同的行 %d 行沒有重讀證據，保留\n\n",
-		len(r.Rereads), r.RereadLines, r.AmbiguousDups)
+	fmt.Fprintf(w, "入口串流重新讀取 %d 次（missing.jsonl）；可能是收集端重讀的完全相同行 %d 行（沒有刪除，【二】的比對不計入）：\n",
+		len(r.Rereads), r.PossibleRereadLines)
+	for _, x := range r.PossibleRereadList {
+		fmt.Fprintf(w, "  - %s\n", x)
+	}
+	fmt.Fprintln(w)
 	fmt.Fprintln(w, "【一】逐筆：POST /orders，同一次量測（X-Koupa-Attempt 屬於這次），最終回應")
 	fmt.Fprintf(w, "  Rush Hour 下單嘗試           %6d\n", a.RushHour)
 	fmt.Fprintf(w, "  入口紀錄（access log）        %6d\n", a.Ingress)
 	fmt.Fprintf(w, "  兩邊都有                      %6d（狀態碼一致 %d）\n", a.Matched, a.SameStatus)
-	if a.DupLines > 0 {
-		fmt.Fprintf(w, "  入口紀錄重複的行（收集端重讀）%6d（已去掉）\n", a.DupLines)
+	fmt.Fprintf(w, "  可能是收集端重讀的第二筆      %6d（沒有刪除，不重複比對；同一嘗試編號兩筆之間有收集端重新讀取）\n", a.PossibleReread)
+	for _, id := range a.PossibleRereadIDs {
+		fmt.Fprintf(w, "      - %s\n", id)
 	}
 	fmt.Fprintln(w, "  差額分類：")
 	for _, c := range []string{CatClientTimeout, CatIngressRetry, CatOther, CatNotViaIngress, CatUnexplained} {
@@ -611,8 +630,8 @@ func render(w io.Writer, r Result) {
 		return
 	}
 	s := r.Stats
-	fmt.Fprintf(w, "  統計視窗 %s ～ %s（%d 個 agent）；視窗內 access log %d 行，視窗外 %d 行不算\n",
-		s.Window[0].Format("15:04:05.000"), s.Window[1].Format("15:04:05.000"), s.Agents, s.InWindow, s.OutsideWindow)
+	fmt.Fprintf(w, "  統計視窗 %s ～ %s（%d 個 agent）；視窗內 access log %d 行，視窗外 %d 行不算，可能是收集端重讀的 %d 行不算\n",
+		s.Window[0].Format("15:04:05.000"), s.Window[1].Format("15:04:05.000"), s.Agents, s.InWindow, s.OutsideWindow, s.PossibleReread)
 	var groups []string
 	for g := range s.PathCounts {
 		groups = append(groups, g)
@@ -658,7 +677,18 @@ func runMain(args []string, stdout, stderr io.Writer) int {
 		rereads = ParseRereads(mf)
 		mf.Close()
 	}
-	lines, reread, ambiguous := DedupeLines(lines, rereads)
+	lines = MarkRereads(lines, rereads)
+	possible, plist := 0, []string(nil)
+	for _, l := range lines {
+		if l.PossibleReread {
+			possible++
+			id := l.attempt()
+			if id == "" {
+				id = "（沒有嘗試編號）"
+			}
+			plist = append(plist, fmt.Sprintf("%s %s %s", id, l.Method, l.Path))
+		}
+	}
 	if len(lines) == 0 {
 		fmt.Fprintln(stdout, "入口紀錄取不到（ingress.log 沒有任何紀錄）")
 		return 3
@@ -682,7 +712,7 @@ func runMain(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "ingress-reconcile:", err)
 		return 2
 	}
-	res := Result{Dir: dir, Run: run, IngressBad: bad, AttemptsBad: attBad, RereadLines: reread, AmbiguousDups: ambiguous, Rereads: rereads, Attempts: ReconcileAttempts(run, atts, lines), TimeoutSeconds: timeout.Seconds()}
+	res := Result{Dir: dir, Run: run, IngressBad: bad, AttemptsBad: attBad, PossibleRereadLines: possible, PossibleRereadList: plist, Rereads: rereads, Attempts: ReconcileAttempts(run, atts, lines, rereads), TimeoutSeconds: timeout.Seconds()}
 	s0, err0 := readStats(filepath.Join(dir, "envoy-stats-start.txt"))
 	s1, err1 := readStats(filepath.Join(dir, "envoy-stats-end.txt"))
 	if err := errors.Join(err0, err1); err != nil {
