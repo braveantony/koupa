@@ -23,7 +23,7 @@ const (
 // New clones koupa_template into a fresh database and returns a pool that
 // connects to it as role koupa. The database is dropped when the test ends.
 // With -short the test is skipped; without KOUPA_TEST_DSN it fails.
-func New(t *testing.T) *pgxpool.Pool {
+func New(t testing.TB) *pgxpool.Pool {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("skipping database test in -short mode")
