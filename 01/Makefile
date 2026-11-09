@@ -1,8 +1,10 @@
 GO := scripts/go
+TESTDB := scripts/test-db.sh
 
 .PHONY: test test-db
 test-db:
-	scripts/test-db.sh
+	$(TESTDB)
 
+# Capture the script output first so a failure aborts before eval.
 test:
-	eval "$$(scripts/test-db.sh)" && $(GO) test -race ./...
+	out=$$($(TESTDB)) && eval "$$out" && $(GO) test -race ./...

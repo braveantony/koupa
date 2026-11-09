@@ -57,20 +57,8 @@ func New(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("clone template: %v", err)
 	}
 
-	poolCfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	poolCfg.ConnConfig.Database = name
-	poolCfg.ConnConfig.User = appRole
-	poolCfg.ConnConfig.Password = appRolePW
-	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
-	if err != nil {
-		t.Fatalf("open pool: %v", err)
-	}
-
+	// Register the drop right away so any later failure still removes the database.
 	t.Cleanup(func() {
-		pool.Close()
 		cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer ccancel()
 		c, err := pgx.ConnectConfig(cctx, adminCfg)
@@ -83,5 +71,19 @@ func New(t *testing.T) *pgxpool.Pool {
 			t.Errorf("drop %s: %v", name, err)
 		}
 	})
+
+	poolCfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	poolCfg.ConnConfig.Database = name
+	poolCfg.ConnConfig.User = appRole
+	poolCfg.ConnConfig.Password = appRolePW
+	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
+	if err != nil {
+		t.Fatalf("open pool: %v", err)
+	}
+	// Cleanups run LIFO: the pool closes before the database is dropped.
+	t.Cleanup(pool.Close)
 	return pool
 }
