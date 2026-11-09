@@ -723,7 +723,7 @@ docker-content-digest: sha256:03a1c6a62b27e8ad31cae5c085131b5ac706b09403d6fcb6c5
 | 5b | 自訂標頭穿過 Gateway 到上游、API server audit log | **已實測** | 標頭保留、audit 可用（3.6） |
 | 6 | Hubble 是否啟用、agent 內有無 `hubble` 執行檔 | **已實測** | 啟用；`/usr/bin/hubble` v1.20.4 可用；看得到 Gateway HTTP（第 4 節） |
 | 7 | terminating 端點在 Envoy EDS 的處理 | **待確認** | 需要 calibrate 實驗；縮到 0 後 Envoy 仍保留舊端點（3.3） |
-| 8 | CNPG 接受 `tag@digest`，且 `SHOW transaction_timeout` 可用 | **待確認** | 屬於建 Cluster 時才能驗，不在 Task 1b 範圍 |
+| 8 | CNPG 接受 `tag@digest`，且 `SHOW transaction_timeout` 可用 | **已實測（Task 14）** | `imageName` 寫 `tag@digest` 可以，Pod 的 imageID 是同一個 index digest；`ALTER ROLE` 生效（`pg_roles.rolconfig = {transaction_timeout=60s}`），App 啟動 log `tx_timeout_check ok, got 1min`（7.3） |
 | 9（新增） | stream idle 300 秒的實際切斷行為與回應旗標 | **待確認** | 要一條靜默超過 300 秒的連線；預期旗標 `SI`，未驗證 |
 | 10（新增） | `retry` 沒寫 `attempts` 時的預設重試次數 | **待確認** | 本次只測了 `attempts: 2` |
 | 11（新增） | `%UPSTREAM_REQUEST_ATTEMPT_COUNT%` 的 0 | **待確認** | 本次所有請求都有上游嘗試；規則：記錄到的 0 視為未知，除非旗標為 `UH` 或 `NR`（2.3） |
@@ -742,6 +742,8 @@ $ for n in 1 2 3 4; do curl -s -m3 -o /dev/null -w "172.22.0.$n:32066 %{http_cod
 ```
 
 原因沒有深究（Gateway 的 Service 只有一個假端點 `192.192.192.192`，且 `externalTrafficPolicy: Local`，可能和 L2 leader 選舉有關），所以 koupa 的量測腳本不要依賴主機直連 LB IP，用 `<節點 IP>:<NodePort>` 或叢集內的 Pod 當流量來源。這點和「涵蓋所有入口實例」有關：請求打哪個節點，就只有那個節點的 Envoy 有 log。
+
+**更新（Task 14）**：原因已確認並修正，koupa 可以從主機直連 LB IP，見 7.3。
 
 ### 7.2 測試資源與清理（Task 1b）
 
@@ -785,6 +787,45 @@ $ kubectl get svc -A | grep -c envcheck
 ```
 
 清理後 Envoy 的 listener `envcheck/cilium-gateway-gw/listener` 仍以 `draining_state` 留在 `cilium-dbg envoy admin config` 裡一段時間（Envoy 的 listener 排空，不是殘留的 Kubernetes 物件；先前別人的 `tk-verify` Gateway 也是同樣情形）。
+
+### 7.3 LoadBalancer IP 連不到的原因與修正（Task 14，已實測）
+
+7.1 的原因已確認：**Cilium 的 Helm 值 `gateway-api-service-externaltrafficpolicy: Local`** 讓 Gateway 產生的 Service 是 `externalTrafficPolicy: Local`，而這個 Service 唯一的端點是假位址 `192.192.192.192`（不在任何節點上）。`Local` 時只有「本機有端點」的節點能參與 L2 廣播，所以沒有任何節點符合資格：沒有 lease、主機 ARP `FAILED`。
+
+```console
+$ kubectl -n kube-system get cm cilium-config -o yaml | grep gateway-api-service-externaltrafficpolicy
+  gateway-api-service-externaltrafficpolicy: Local
+$ kubectl -n koupa get endpointslice -l kubernetes.io/service-name=cilium-gateway-koupa -o yaml | grep -A1 addresses
+  - addresses:
+    - 192.192.192.192
+$ kubectl -n kube-system get lease | grep l2announce      # （沒有輸出）
+$ curl -sS -m5 http://172.22.0.201/api/whoami
+curl: (7) Failed to connect to 172.22.0.201 port 80 after 3069 ms: Could not connect to server
+$ ip neigh show 172.22.0.201
+172.22.0.201 dev podman2 FAILED
+```
+
+**修正（不改 Helm、不動 kube-system 物件）**：koupa 自己的 `CiliumGatewayClassConfig koupa-access-log` 加上 `spec.service.externalTrafficPolicy: Cluster`。套用後 Service 變成 `Cluster`，幾秒內出現 lease，主機直連 LB IP 成功：
+
+```console
+$ kubectl -n koupa get svc cilium-gateway-koupa -o jsonpath='{.spec.externalTrafficPolicy}'
+Cluster
+$ kubectl -n kube-system get lease | grep l2announce
+cilium-l2announce-koupa-cilium-gateway-koupa   tkha-worker-1   6s
+$ curl -sS -m5 -i http://172.22.0.201/api/whoami
+HTTP/1.1 200 OK
+x-koupa-pod-uid: f839094c-6e6d-4450-80e8-9430026a2269
+server: envoy
+{"pod_name":"koupa-66d75c5658-nw2bd","pod_uid":"f839094c-6e6d-4450-80e8-9430026a2269","version":"v1"}
+$ ip neigh show 172.22.0.201      # MAC 是 tkha-worker-1 的 eth0
+172.22.0.201 dev podman2 lladdr 96:e1:e8:1b:4c:7b REACHABLE
+```
+
+對量測的影響：
+
+- 主機打 LB IP 時，所有請求都進 **lease 持有者那一個節點**（本次是 `tkha-worker-1`）的 Envoy，access log 也只在那個 `cilium-envoy` Pod；仍建議同時收所有 `cilium-envoy` Pod 的 log，因為 lease 可能換手。
+- access log 寫到 stdout 有幾秒的延遲（Envoy 緩衝），收尾時要多等幾秒再停止收集。
+- 這個設定是 GatewayClass 層級，只影響用 `koupa` GatewayClass 的 Gateway。NodePort 備案仍可用（`kubectl -n koupa get svc cilium-gateway-koupa` 的 NodePort），目前不需要。
 
 ## 8. 來源網址對照
 

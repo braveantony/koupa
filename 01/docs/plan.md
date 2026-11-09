@@ -439,7 +439,7 @@
 - `calibrate`：`preStop` 20 秒、寬限 45 秒、探測每秒 50 次、模型門檻 (1 − p)ᵏ ≤ 0.001、刪除前樣本至少 100 次、顯著水準 0.05、U 至少早於 `preStop` 結束 5 秒、至少 5 個有效樣本。
 - 有未知項目時，成績寫成「已確認 N；另有 M 項未知」，不可以印成單獨的 0。
 - 正式量測時 `TEST_HOOKS`、`TEST_MUTATION` 必須沒有設定。
-- 映像檔：`registry.gitlab.com/kubeantony/koupa:v1`、`:v2`、`registry.gitlab.com/kubeantony/rush-hour:<版本>`；distroless、`linux/amd64`、公開、不用 `latest`。
+- 映像檔：`ghcr.io/braveantony/koupa:v1`、`:v2`、`ghcr.io/braveantony/rush-hour:<版本>`；distroless、`linux/amd64`、公開、不用 `latest`。
 - namespace `koupa`；技術名稱 `koupa`、`rush-hour`。
 - 標頭名稱：`X-Koupa-Attempt`（嘗試編號，Rush Hour 送）、`X-Koupa-Pod-UID`（App 回）。
 

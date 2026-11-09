@@ -21,9 +21,9 @@ YAML 不寫死 IP，`measure.sh` 會自動查 Gateway 的 IP。
 
 | 映像檔 | 用途 | 在哪裡被拉取 |
 |---|---|---|
-| `registry.gitlab.com/kubeantony/koupa:v1` | App 舊版 | 叢集節點 |
-| `registry.gitlab.com/kubeantony/koupa:v2` | App 新版（售完功能） | 叢集節點 |
-| `registry.gitlab.com/kubeantony/rush-hour:<版本>` | 量測工具 | 主機 |
+| `ghcr.io/braveantony/koupa:v1` | App 舊版 | 叢集節點 |
+| `ghcr.io/braveantony/koupa:v2` | App 新版（售完功能） | 叢集節點 |
+| `ghcr.io/braveantony/rush-hour:<版本>` | 量測工具 | 主機 |
 
 - 都事先建置好，設為公開，不需要登入就能拉取；
 - 架構為 `linux/amd64`；
