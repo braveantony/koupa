@@ -11,8 +11,12 @@
 #   manifest/live.yaml        `kubectl get -o yaml` of the koupa objects now
 #   versions.txt              git commit, kubectl/cluster, podman, Cilium, CNPG, kernel
 #   images.json               image digests: every koupa Pod seen, Rush Hour
-#   audit/                    /api/audit: what the scorecard used, and the
-#                             queries run again now (queries.txt says which)
+#   audit/                    /api/audit: what the scorecard used (must be
+#                             usable: int cursor, orders, ready list, else the
+#                             pack is incomplete), and the queries run again
+#                             now (queries.txt; status.json says per mode
+#                             whether it succeeded; a failed one is kept as
+#                             <mode>.failed.json and indexed FAILED)
 #   failures.json             failed and unsettled attempts from the scorecard
 #   evidence-index.txt        every file with its size; MISSING lines for
 #                             required pieces that are absent
@@ -146,20 +150,79 @@ try:
     s = json.load(open(os.path.join(run, "scorecard.json")))
 except (OSError, ValueError):
     sys.exit(0)
-json.dump(s.get("facts", {}).get("audit"), open(os.path.join(run, "audit", "used-by-scorecard.json"), "w"), indent=2, ensure_ascii=False)
+json.dump((s.get("facts") or {}).get("audit"), open(os.path.join(run, "audit", "used-by-scorecard.json"), "w"), indent=2, ensure_ascii=False)
 d = s.get("diagnostics") or {}
 json.dump({"failed_attempts": d.get("failed_attempts") or [],
            "unsettled_attempts": d.get("unsettled_attempts") or [],
            "client_in_flight": d.get("client_in_flight") or []},
           open(os.path.join(run, "failures.json"), "w"), indent=2, ensure_ascii=False)
 PY
+# audit_usable MODE FILE: prints a reason and fails unless FILE holds a
+# usable /api/audit answer for MODE ("all": the scorecard's combined one).
+audit_usable() {
+	python3 -I - "$1" "$2" <<'PY'
+import json, sys
+mode, path = sys.argv[1:]
+try:
+    v = json.load(open(path))
+except (OSError, ValueError) as e:
+    print("not JSON (%s)" % e); sys.exit(1)
+def cursor_ok(x):
+    return isinstance(x, dict) and type(x.get("cursor")) is int and x["cursor"] >= 0
+checks = {
+    "cursor": cursor_ok(v),
+    "orders": isinstance(v, (dict, list)) and not (isinstance(v, dict) and "error" in v),
+    "ready": isinstance(v, list),
+    "all": cursor_ok(v) and isinstance(v.get("orders"), (dict, list)) and isinstance(v.get("ready"), list),
+}
+if not checks[mode]:
+    print("unusable %s answer: %s" % (mode, json.dumps(v, ensure_ascii=False)[:200])); sys.exit(1)
+PY
+}
+
 : >"$run/audit/queries.txt"
+rm -f "$run/audit/"*.failed.json
+declare -A audit_fail=()
+status_args=()
 for mode in cursor orders ready; do
 	url="$base/api/audit?run=$run_id&mode=$mode"
 	echo "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ) GET $url (after the run; the scorecard used audit/used-by-scorecard.json)" >>"$run/audit/queries.txt"
-	curl -sS --max-time 10 "$url" >"$run/audit/$mode.json" 2>>"$run/audit/queries.txt" ||
-		echo "  failed (curl rc=$?)" >>"$run/audit/queries.txt"
+	f=$run/audit/$mode.json
+	rm -f "$f"
+	err="" code=""
+	if ! code=$(curl -sS --max-time 10 -o "$f.tmp" -w '%{http_code}' "$url" 2>"$run/audit/.curl.err"); then
+		err="curl failed: $(tr '\n' ' ' <"$run/audit/.curl.err")"
+	elif [ "$code" != 200 ]; then
+		err="HTTP $code"
+	elif ! why=$(audit_usable "$mode" "$f.tmp"); then
+		err=$why
+	fi
+	rm -f "$run/audit/.curl.err"
+	if [ -n "$err" ]; then
+		echo "  FAILED: $err" >>"$run/audit/queries.txt"
+		[ -f "$f.tmp" ] && mv "$f.tmp" "$run/audit/$mode.failed.json"
+		audit_fail[$mode]=$err
+		echo "evidence: audit re-query $mode failed: $err" >&2
+	else
+		mv "$f.tmp" "$f"
+	fi
+	status_args+=("$mode" "${code:-}" "$err")
 done
+python3 -I - "$run/audit/status.json" "${status_args[@]}" <<'PY'
+import json, sys
+out, rest = sys.argv[1], sys.argv[2:]
+st = {}
+for i in range(0, len(rest), 3):
+    mode, code, err = rest[i:i + 3]
+    st[mode] = {"ok": not err, "http": code or None, "error": err or None}
+json.dump(st, open(out, "w"), indent=2, ensure_ascii=False)
+PY
+used_err=""
+if [ -f "$run/audit/used-by-scorecard.json" ] && ! used_err=$(audit_usable all "$run/audit/used-by-scorecard.json"); then
+	used_err=${used_err:-unusable}
+else
+	used_err=""
+fi
 
 # collect-timeline.sh writes missing.jsonl only when a source is missing;
 # once it has run, an absent file means none was.
@@ -173,11 +236,22 @@ missing=0
 {
 	echo "# evidence pack $run_id ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
 	for f in "${required[@]}"; do
-		if [ -e "$run/$f" ]; then
-			echo "OK      $f"
-		else
+		if [ ! -e "$run/$f" ]; then
 			echo "MISSING $f"
 			missing=$((missing + 1))
+		elif [ "$f" = audit/used-by-scorecard.json ] && [ -n "$used_err" ]; then
+			echo "FAILED  $f ($used_err)"
+			missing=$((missing + 1))
+		else
+			echo "OK      $f"
+		fi
+	done
+	echo "# /api/audit re-queried after the run (not used by the scorecard)"
+	for m in cursor orders ready; do
+		if [ -n "${audit_fail[$m]:-}" ]; then
+			echo "FAILED  audit/$m.json (${audit_fail[$m]})"
+		else
+			echo "OK      audit/$m.json"
 		fi
 	done
 	echo "# all files"
