@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -220,7 +221,11 @@ func dial(t *testing.T, u string, hdr map[string]string) (*sseConn, int) {
 			if err != nil {
 				return
 			}
-			c.lines <- strings.TrimSuffix(l, "\n")
+			select {
+			case c.lines <- strings.TrimSuffix(l, "\n"):
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 	t.Cleanup(c.close)
@@ -349,20 +354,57 @@ func lastID(n int64) map[string]string {
 }
 
 // recordingBroadcaster wraps the real one; Register reports progress+offset
-// and records the real progress.
+// and records the real progress and subscriber ids; Unregister reports
+// each id on unreg.
 type recordingBroadcaster struct {
 	*broadcast.Broadcaster
 	offset int64
 	mu     sync.Mutex
 	got    []int64
+	ids    []uint64
+	unreg  chan uint64 // buffered; created by newRecording
+}
+
+func newRecording(b *broadcast.Broadcaster) *recordingBroadcaster {
+	return &recordingBroadcaster{Broadcaster: b, unreg: make(chan uint64, 64)}
 }
 
 func (r *recordingBroadcaster) Register(ctx context.Context, ch chan<- broadcast.ReadyEvent) (uint64, int64, error) {
 	id, p, err := r.Broadcaster.Register(ctx, ch)
 	r.mu.Lock()
 	r.got = append(r.got, p)
+	r.ids = append(r.ids, id)
 	r.mu.Unlock()
 	return id, p + r.offset, err
+}
+
+func (r *recordingBroadcaster) Unregister(id uint64) {
+	r.Broadcaster.Unregister(id)
+	if r.unreg != nil {
+		r.unreg <- id
+	}
+}
+
+func (r *recordingBroadcaster) subIDs() []uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.ids)
+}
+
+// awaitUnregister waits until id is unregistered.
+func (r *recordingBroadcaster) awaitUnregister(t *testing.T, id uint64, within time.Duration) {
+	t.Helper()
+	deadline := time.After(within)
+	for {
+		select {
+		case got := <-r.unreg:
+			if got == id {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("subscriber %d not unregistered within %v", id, within)
+		}
+	}
 }
 
 func (r *recordingBroadcaster) progress() []int64 {
@@ -446,29 +488,57 @@ func TestProgressEqualsH(t *testing.T) {
 	}
 }
 
-// A fake Register reports progress 5 while H is 2: the handler warns and
-// still delivers everything after what it sent, once.
+// fakeRegistrar hands the board's channel to the test and reports a fixed
+// progress, so the test controls exactly what arrives on the channel.
+type fakeRegistrar struct {
+	progress int64
+	chs      chan chan<- broadcast.ReadyEvent
+	unreg    chan uint64
+}
+
+func (f *fakeRegistrar) Register(ctx context.Context, ch chan<- broadcast.ReadyEvent) (uint64, int64, error) {
+	f.chs <- ch
+	return 1, f.progress, nil
+}
+func (f *fakeRegistrar) Unregister(id uint64)              { f.unreg <- id }
+func (f *fakeRegistrar) Overflowed(uint64) <-chan struct{} { return nil }
+
+// A fake Register reports progress 5 while H is 2 (the anomaly A1 rules
+// out). The channel then carries already-sent calls (1, 2, a repeated 3,
+// 4) mixed with new ones; the board must get 1..5 exactly once each, and
+// the handler must warn.
 func TestProgressAheadOfHWithFake(t *testing.T) {
 	e := newEnv(t, 200*time.Millisecond)
 	e.mark()
 	e.mark()
-	e.awaitProbe(2)
-	rb := &recordingBroadcaster{Broadcaster: e.b, offset: 3}
-	u := e.serve(&Handler{Broadcaster: rb, Cfg: baseCfg(true)})
+	fake := &fakeRegistrar{progress: 5, chs: make(chan chan<- broadcast.ReadyEvent, 1), unreg: make(chan uint64, 1)}
+	u := e.serve(&Handler{Broadcaster: fake, Cfg: baseCfg(true)})
 
-	c := mustDial(t, u, nil)
-	if got := c.hello(); got != 2 {
+	c := mustDial(t, u, lastID(0))
+	var ch chan<- broadcast.ReadyEvent
+	select {
+	case ch = <-fake.chs:
+	case <-time.After(waitTimeout):
+		t.Fatal("no Register")
+	}
+	for _, s := range []int64{1, 2, 3, 2, 3, 4, 4, 5} {
+		ch <- broadcast.ReadyEvent{ReadySeq: s, OrderID: 100 + s, Number: store.FormatNumber(s)}
+	}
+	if got := c.hello(); got != 0 {
 		t.Fatalf("hello id %d", got)
 	}
-	for range 3 {
-		e.mark()
+	if got := c.readyUntil(5); !slices.Equal(got, seqs(1, 5)) {
+		t.Fatalf("got %v, want 1..5 once each", got)
 	}
-	s := e.mark()
-	if got := c.readyUntil(s); !slices.Equal(got, seqs(3, 6)) {
-		t.Fatalf("got %v, want 3..6", got)
+	if !strings.Contains(e.logs.String(), `"msg":"progress_ahead_of_h","conn":`) ||
+		!strings.Contains(e.logs.String(), `"progress":5,"h":2`) {
+		t.Fatalf("no progress_ahead_of_h warning with progress 5, h 2; logs:\n%s", e.logs.String())
 	}
-	if !strings.Contains(e.logs.String(), `"msg":"progress_ahead_of_h"`) {
-		t.Fatalf("no progress_ahead_of_h warning; logs:\n%s", e.logs.String())
+	c.close()
+	select {
+	case <-fake.unreg:
+	case <-time.After(waitTimeout):
+		t.Fatal("not unregistered")
 	}
 }
 
@@ -766,5 +836,217 @@ func TestHeartbeatOff(t *testing.T) {
 	case l := <-c.lines:
 		t.Fatalf("unexpected line %q with heartbeat off", l)
 	case <-time.After(500 * time.Millisecond):
+	}
+}
+
+// --- review fixes ---------------------------------------------------------
+
+// An idle period longer than the write deadline must not break the next
+// event or the shutdown: the deadline only bounds a write in progress.
+func TestIdleLongerThanWriteDeadline(t *testing.T) {
+	e := newEnv(t, 200*time.Millisecond)
+	cfg := baseCfg(true)
+	cfg.WriteDeadline = 200 * time.Millisecond
+	shutdown := make(chan struct{})
+	u := e.serve(&Handler{Cfg: cfg, Shutdown: shutdown})
+	c := mustDial(t, u, nil)
+	c.hello()
+	time.Sleep(500 * time.Millisecond)
+	s := e.mark()
+	if got := c.readyUntil(s); !slices.Equal(got, []int64{s}) {
+		t.Fatalf("got %v", got)
+	}
+	time.Sleep(500 * time.Millisecond)
+	close(shutdown)
+	if ev := c.next(); ev.event != "shutdown" || ev.retry != "1500" || !ev.hasData {
+		t.Fatalf("got %+v, want shutdown", ev)
+	}
+	c.expectEOF()
+	if strings.Contains(e.logs.String(), `"reason":"write_error"`) {
+		t.Fatalf("write error logged:\n%s", e.logs.String())
+	}
+}
+
+// A present but empty Last-Event-ID is malformed when resuming is on.
+func TestEmptyLastEventID400(t *testing.T) {
+	e := newEnv(t, 200*time.Millisecond)
+	e.mark()
+	on := e.serve(&Handler{Cfg: baseCfg(true)})
+	if _, st := dial(t, on, map[string]string{"Last-Event-ID": ""}); st != http.StatusBadRequest {
+		t.Fatalf("resume on, empty Last-Event-ID: status %d, want 400", st)
+	}
+	if !strings.Contains(e.logs.String(), `"msg":"bad_last_event_id"`) {
+		t.Fatalf("no bad_last_event_id log:\n%s", e.logs.String())
+	}
+	off := e.serve(&Handler{Cfg: baseCfg(false)})
+	c := mustDial(t, off, map[string]string{"Last-Event-ID": ""}) // ignored when off
+	if got := c.hello(); got != 1 {
+		t.Fatalf("hello %d", got)
+	}
+}
+
+// While the H query is blocked on a table lock, shutdown and a client
+// leaving both end the connection promptly and unregister it.
+func TestBlockedQueryEnds(t *testing.T) {
+	for _, mode := range []string{"shutdown", "client_gone"} {
+		t.Run(mode, func(t *testing.T) {
+			e := newEnv(t, time.Hour)
+			e.mark()
+			rb := newRecording(e.b)
+			shutdown := make(chan struct{})
+			h := funcHooks(func(ctx context.Context, name, attempt string) {
+				tx, err := e.pool.Begin(context.Background())
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				t.Cleanup(func() { tx.Rollback(context.Background()) })
+				if _, err := tx.Exec(context.Background(), `LOCK TABLE orders IN ACCESS EXCLUSIVE MODE`); err != nil {
+					t.Error(err)
+				}
+			})
+			u := e.serve(&Handler{Broadcaster: rb, Cfg: baseCfg(true), Shutdown: shutdown, Hooks: h})
+			c := mustDial(t, u, nil)
+			c.hello()
+			// Wait until the H query is waiting on the lock.
+			waitDeadline := time.Now().Add(waitTimeout)
+			for {
+				var n int
+				if err := e.pool.QueryRow(context.Background(),
+					`SELECT count(*) FROM pg_stat_activity
+					 WHERE wait_event_type = 'Lock' AND query LIKE '%MAX(ready_seq)%' AND pid <> pg_backend_pid()`).Scan(&n); err != nil {
+					t.Fatal(err)
+				}
+				if n > 0 {
+					break
+				}
+				if time.Now().After(waitDeadline) {
+					t.Fatal("H query never blocked")
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			id := rb.subIDs()[0]
+			began := time.Now()
+			if mode == "shutdown" {
+				close(shutdown)
+				if ev := c.next(); ev.event != "shutdown" {
+					t.Fatalf("got %+v, want shutdown", ev)
+				}
+				c.expectEOF()
+			} else {
+				c.close()
+			}
+			rb.awaitUnregister(t, id, 2*time.Second)
+			if d := time.Since(began); d > 2*time.Second {
+				t.Fatalf("ended after %v", d)
+			}
+			if !strings.Contains(e.logs.String(), `"reason":"`+mode+`"`) {
+				t.Fatalf("no %s close logged:\n%s", mode, e.logs.String())
+			}
+		})
+	}
+}
+
+// smallBufListener shrinks each accepted connection's send buffer so a
+// board that stops reading blocks the server's writes quickly.
+type smallBufListener struct{ net.Listener }
+
+func (l smallBufListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if tc, ok := c.(*net.TCPConn); ok {
+		tc.SetWriteBuffer(4096)
+	}
+	return c, err
+}
+
+// rawBoard connects over plain TCP, reads up to the hello id, then stops
+// reading for good.
+func rawBoard(t *testing.T, addr string) (net.Conn, int64) {
+	t.Helper()
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	conn.(*net.TCPConn).SetReadBuffer(4096)
+	conn.SetDeadline(time.Now().Add(waitTimeout))
+	if _, err := io.WriteString(conn, "GET /events HTTP/1.1\r\nHost: board\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	r := bufio.NewReader(conn)
+	seenHello := false
+	for {
+		l, err := r.ReadString('\n')
+		if err != nil {
+			t.Fatalf("raw board: %v", err)
+		}
+		l = strings.TrimRight(l, "\r\n")
+		if l == "event: hello" {
+			seenHello = true
+		}
+		if seenHello && strings.HasPrefix(l, "id: ") {
+			n, err := strconv.ParseInt(strings.TrimPrefix(l, "id: "), 10, 64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return conn, n
+		}
+	}
+}
+
+// A board that stops reading is cut off by the write deadline and
+// unregistered; another board on the same server keeps receiving; on
+// reconnect the stuck board resumes (on) or starts at the current max (off).
+func TestBlockedWriterDeadline(t *testing.T) {
+	for _, resume := range []bool{false, true} {
+		t.Run("resume="+strconv.FormatBool(resume), func(t *testing.T) {
+			e := newEnv(t, 200*time.Millisecond)
+			e.mark()
+			e.awaitProbe(1)
+			rb := newRecording(e.b)
+			cfg := baseCfg(resume)
+			cfg.WriteDeadline = 300 * time.Millisecond
+			cfg.SSEHeartbeat = 5 * time.Millisecond
+			filler := []byte(": " + strings.Repeat("x", 64<<10) + "\n")
+			srv := httptest.NewUnstartedServer(&Handler{Broadcaster: rb, Pool: e.pool, Log: e.log, Cfg: cfg, heartbeat: filler})
+			srv.Listener = smallBufListener{srv.Listener}
+			srv.Start()
+			t.Cleanup(srv.Close)
+
+			stuck, helloID := rawBoard(t, srv.Listener.Addr().String())
+			healthy := mustDial(t, srv.URL, nil)
+			healthy.hello()
+			ids := rb.subIDs()
+			if len(ids) != 2 {
+				t.Fatalf("subscribers %v", ids)
+			}
+			began := time.Now()
+			rb.awaitUnregister(t, ids[0], 3*time.Second)
+			t.Logf("stuck board cut off after %v", time.Since(began))
+			if !strings.Contains(e.logs.String(), `"reason":"write_error"`) {
+				t.Fatalf("no write_error close:\n%s", e.logs.String())
+			}
+			// Calls while the stuck board is gone; the healthy one gets them.
+			g1, g2 := e.mark(), e.mark()
+			if got := healthy.readyUntil(g2); !slices.Equal(got, []int64{g1, g2}) {
+				t.Fatalf("healthy board got %v", got)
+			}
+			stuck.Close()
+
+			c := mustDial(t, srv.URL, lastID(helloID))
+			hello := c.hello()
+			s := e.mark()
+			got := c.readyUntil(s)
+			if resume {
+				if hello != helloID || !slices.Equal(got, []int64{g1, g2, s}) {
+					t.Fatalf("resume: hello %d got %v, want %d and [%d %d %d]", hello, got, helloID, g1, g2, s)
+				}
+			} else if hello != g2 || !slices.Equal(got, []int64{s}) {
+				t.Fatalf("no resume: hello %d got %v, want %d and [%d]", hello, got, g2, s)
+			}
+			if got := healthy.readyUntil(s); !slices.Equal(got, []int64{s}) {
+				t.Fatalf("healthy board got %v", got)
+			}
+		})
 	}
 }

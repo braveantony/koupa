@@ -11,7 +11,6 @@ package board
 
 import (
 	"context"
-	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -39,6 +38,9 @@ const ChannelBuffer = 64
 // backfillPage is how many rows one backfill query reads.
 const backfillPage = 500
 
+// readTimeout caps each read query (the global 60s DB limit).
+const readTimeout = 60 * time.Second
+
 // HookAfterHello is the pause point between A3 steps 4 and 5.
 const HookAfterHello = "sse.after_hello"
 
@@ -62,7 +64,8 @@ type Handler struct {
 	// Hooks is the test pause point; nil means hooks.Noop.
 	Hooks hooks.Point
 
-	bufSize int // tests only; 0 means ChannelBuffer
+	bufSize   int    // tests only; 0 means ChannelBuffer
+	heartbeat []byte // tests only; nil means ": hb\n" (a large filler fills socket buffers)
 }
 
 var connSeq atomic.Uint64
@@ -103,16 +106,33 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer h.Broadcaster.Unregister(subID)
 	overflow := h.Broadcaster.Overflowed(subID)
 
+	// Reads are cancelled as soon as the connection must end (client
+	// gone, overflow, shutdown), so a stalled query cannot hold the
+	// handler past SHUTDOWN_TIMEOUT; each read is still capped at 60s.
+	qctx, qcancel := context.WithCancel(ctx)
+	defer qcancel()
+	go func() {
+		select {
+		case <-overflow:
+		case <-h.Shutdown:
+		case <-qctx.Done():
+		}
+		qcancel()
+	}()
+
 	// 2. Start point: the current max (new statement), or a validated
 	// Last-Event-ID when resuming is on.
-	cur, err := h.maxReadySeq()
+	cur, err := h.maxReadySeq(qctx)
 	if err != nil {
 		log.Warn(applog.EvBoardClosed, "reason", reasonDBError, "err", err.Error())
 		http.Error(w, "database unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	start := cur
-	if raw := r.Header.Get("Last-Event-ID"); h.Cfg.ResumeFromLastID && raw != "" {
+	// Absent header means first connect; a present but empty one is
+	// malformed (EventSource never sends an empty Last-Event-ID).
+	if vals, present := r.Header[http.CanonicalHeaderKey("Last-Event-ID")]; h.Cfg.ResumeFromLastID && present {
+		raw := vals[0]
 		n, ok := parseLastEventID(raw)
 		if !ok || n > cur {
 			log.Warn(applog.EvBadLastEventID, "value", raw, "max", cur)
@@ -128,8 +148,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	hdr.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
+	hbData := heartbeat
+	if h.heartbeat != nil {
+		hbData = h.heartbeat
+	}
 	sw := &streamWriter{w: w, rc: http.NewResponseController(w), deadline: h.Cfg.WriteDeadline, log: log, trace: h.Cfg.TestHooks}
-	// Give the final chunk written after we return a fresh deadline.
+	// Bound the final chunk net/http writes after we return.
 	defer sw.refreshDeadline()
 
 	// 3. and 4.
@@ -168,9 +192,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 5. Backfill start < ready_seq <= H, H from a new statement.
-	hi, err := h.maxReadySeq()
+	hi, err := h.maxReadySeq(qctx)
 	if err != nil {
-		closed(reasonDBError, err)
+		if !stop() {
+			closed(reasonDBError, err)
+		}
 		return
 	}
 	if progress > hi {
@@ -179,9 +205,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Warn(applog.EvProgressAheadOfH, "progress", progress, "h", hi)
 	}
 	for sent < hi {
-		evs, err := h.readyAfter(sent)
+		evs, err := h.readyAfter(qctx, sent)
 		if err != nil {
-			closed(reasonDBError, err)
+			if !stop() {
+				closed(reasonDBError, err)
+			}
 			return
 		}
 		for _, ev := range evs {
@@ -233,7 +261,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			sent = ev.ReadySeq
 		case <-hb:
-			if err := sw.write(heartbeat); err != nil {
+			if err := sw.write(hbData); err != nil {
 				closed(reasonWriteError, err)
 				return
 			}
@@ -250,14 +278,14 @@ func (h *Handler) sendShutdown(sw *streamWriter, closed func(string, error)) {
 	closed(reasonShutdown, nil)
 }
 
-func (h *Handler) maxReadySeq() (int64, error) {
-	dctx, cancel := store.DBContext()
+func (h *Handler) maxReadySeq(ctx context.Context) (int64, error) {
+	dctx, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()
 	return store.MaxReadySeq(dctx, h.Pool)
 }
 
-func (h *Handler) readyAfter(after int64) ([]broadcast.ReadyEvent, error) {
-	dctx, cancel := store.DBContext()
+func (h *Handler) readyAfter(ctx context.Context, after int64) ([]broadcast.ReadyEvent, error) {
+	dctx, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()
 	return store.ReadyAfter(dctx, h.Pool, after, backfillPage)
 }
@@ -294,7 +322,9 @@ func (s *streamWriter) refreshDeadline() {
 func (s *streamWriter) write(b []byte) error {
 	s.n++
 	if s.deadline > 0 {
-		if err := s.rc.SetWriteDeadline(time.Now().Add(s.deadline)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		// Unsupported (http.ErrNotSupported) is an error too: without a
+		// deadline a stuck board could hold the handler forever.
+		if err := s.rc.SetWriteDeadline(time.Now().Add(s.deadline)); err != nil {
 			return err
 		}
 	}
@@ -304,6 +334,11 @@ func (s *streamWriter) write(b []byte) error {
 	_, err := s.w.Write(b)
 	if err == nil {
 		err = s.rc.Flush()
+	}
+	if err == nil && s.deadline > 0 {
+		// Clear it: an idle healthy board must not fail its next write
+		// because a stale deadline expired in between.
+		err = s.rc.SetWriteDeadline(time.Time{})
 	}
 	if s.trace {
 		args := []any{"write", s.n}
