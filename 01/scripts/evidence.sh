@@ -159,24 +159,56 @@ json.dump({"failed_attempts": d.get("failed_attempts") or [],
 PY
 # audit_usable MODE FILE: prints a reason and fails unless FILE holds a
 # usable /api/audit answer for MODE ("all": the scorecard's combined one).
+# orders, strictly: a JSON object without "error", every key "<run-id>-...",
+# every value a non-empty list of integer order ids; {} only when the
+# scorecard counted 0 orders.
 audit_usable() {
-	python3 -I - "$1" "$2" <<'PY'
+	python3 -I - "$1" "$2" "$run_id" "$run/scorecard.json" <<'PY'
 import json, sys
-mode, path = sys.argv[1:]
+mode, path, run_id, sc_path = sys.argv[1:]
 try:
     v = json.load(open(path))
 except (OSError, ValueError) as e:
     print("not JSON (%s)" % e); sys.exit(1)
-def cursor_ok(x):
-    return isinstance(x, dict) and type(x.get("cursor")) is int and x["cursor"] >= 0
-checks = {
-    "cursor": cursor_ok(v),
-    "orders": isinstance(v, (dict, list)) and not (isinstance(v, dict) and "error" in v),
-    "ready": isinstance(v, list),
-    "all": cursor_ok(v) and isinstance(v.get("orders"), (dict, list)) and isinstance(v.get("ready"), list),
-}
-if not checks[mode]:
-    print("unusable %s answer: %s" % (mode, json.dumps(v, ensure_ascii=False)[:200])); sys.exit(1)
+try:
+    n_orders = json.load(open(sc_path))["items"]["orders"]["confirmed"]
+except (OSError, ValueError, KeyError, TypeError):
+    n_orders = None
+
+def cursor_why(x):
+    if not (isinstance(x, dict) and type(x.get("cursor")) is int and x["cursor"] >= 0):
+        return "cursor is not a non-negative integer"
+
+def orders_why(x):
+    if not isinstance(x, dict):
+        return "orders is not a JSON object"
+    if "error" in x:
+        return "orders is an error: %s" % str(x["error"])[:100]
+    if not x:
+        return None if n_orders == 0 else "orders is empty but the scorecard counted %s orders" % n_orders
+    prefix = run_id + "-"
+    for k, ids in x.items():
+        if not k.startswith(prefix):
+            return "orders key %r is not of run %s" % (k[:80], run_id)
+        if not (isinstance(ids, list) and ids and all(type(i) is int for i in ids)):
+            return "orders[%r] is not a non-empty list of integer ids: %s" % (k[:80], json.dumps(ids)[:80])
+
+def ready_why(x):
+    if not isinstance(x, list):
+        return "ready is not a list"
+
+if mode == "cursor":
+    why = cursor_why(v)
+elif mode == "orders":
+    why = orders_why(v)
+elif mode == "ready":
+    why = ready_why(v)
+elif not isinstance(v, dict):
+    why = "the scorecard's audit is not an object"
+else:
+    why = cursor_why(v) or orders_why(v.get("orders")) or ready_why(v.get("ready"))
+if why:
+    print("unusable %s answer: %s" % (mode, why)); sys.exit(1)
 PY
 }
 
@@ -250,6 +282,9 @@ missing=0
 	for m in cursor orders ready; do
 		if [ -n "${audit_fail[$m]:-}" ]; then
 			echo "FAILED  audit/$m.json (${audit_fail[$m]})"
+			# Orders evidence is required (findings-2 ruling); a failed
+			# cursor/ready re-query is recorded but does not fail the pack.
+			[ "$m" = orders ] && missing=$((missing + 1))
 		else
 			echo "OK      audit/$m.json"
 		fi

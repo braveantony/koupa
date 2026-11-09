@@ -223,7 +223,11 @@ if [ -f "$FAKE/curl-500" ]; then
 else
 	case $url in
 	*mode=cursor*) echo '{"cursor":5}' >"$out" ;;
-	*mode=orders*) echo '{"orders":{}}' >"$out" ;;
+	*mode=orders*)
+		# $FAKE/audit-orders overrides; @RUN@ is replaced by the run id.
+		run=${url#*run=}; run=${run%%&*}
+		if [ -f "$FAKE/audit-orders" ]; then sed "s/@RUN@/$run/g" "$FAKE/audit-orders" >"$out"
+		else printf '{"%s-c1":[1],"%s-c2":[2]}\n' "$run" "$run" >"$out"; fi ;;
 	*mode=ready*) echo '[]' >"$out" ;;
 	*) echo '{"fake":true}' >"$out" ;;
 	esac
@@ -309,7 +313,7 @@ s = {
               "duplicate_extra_orders": z(),
               "missing": {"board-1": z(), "board-2": z(), "board-3": z()}},
     "diagnostics": {"failed_attempts": [], "unsettled_attempts": []},
-    "facts": {"run": "@RUN@", "audit": {"cursor": 5, "orders": {}, "ready": []}},
+    "facts": {"run": "@RUN@", "audit": {"cursor": 5, "orders": {"@RUN@-c1": [1], "@RUN@-c2": [2]}, "ready": []}},
 }
 exec(edit)
 json.dump(s, open(path, "w"), ensure_ascii=False)

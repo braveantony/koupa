@@ -48,4 +48,46 @@ scorecard 's["facts"]["audit"]["cursor"] = "x"'
 mk_run
 "$STAGE/scripts/evidence.sh" "$run" >"$T/out" 2>&1
 check "scorecard audit cursor not an int: exit 1" [ $? -eq 1 ]
+
+# The orders answer, strictly: an object keyed by "<run-id>-..." whose
+# values are non-empty lists of integer order ids; {} only with 0 orders.
+scorecard_clean
+while IFS='|' read -r what body; do
+	mk_run
+	printf '%s\n' "$body" >"$FAKE/audit-orders"
+	"$STAGE/scripts/evidence.sh" "$run" >"$T/out" 2>&1
+	rc=$?
+	check "re-query orders $what: FAILED, pack incomplete (rc=$rc)" bash -c 'grep -q "^FAILED  audit/orders.json" "$1" && [ "$2" -eq 1 ]' _ "$run/evidence-index.txt" "$rc"
+done <<'CASES'
+{}|{}
+[]|[]
+error object|{"error":"database unavailable"}
+wrong-run keys|{"control-20250101-000000-r1-ffff-c1":[1]}
+non-integer ids|{"@RUN@-c1":["1"]}
+empty id list|{"@RUN@-c1":[]}
+bool id|{"@RUN@-c1":[true]}
+CASES
+rm -f "$FAKE/audit-orders"
+
+while IFS='|' read -r what edit; do
+	scorecard "$edit"
+	mk_run
+	"$STAGE/scripts/evidence.sh" "$run" >"$T/out" 2>&1
+	rc=$?
+	check "scorecard audit orders $what: FAILED used-by-scorecard (rc=$rc)" bash -c 'grep -q "^FAILED  audit/used-by-scorecard.json" "$1" && [ "$2" -eq 1 ]' _ "$run/evidence-index.txt" "$rc"
+done <<'CASES'
+{}|s["facts"]["audit"]["orders"] = {}
+[]|s["facts"]["audit"]["orders"] = []
+error object|s["facts"]["audit"]["orders"] = {"error": "x"}
+wrong-run keys|s["facts"]["audit"]["orders"] = {"other-run-c1": [1]}
+non-integer ids|s["facts"]["audit"]["orders"] = {"@RUN@-c1": [1.5]}
+CASES
+
+# Zero orders: {} is the right answer, in both places.
+scorecard 's["items"]["orders"]["confirmed"] = 0; s["facts"]["audit"]["orders"] = {}'
+echo '{}' >"$FAKE/audit-orders"
+mk_run
+"$STAGE/scripts/evidence.sh" "$run" >"$T/out" 2>&1
+check "0 orders with {}: exit 0" [ $? -eq 0 ]
+rm -f "$FAKE/audit-orders"
 finish
