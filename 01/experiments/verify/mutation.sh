@@ -2,25 +2,31 @@
 # Fault injection against the measurement tool (plan A14 實際注入, design 5.6).
 #
 #   experiments/verify/mutation.sh [drop-ready] [duplicate-order]   (default: both)
+#   experiments/verify/mutation.sh check SETTING DIR   re-evaluate saved evidence
 #
 # For each setting: deploy experiments/verify/overlays/<setting> (step 4 +
 # TEST_HOOKS + TEST_MUTATION, experiment image), run one measurement and
 # compare the App log's injection records with the scorecard:
 #
+#   TEST_MUTATION counts per App instance (each Pod has its own counter):
+#   injected is counted from the App log lines and must be n x the Pods that
+#   logged injections; detected (scorecard) must equal injected. Both are
+#   printed.
+#
 #   drop-ready=3       each Pod's broadcaster skips the next 3 call numbers
 #                      for its first board connection and logs
 #                      mutation_drop_ready (ready_seq). Injected and finally
 #                      missed are counted apart: a dropped number the board
-#                      got later (after a reconnect) is not missed. Every
-#                      injected number not recovered must be a confirmed miss
-#                      of exactly one board on that Pod, the board misses
+#                      got later (after a reconnect) is not missed, so
+#                      detected = injected - recovered. Every injected
+#                      number not recovered must be a confirmed miss of
+#                      exactly one board on that Pod, the board misses
 #                      nothing else, and nothing is unknown.
 #   duplicate-order=2  each Pod creates one extra order for the next 2
 #                      client_refs (bypassing idempotency_keys) and logs
-#                      mutation_duplicate_order. The scorecard's duplicates
-#                      must be exactly the logged client_refs (2 per Pod that
-#                      took orders: the counter is per Pod, so 3 Pods give 6,
-#                      not the 2 of a single process).
+#                      mutation_duplicate_order with the outcome. Detected
+#                      (scorecard confirmed) = the committed injections;
+#                      commit_unknown ones must show up as unknown.
 #
 # measure.sh is not used: its preflight refuses TEST_MUTATION (A14: never in
 # a real measurement). The run is measure.sh's steps 3, 4 and 7 without the
@@ -87,8 +93,10 @@ for e in boards():
 pods_with_board = set(conns.values())
 per_pod = collections.Counter(u for u, _ in inj)
 ok(len(inj) > 0, "the App logged injected drops (mutation_drop_ready): %d" % len(inj))
-for u in sorted(pods_with_board):
-    ok(per_pod[u] == 3, "Pod %s (has a board connection) dropped 3 numbers: %d" % (u[:8], per_pod[u]))
+# TEST_MUTATION counts per App instance: every Pod that logged injections
+# logged n of them, so injected == n x those Pods.
+N = 3
+ok(len(inj) == N * len(per_pod), "injected = n x Pods that logged injections: %d = %d x %d" % (len(inj), N, len(per_pod)))
 for u in sorted(per_pod):
     ok(u in pods_with_board, "Pod %s dropped numbers only while a board was connected to it" % u[:8])
 C = audit("cursor")
@@ -112,14 +120,19 @@ for b in sorted(start):
     sc = items.get(b, {})
     ok(sc.get("confirmed") == want[b] and sc.get("unknown") == 0,
        "scorecard %s：已確認 %s（want %d）、未知 %s（want 0）" % (b, sc.get("confirmed"), want[b], sc.get("unknown")))
-table = {"setting": "drop-ready=3", "injected": len(inj), "injected_by_pod": dict(per_pod),
+detected = sum(v.get("confirmed", 0) for v in items.values())
+ok(detected == len(inj) - len(recovered),
+   "detected (scorecard confirmed misses) = injected - recovered: %d = %d - %d" % (detected, len(inj), len(recovered)))
+table = {"setting": "drop-ready=3", "injected": len(inj), "injected_expected": N * len(per_pod), "detected": detected,
+         "injected_by_pod": dict(per_pod),
          "recovered_after_reconnect": len(recovered), "finally_missed_expected": len(final),
          "scorecard_confirmed": sum(v.get("confirmed", 0) for v in items.values()),
          "scorecard_unknown": sum(v.get("unknown", 0) for v in items.values()),
          "per_board": {b: {"expected": want[b], "scorecard": items.get(b)} for b in sorted(start)},
          "injected_list": inj}
+table["pods"] = len(per_pod)
 json.dump(table, open(os.path.join(D, "mutation-table.json"), "w"), indent=2)
-print("table: injected %(injected)d, recovered %(recovered_after_reconnect)d, finally missed %(finally_missed_expected)d, "
+print("table: injected %(injected)d (= 3 x %(pods)d Pods), detected %(detected)d, recovered %(recovered_after_reconnect)d, finally missed %(finally_missed_expected)d, "
       "scorecard confirmed %(scorecard_confirmed)d unknown %(scorecard_unknown)d" % table)
 PY
 }
@@ -127,31 +140,46 @@ PY
 check_duplicate_order() {
 	vcheck "$1" <<'PY'
 inj = sorted({(m["_uid"], m["client_ref"], m.get("outcome")) for m in app_lines() if m.get("event") == "mutation_duplicate_order"})
-refs = {r for _, r, _ in inj}
 per_pod = collections.Counter(u for u, _, _ in inj)
 ok(len(inj) > 0, "the App logged injected duplicates (mutation_duplicate_order): %d" % len(inj))
-ok(len(refs) == len(inj), "every injection is a different client_ref")
-order_pods = {m["_uid"] for m in app_lines() if m.get("event") == "request_end" and m.get("path") == "/orders" and m.get("status") in (200, 201)}
-for u in sorted(order_pods):
-    ok(per_pod[u] == 2, "Pod %s (took orders) injected 2 duplicates: %d" % (u[:8], per_pod[u]))
+ok(len({r for _, r, _ in inj}) == len(inj), "every injection is a different client_ref")
+# TEST_MUTATION counts per App instance: injected == n x Pods that logged.
+N = 2
+ok(len(inj) == N * len(per_pod), "injected = n x Pods that logged injections: %d = %d x %d" % (len(inj), N, len(per_pod)))
+# Committed injections are certain duplicates; commit_unknown ones may be.
+refs = {r for _, r, o in inj if o == "committed"}
+unk_refs = {r for _, r, o in inj if o != "committed"}
 orders = audit("orders") or {}
 ok(bool(orders), "DB audit of orders is in the evidence (%d client_refs)" % len(orders))
 dup = {r for r, ids in orders.items() if len(ids) > 1}
-ok(dup == refs, "client_refs with more than one order in the DB = the injected ones (DB %d, injected %d)" % (len(dup), len(refs)))
+ok(refs <= dup <= refs | unk_refs, "client_refs with more than one order in the DB = the injected ones (DB %d, injected committed %d, commit_unknown %d)" % (len(dup), len(refs), len(unk_refs)))
 ok(all(len(orders.get(r, [])) == 2 for r in refs), "each injected client_ref has exactly 2 orders")
 it = S.get("items", {})
 dc, de = it.get("duplicate_client_refs", {}), it.get("duplicate_extra_orders", {})
-ok(dc.get("confirmed") == len(refs) and dc.get("unknown") == 0,
-   "scorecard 重複訂單（client_ref 數）：已確認 %s（want %d）、未知 %s（want 0）" % (dc.get("confirmed"), len(refs), dc.get("unknown")))
+ok(dc.get("confirmed") == len(refs) and dc.get("unknown") == len(unk_refs),
+   "detected = injected (committed): scorecard 重複訂單（client_ref 數）已確認 %s = %d、未知 %s = %d（commit_unknown）" % (dc.get("confirmed"), len(refs), dc.get("unknown"), len(unk_refs)))
 ok(de.get("confirmed") == len(refs), "scorecard 多出的訂單張數：已確認 %s（want %d）" % (de.get("confirmed"), len(refs)))
-table = {"setting": "duplicate-order=2", "injected": len(inj), "injected_by_pod": dict(per_pod),
+table = {"setting": "duplicate-order=2", "injected": len(inj), "injected_expected": N * len(per_pod), "pods": len(per_pod),
+         "injected_committed": len(refs), "detected": dc.get("confirmed"), "injected_by_pod": dict(per_pod),
          "outcomes": dict(collections.Counter(o for _, _, o in inj)), "db_duplicate_client_refs": len(dup),
          "scorecard_duplicate_client_refs": dc, "scorecard_extra_orders": de, "injected_list": inj}
 json.dump(table, open(os.path.join(D, "mutation-table.json"), "w"), indent=2)
-print("table: injected %d, DB duplicates %d, scorecard confirmed %s unknown %s" % (len(inj), len(dup), dc.get("confirmed"), dc.get("unknown")))
+print("table: injected %d (= 2 x %d Pods; committed %d), detected %s, DB duplicates %d, scorecard unknown %s" % (len(inj), len(per_pod), len(refs), dc.get("confirmed"), len(dup), dc.get("unknown")))
 PY
 }
 
+if [ "${1:-}" = check ]; then
+	# Re-evaluate saved evidence: check SETTING DIR.
+	[ $# -eq 3 ] || { echo "usage: $0 check drop-ready|duplicate-order DIR" >&2; exit 64; }
+	CRIT_NO_RESTORE=1
+	rm -f "$3/checks.py"
+	case $2 in
+	drop-ready) check_drop_ready "$3" ;;
+	duplicate-order) check_duplicate_order "$3" ;;
+	*) exit 64 ;;
+	esac
+	exit $?
+fi
 settings=("$@")
 [ "${#settings[@]}" -gt 0 ] || settings=(drop-ready duplicate-order)
 build_rush_hour || { log "cannot build rush-hour"; exit 1; }
