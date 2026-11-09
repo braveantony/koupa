@@ -383,3 +383,21 @@ func TestFollowerKubectlOwnProcessGroup(t *testing.T) {
 		t.Errorf("stop of a healthy stream: %+v", st)
 	}
 }
+
+func TestFollowerExternalSignalBeforeStopIsGap(t *testing.T) {
+	// kubectl is killed by someone else; our stop comes only afterwards
+	// (deterministic: the hook cancels between Wait and the classification).
+	kc, app := fakeSeq(t, `1) echo '`+lStartup+`'; echo '`+lA+`'; kill -KILL $$;;`)
+	guard, gcancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer gcancel()
+	ctx, cancel := context.WithCancel(guard)
+	defer cancel()
+	f := Follower{Kubectl: kc, Namespace: "koupa", Pod: "koupa-a", UID: "u1", Dir: app, Poll: time.Millisecond, afterWait: cancel}
+	if err := f.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := LoadPodLogMeta(filepath.Dir(app), "u1", nil, map[string]*podObj{"u1": runningPod()}, true)
+	if r := Coverage(m); r.Complete || len(m.Gaps) != 1 {
+		t.Errorf("external kill taken for our stop: gaps=%+v coverage=%+v", m.Gaps, r)
+	}
+}

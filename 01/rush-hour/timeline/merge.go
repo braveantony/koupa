@@ -102,8 +102,11 @@ func Build(dir string) ([]Event, error) {
 	b := &builder{dir: dir, byIP: map[string]*podHist{}, byName: map[string]*podHist{}, missing: map[string]bool{}}
 	// Missing entries the collector wrote.
 	_ = scan(filepath.Join(dir, FileMissing), func(line []byte) {
-		var m struct{ Source, Reason, At string }
+		var m struct{ Source, Agent, Reason, At string }
 		if json.Unmarshal(line, &m) == nil && m.Source != "" {
+			if m.Agent != "" {
+				m.Reason = m.Agent + "：" + m.Reason
+			}
 			b.markMissing(m.Source, m.Reason)
 		}
 	})

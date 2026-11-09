@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -93,6 +94,7 @@ type Follower struct {
 	MaxLine   int // longest accepted line (default 16 MiB)
 
 	afterRead func() // test hook: runs after every follow read
+	afterWait func() // test hook: runs right after kubectl was reaped
 
 	out     io.Writer
 	st      FollowState
@@ -155,6 +157,13 @@ func (f *Follower) read(ctx context.Context, follow bool) (werr error, stderrS s
 	}
 	cmd := f.kubectl(ctx, args...)
 	cmd.WaitDelay = 2 * time.Second
+	// Our stop: the flag is set immediately before we signal kubectl, so a
+	// signal exit counts as ours only if we had already sent it.
+	var stopSent atomic.Bool
+	cmd.Cancel = func() error {
+		stopSent.Store(true)
+		return cmd.Process.Kill()
+	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.StdoutPipe()
@@ -213,9 +222,12 @@ func (f *Follower) read(ctx context.Context, follow bool) (werr error, stderrS s
 		_ = cmd.Process.Kill() // the rest of the stream is lost
 	}
 	werr = cmd.Wait()
+	if f.afterWait != nil {
+		f.afterWait()
+	}
 	// Ended by our own cancellation (killed by a signal after ctx was done),
 	// as opposed to a stream that ended or failed by itself.
-	f.killed = ctx.Err() != nil && scanErr == nil && emitErr == nil &&
+	f.killed = stopSent.Load() && scanErr == nil && emitErr == nil &&
 		(cmd.ProcessState == nil || !cmd.ProcessState.Exited())
 	switch {
 	case scanErr != nil:

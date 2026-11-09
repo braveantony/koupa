@@ -13,6 +13,7 @@
 #   events.jsonl          same for events
 #   hubble.jsonl          hubble observe --namespace koupa --since START --until STOP -o json,
 #                         every cilium agent, read once at stop (ring buffer: ~4095 flows/agent)
+#   hubble-buffer.txt     each agent's oldest stored flow; later than START -> missing.jsonl
 #   ingress.log           access-log lines of every cilium-envoy Pod (filtered on "attempt")
 #   envoy-stats-start.txt / envoy-stats-end.txt
 #                         cilium-dbg envoy admin metrics, koupa clusters, every agent;
@@ -23,7 +24,7 @@
 #   app/<uid>.collect.json  follower state; app/<uid>.meta.json written at stop
 #   audit.log             API server audit lines deleting koupa Pods (at stop)
 #   pods-at-stop.json     kubectl get pods -o json at stop
-#   missing.jsonl         {"source","reason","at"} for sources not collected or interrupted
+#   missing.jsonl         {"source","agent"?,"reason","at"} for sources not collected or interrupted
 #   collectors.pid        process-group ids of the collectors
 set -euo pipefail
 
@@ -52,9 +53,18 @@ json_str() {
 	printf '"%s"' "$s"
 }
 
-# missing SOURCE REASON
+# missing SOURCE REASON [AGENT]
 missing() {
-	printf '{"source":%s,"reason":%s,"at":"%s"}\n' "$(json_str "$1")" "$(json_str "$2")" "$(now_rfc)" >>"$dir/missing.jsonl"
+	local agent=""
+	[ -z "${3:-}" ] || agent=",\"agent\":$(json_str "$3")"
+	printf '{"source":%s%s,"reason":%s,"at":"%s"}\n' "$(json_str "$1")" "$agent" "$(json_str "$2")" "$(now_rfc)" >>"$dir/missing.jsonl"
+}
+
+# later A B: RFC3339 time A is strictly later than B (nanoseconds kept).
+later() {
+	local a b
+	a=$(date -u -d "$1" +%s%N) b=$(date -u -d "$2" +%s%N)
+	[ "$a" -gt "$b" ]
 }
 
 stopping() { [ -e "$dir/.stopping" ]; }
@@ -134,25 +144,28 @@ _watch() {
 
 # hubble_snapshot SINCE UNTIL: the flows of the run from every agent's ring
 # buffer, read once at stop (no long-lived exec: `kubectl exec ... -f`
-# leaves defunct hubble processes in the agents). The buffer holds only the
-# last ~4095 flows per agent, so older flows can be gone: if an agent's
-# first flow is well after SINCE, that is recorded as possibly missing.
+# leaves defunct hubble processes in the agents). The buffer is small
+# (~4095 flows per agent, all namespaces), so each agent's OLDEST stored flow
+# (unfiltered, read after the snapshot: the buffer only moves forward) must
+# not be later than SINCE; otherwise earlier flows were overwritten.
 hubble_snapshot() {
-	local since=$1 until=$2 pod out first ok=0
+	local since=$1 until=$2 pod out oldest ok=0
 	: >"$dir/hubble.jsonl"
 	for pod in $("$KUBECTL" -n kube-system get pods -l k8s-app=cilium -o jsonpath='{.items[*].metadata.name}'); do
-		if out=$("$KUBECTL" -n kube-system exec "$pod" -c cilium-agent -- \
+		if ! out=$("$KUBECTL" -n kube-system exec "$pod" -c cilium-agent -- \
 			hubble observe --namespace "$NS" --since "$since" --until "$until" -o json 2>>"$dir/hubble.err"); then
-			ok=$((ok + 1))
-			[ -n "$out" ] || continue
-			"$RH" stamp --json <<<"$out" >>"$dir/hubble.jsonl"
-			first=$(head -1 <<<"$out" | sed -n 's/^{"flow":{"time":"\([^"]*\)".*/\1/p')
-			if [ -n "$first" ] && [ "$(date -u -d "$first" +%s)" -gt $(($(date -u -d "$since" +%s) + 2)) ] &&
-				[ "$(grep -c . <<<"$out")" -ge 4000 ]; then
-				missing hubble "$pod 的環形緩衝區只保留到 $first 之後（$(grep -c . <<<"$out") 筆），之前的流量可能缺少"
-			fi
-		else
-			missing hubble "$pod：hubble observe 失敗（見 hubble.err）"
+			missing hubble "hubble observe 失敗（見 hubble.err）" "$pod"
+			continue
+		fi
+		ok=$((ok + 1))
+		[ -z "$out" ] || "$RH" stamp --json <<<"$out" >>"$dir/hubble.jsonl"
+		oldest=$("$KUBECTL" -n kube-system exec "$pod" -c cilium-agent -- hubble observe --first 1 -o json 2>>"$dir/hubble.err" |
+			sed -n 's/^{"flow":{"time":"\([^"]*\)".*/\1/p' | head -1)
+		echo "$(stamp) agent=$pod oldest_flow=${oldest:-?} since=$since" >>"$dir/hubble-buffer.txt"
+		if [ -z "$oldest" ]; then
+			missing hubble "讀不到環形緩衝區最舊的一筆，不知道是否被覆蓋" "$pod"
+		elif later "$oldest" "$since"; then
+			missing hubble "ring buffer overwritten before $oldest（收集開始於 $since，之前的流量缺少）" "$pod"
 		fi
 	done
 	[ "$ok" -gt 0 ] || missing hubble "沒有任何 agent 取得 Hubble 流量"
