@@ -9,7 +9,32 @@ func env(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
 }
 
+// withVersion sets config.Version for one test and restores it afterwards.
+func withVersion(t *testing.T, v string) {
+	t.Helper()
+	old := Version
+	Version = v
+	t.Cleanup(func() { Version = old })
+}
+
+func TestLoadVersion(t *testing.T) {
+	for _, tc := range []struct {
+		v  string
+		ok bool
+	}{{"v1", true}, {"v2", true}, {"dev", false}, {"", false}, {"v3", false}} {
+		withVersion(t, tc.v)
+		cfg, err := Load(env(map[string]string{"DATABASE_URL": "u"}))
+		if tc.ok && (err != nil || cfg.Version != tc.v) {
+			t.Errorf("Version=%q: got %q, %v", tc.v, cfg.Version, err)
+		}
+		if !tc.ok && err == nil {
+			t.Errorf("Version=%q: want error", tc.v)
+		}
+	}
+}
+
 func TestLoadDefaults(t *testing.T) {
+	withVersion(t, "v1")
 	cfg, err := Load(env(map[string]string{"DATABASE_URL": "postgres://x"}))
 	if err != nil {
 		t.Fatal(err)
@@ -43,14 +68,14 @@ func TestLoadDefaults(t *testing.T) {
 }
 
 func TestLoadRequiresDatabaseURL(t *testing.T) {
+	withVersion(t, "v1")
 	if _, err := Load(env(nil)); err == nil {
 		t.Fatal("want error without DATABASE_URL")
 	}
 }
 
 func TestLoadValues(t *testing.T) {
-	Version = "v2"
-	defer func() { Version = "dev" }()
+	withVersion(t, "v2")
 	cfg, err := Load(env(map[string]string{
 		"DATABASE_URL": "u", "POD_UID": "uid-1", "POD_NAME": "p-1",
 		"GRACEFUL_SHUTDOWN": "1", "RESUME_FROM_LAST_ID": "1", "IDEMPOTENCY_KEY": "0",
@@ -75,6 +100,7 @@ func TestLoadValues(t *testing.T) {
 }
 
 func TestLoadHeartbeatZero(t *testing.T) {
+	withVersion(t, "v1")
 	cfg, err := Load(env(map[string]string{"DATABASE_URL": "u", "SSE_HEARTBEAT": "0"}))
 	if err != nil || cfg.SSEHeartbeat != 0 {
 		t.Fatalf("got %v, %v", cfg.SSEHeartbeat, err)
@@ -82,6 +108,7 @@ func TestLoadHeartbeatZero(t *testing.T) {
 }
 
 func TestLoadRejectsBadBool(t *testing.T) {
+	withVersion(t, "v1")
 	for _, v := range []string{"yes", "true", "2"} {
 		_, err := Load(env(map[string]string{"DATABASE_URL": "u", "GRACEFUL_SHUTDOWN": v}))
 		if err == nil {
@@ -91,6 +118,7 @@ func TestLoadRejectsBadBool(t *testing.T) {
 }
 
 func TestLoadRejectsBadDuration(t *testing.T) {
+	withVersion(t, "v1")
 	for _, v := range []string{"abc", "-1s", "5"} {
 		_, err := Load(env(map[string]string{"DATABASE_URL": "u", "LOCK_TIMEOUT": v}))
 		if err == nil {
@@ -100,6 +128,7 @@ func TestLoadRejectsBadDuration(t *testing.T) {
 }
 
 func TestLoadMutation(t *testing.T) {
+	withVersion(t, "v1")
 	cfg, err := Load(env(map[string]string{"DATABASE_URL": "u", "TEST_MUTATION": "drop-ready=3"}))
 	if err != nil {
 		t.Fatal(err)
@@ -114,6 +143,7 @@ func TestLoadMutation(t *testing.T) {
 }
 
 func TestLoadMutationRejects(t *testing.T) {
+	withVersion(t, "v1")
 	for _, v := range []string{"bogus=1", "drop-ready=x", "drop-ready=-1", "drop-ready", "drop-ready=1,,"} {
 		_, err := Load(env(map[string]string{"DATABASE_URL": "u", "TEST_MUTATION": v}))
 		if err == nil {

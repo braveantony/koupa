@@ -10,6 +10,7 @@ import (
 )
 
 // Version is set at build time: -ldflags "-X koupa/app/config.Version=v1".
+// Load accepts only "v1" or "v2".
 var Version = "dev"
 
 // Mutation holds the test-only fault injection counters (TEST_MUTATION).
@@ -46,6 +47,9 @@ func Load(getenv func(string) string) (Config, error) {
 		PodName:     getenv("POD_NAME"),
 		Version:     Version,
 		DBTimeout:   60 * time.Second,
+	}
+	if Version != "v1" && Version != "v2" {
+		return Config{}, fmt.Errorf("build version %q is not v1 or v2 (set -ldflags -X koupa/app/config.Version=v1)", Version)
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("DATABASE_URL is required")
