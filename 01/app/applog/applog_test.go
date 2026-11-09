@@ -48,7 +48,8 @@ func TestEveryEventCarriesPodUID(t *testing.T) {
 	for _, ev := range []string{EvStartup, EvTxTimeoutCheck, EvRequestReceived, EvRequestEnd, EvSigterm,
 		EvExit, EvCommitUnknown, EvWriteStart, EvWriteEnd, EvWriteBlocked, EvMutationDropReady,
 		EvMutationDuplicateOrder, EvHookPaused, EvShutdownTimeout, EvProgressAheadOfH, EvKeyCleanup,
-		EvListenActive, EvListenLost, EvBroadcastQueryFailed, EvSubscriberOverflow} {
+		EvListenActive, EvListenLost, EvBroadcastQueryFailed, EvSubscriberOverflow,
+		EvBadLastEventID, EvBoardClosed} {
 		buf.Reset()
 		log.Info(ev)
 		var m map[string]any
