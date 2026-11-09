@@ -22,7 +22,9 @@ child=""
 
 parent_cleanup() {
 	local rc=$?
-	trap - EXIT INT TERM
+	trap - EXIT
+	# Ignore further signals: a second INT/TERM must not cut the cleanup short.
+	trap "" INT TERM
 	if [ -n "$child" ] && kill -0 "$child" 2>/dev/null; then
 		# The experiment runs in its own process group (setsid): TERM all of
 		# it (crit, kubectl, the script), let its EXIT trap run.

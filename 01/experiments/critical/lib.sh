@@ -37,7 +37,9 @@ TEST_PODS=()     # Pods this script created (deleted at exit)
 
 crit_cleanup() {
 	local rc=$?
-	trap - EXIT INT TERM
+	trap - EXIT
+	# Ignore further signals: a second INT/TERM must not cut the cleanup short.
+	trap "" INT TERM
 	if [ -n "$HOOKS" ] && [ -x "$CRIT_BIN" ]; then
 		for h in "${HOOK_NAMES[@]}"; do
 			timeout 15 "$CRIT_BIN" release "$h" --hooks "$HOOKS" >/dev/null 2>&1 || true
