@@ -223,9 +223,10 @@ type AttemptTable struct {
 	Ingress    int // POST /orders lines with an attempt id of the run
 	Matched    int // attempt id in both
 	SameStatus int // matched, Rush Hour got the complete response with the logged status
-	// A second line for an attempt id: with a collector restart between
-	// the two, a possible reread (shown with its id, not matched again);
-	// otherwise a real extra entry, listed as unexplained.
+	// A repeated line for an attempt id, compared with the entry just
+	// before it: identical with a collector restart between the two, a
+	// possible reread (shown with its id, not matched again); otherwise a
+	// real extra entry, listed as unexplained.
 	PossibleReread    int
 	PossibleRereadIDs []string
 	// Diff counts per category. CatIngressRetry is informational (the line
@@ -252,20 +253,31 @@ func ReconcileAttempts(run string, atts []record.Attempt, lines []IngressLine, r
 		t.Diff[CatUnexplained]++
 		t.UnexplainedList = append(t.UnexplainedList, fmt.Sprintf(format, a...))
 	}
-	prefix := run + "-a" // order attempts; the kitchen's are <run>-k-a...
-	byID := map[string]IngressLine{}
+	prefix := run + "-a"             // order attempts; the kitchen's are <run>-k-a...
+	byID := map[string]IngressLine{} // first entry per attempt id: the one matched
+	last := map[string]IngressLine{} // the entry just before, for repeats
+	same := func(a, b IngressLine) bool {
+		x, _ := json.Marshal(a)
+		y, _ := json.Marshal(b)
+		return string(x) == string(y)
+	}
 	for _, l := range lines {
 		a := l.attempt()
 		if !l.isOrders() || !strings.HasPrefix(a, prefix) {
 			t.Diff[CatOther]++
 			continue
 		}
-		if prev, dup := byID[a]; dup {
-			if restartBetween(prev.Stamp, l.Stamp, rereads) {
+		prev, dup := last[a]
+		last[a] = l
+		if dup {
+			// Compared with its immediate predecessor for this attempt id:
+			// a possible reread only when identical to it with a collector
+			// restart between the two; otherwise a real extra entry.
+			if same(prev, l) && restartBetween(prev.Stamp, l.Stamp, rereads) {
 				t.PossibleReread++
 				t.PossibleRereadIDs = append(t.PossibleRereadIDs, a)
 			} else {
-				unexplained("%s：入口對同一個嘗試編號有第二筆紀錄（%d %s），兩筆之間沒有收集端重新讀取", a, l.status(), l.ResponseFlags)
+				unexplained("%s：入口對同一個嘗試編號又有一筆紀錄（%d %s），和前一筆不同或兩筆之間沒有收集端重新讀取", a, l.status(), l.ResponseFlags)
 			}
 			continue
 		}
@@ -602,7 +614,7 @@ func render(w io.Writer, r Result) {
 	fmt.Fprintf(w, "  Rush Hour 下單嘗試           %6d\n", a.RushHour)
 	fmt.Fprintf(w, "  入口紀錄（access log）        %6d\n", a.Ingress)
 	fmt.Fprintf(w, "  兩邊都有                      %6d（狀態碼一致 %d）\n", a.Matched, a.SameStatus)
-	fmt.Fprintf(w, "  可能是收集端重讀的第二筆      %6d（沒有刪除，不重複比對；同一嘗試編號兩筆之間有收集端重新讀取）\n", a.PossibleReread)
+	fmt.Fprintf(w, "  可能是收集端重讀的重複紀錄    %6d（沒有刪除，不重複比對；和同一嘗試編號的前一筆完全相同，兩筆之間有收集端重新讀取）\n", a.PossibleReread)
 	for _, id := range a.PossibleRereadIDs {
 		fmt.Fprintf(w, "      - %s\n", id)
 	}

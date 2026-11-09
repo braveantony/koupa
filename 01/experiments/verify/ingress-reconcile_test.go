@@ -335,3 +335,29 @@ func TestRunShowsParseFailures(t *testing.T) {
 		t.Errorf("output lacks parse-failure counts:\n%s", out.String())
 	}
 }
+
+// Each repeated entry is compared with the entry just before it for the
+// same attempt id: possible reread only when identical to that predecessor
+// with a collector restart between the two; otherwise a real extra entry.
+func TestReconcileRepeatedEntriesAgainstPredecessor(t *testing.T) {
+	text := strings.Join([]string{
+		stamped("1794230045.31", line("r1-a1-t1", "POST", "/orders", 201, "-", 1, t0, 3)),
+		stamped("1794230046.10", line("r1-a1-t1", "POST", "/orders", 201, "-", 1, t0, 3)), // restart between 1 and 2
+		stamped("1794230046.50", line("r1-a1-t1", "POST", "/orders", 201, "-", 1, t0, 3)), // none between 2 and 3
+		stamped("1794230045.40", line("r1-a2-t1", "POST", "/orders", 201, "-", 1, t0, 3)),
+		stamped("1794230046.20", line("r1-a2-t1", "POST", "/orders", 503, "UF", 1, t0, 3)), // restart between, not identical
+	}, "\n")
+	lines, _ := ParseIngress(strings.NewReader(text))
+	rr := ParseRereads(strings.NewReader(missingRestart))
+	atts := []record.Attempt{att("r1-a1-t1", 1, ip(201), ""), att("r1-a2-t1", 1, ip(201), "")}
+	r := ReconcileAttempts(run, atts, lines, rr)
+	if r.PossibleReread != 1 || fmt.Sprint(r.PossibleRereadIDs) != "[r1-a1-t1]" {
+		t.Errorf("possible reread %d %v, want 1 [r1-a1-t1] (entry 2 only)", r.PossibleReread, r.PossibleRereadIDs)
+	}
+	if r.Diff[CatUnexplained] != 2 {
+		t.Errorf("unexplained %d %v, want 2 (a1 entry 3, a2 entry 2)", r.Diff[CatUnexplained], r.UnexplainedList)
+	}
+	if r.Matched != 2 || r.SameStatus != 2 {
+		t.Errorf("matched %d same %d, want 2 2 (first entries)", r.Matched, r.SameStatus)
+	}
+}
