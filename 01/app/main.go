@@ -51,6 +51,7 @@ func main() {
 		"db_timeout", cfg.DBTimeout.String(),
 		"broadcast_poll", cfg.BroadcastPoll.String(),
 		"sse_write_deadline", cfg.WriteDeadline.String(),
+		"test_sse_filler_bytes", cfg.SSEFillerBytes,
 		"test_hooks", cfg.TestHooks,
 		"test_mutation_drop_ready", cfg.TestMutation.DropReady,
 		"test_mutation_duplicate_order", cfg.TestMutation.DuplicateOrder,

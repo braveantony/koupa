@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net"
@@ -21,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"koupa/app/applog"
 	"koupa/app/broadcast"
 	"koupa/app/config"
 	"koupa/app/hooks"
@@ -1125,5 +1127,114 @@ func TestShutdownDuringFirstQuery(t *testing.T) {
 	rb.awaitUnregister(t, ids[0], 2*time.Second)
 	if !strings.Contains(e.logs.String(), `"reason":"shutdown"`) {
 		t.Fatalf("no shutdown close logged:\n%s", e.logs.String())
+	}
+}
+
+// --- test-mode write monitor and filler (plan A12 timing 5) --------------
+
+// With TEST_HOOKS a write that has not returned after blockedAfter is
+// logged once as write_blocked (conn, write number, start time), while the
+// write is still blocked: before its write_end.
+func TestWriteBlockedLogged(t *testing.T) {
+	e := newEnv(t, 200*time.Millisecond)
+	cfg := baseCfg(true)
+	cfg.TestHooks = true
+	cfg.WriteDeadline = 3 * time.Second
+	cfg.SSEHeartbeat = 5 * time.Millisecond
+	filler := []byte(": " + strings.Repeat("x", 64<<10) + "\n")
+	srv := httptest.NewUnstartedServer(&Handler{Broadcaster: e.b, Pool: e.pool, Log: e.log, Cfg: cfg, heartbeat: filler})
+	srv.Listener = smallBufListener{srv.Listener}
+	srv.Start()
+	t.Cleanup(srv.Close)
+	rawBoard(t, srv.Listener.Addr().String())
+
+	deadline := time.Now().Add(waitTimeout)
+	var blocked map[string]any
+	for blocked == nil && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		for _, l := range strings.Split(e.logs.String(), "\n") {
+			m := map[string]any{}
+			if json.Unmarshal([]byte(l), &m) == nil && m["msg"] == applog.EvWriteBlocked {
+				blocked = m
+				break
+			}
+		}
+	}
+	if blocked == nil {
+		t.Fatalf("no write_blocked line:\n%s", e.logs.String())
+	}
+	if blocked["conn"] == nil || blocked["write"] == nil || blocked["started_at"] == nil {
+		t.Fatalf("write_blocked lacks conn/write/started_at: %v", blocked)
+	}
+	started, err := time.Parse(time.RFC3339Nano, blocked["started_at"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	at, _ := time.Parse(time.RFC3339Nano, blocked["time"].(string))
+	if d := at.Sub(started); d < blockedAfter {
+		t.Fatalf("write_blocked logged %v after start, want >= %v", d, blockedAfter)
+	}
+	// The blocked write's write_end comes after write_blocked.
+	idxBlocked, idxEnd := -1, -1
+	for i, l := range strings.Split(e.logs.String(), "\n") {
+		m := map[string]any{}
+		if json.Unmarshal([]byte(l), &m) != nil {
+			continue
+		}
+		if m["msg"] == applog.EvWriteBlocked && idxBlocked < 0 {
+			idxBlocked = i
+		}
+		if m["msg"] == applog.EvWriteEnd && m["write"] == blocked["write"] && m["conn"] == blocked["conn"] {
+			idxEnd = i
+		}
+	}
+	if idxEnd >= 0 && idxEnd < idxBlocked {
+		t.Fatalf("write_end (line %d) before write_blocked (line %d)", idxEnd, idxBlocked)
+	}
+}
+
+// Without TEST_HOOKS no write is traced or monitored.
+func TestWriteBlockedNeedsTestHooks(t *testing.T) {
+	e := newEnv(t, 200*time.Millisecond)
+	cfg := baseCfg(true)
+	cfg.WriteDeadline = 2 * time.Second
+	cfg.SSEHeartbeat = 5 * time.Millisecond
+	filler := []byte(": " + strings.Repeat("x", 64<<10) + "\n")
+	srv := httptest.NewUnstartedServer(&Handler{Broadcaster: e.b, Pool: e.pool, Log: e.log, Cfg: cfg, heartbeat: filler})
+	srv.Listener = smallBufListener{srv.Listener}
+	srv.Start()
+	t.Cleanup(srv.Close)
+	rawBoard(t, srv.Listener.Addr().String())
+	time.Sleep(blockedAfter + time.Second)
+	if s := e.logs.String(); strings.Contains(s, applog.EvWriteBlocked) || strings.Contains(s, applog.EvWriteStart) {
+		t.Fatalf("write tracing without TEST_HOOKS:\n%s", s)
+	}
+}
+
+// With TEST_HOOKS and SSEFillerBytes the heartbeat is one comment line of
+// exactly that many bytes; without TEST_HOOKS the setting is ignored.
+func TestFillerSize(t *testing.T) {
+	for _, hooks := range []bool{true, false} {
+		t.Run("hooks="+strconv.FormatBool(hooks), func(t *testing.T) {
+			e := newEnv(t, 200*time.Millisecond)
+			cfg := baseCfg(true)
+			cfg.TestHooks = hooks
+			cfg.SSEHeartbeat = 20 * time.Millisecond
+			cfg.SSEFillerBytes = 1000
+			u := e.serve(&Handler{Cfg: cfg})
+			c := mustDial(t, u, nil)
+			c.hello()
+			l, ok := c.line()
+			if !ok {
+				t.Fatal("EOF")
+			}
+			want := ": hb"
+			if hooks {
+				want = ": " + strings.Repeat("x", 1000-3)
+			}
+			if l != want {
+				t.Fatalf("heartbeat line %q (len %d), want len %d", l[:min(len(l), 20)], len(l), len(want))
+			}
+		})
 	}
 }

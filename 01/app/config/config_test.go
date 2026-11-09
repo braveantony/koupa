@@ -169,3 +169,16 @@ func TestLoadHooksAddr(t *testing.T) {
 		t.Fatalf("set = %q, %v", cfg.HooksAddr, err)
 	}
 }
+
+func TestLoadFillerBytes(t *testing.T) {
+	withVersion(t, "v1")
+	cfg, err := Load(env(map[string]string{"DATABASE_URL": "u", "TEST_SSE_FILLER_BYTES": "65536"}))
+	if err != nil || cfg.SSEFillerBytes != 65536 {
+		t.Fatalf("got %d, %v", cfg.SSEFillerBytes, err)
+	}
+	for _, bad := range []string{"-1", "2", "x", "2000000"} {
+		if _, err := Load(env(map[string]string{"DATABASE_URL": "u", "TEST_SSE_FILLER_BYTES": bad})); err == nil {
+			t.Errorf("TEST_SSE_FILLER_BYTES=%q accepted", bad)
+		}
+	}
+}

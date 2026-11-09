@@ -173,6 +173,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	startStream()
 	hbData := heartbeat
+	if h.Cfg.TestHooks && h.Cfg.SSEFillerBytes > 0 {
+		hbData = filler(h.Cfg.SSEFillerBytes)
+	}
 	if h.heartbeat != nil {
 		hbData = h.heartbeat
 	}
@@ -318,6 +321,10 @@ func parseLastEventID(s string) (int64, bool) {
 	return n, err == nil
 }
 
+// blockedAfter is how long a traced write may take before the monitor logs
+// it as blocked (plan A12 timing 5).
+var blockedAfter = time.Second
+
 // streamWriter writes one block, flushes it, and bounds the write with a
 // deadline so a stuck board cannot hold the handler (A5).
 type streamWriter struct {
@@ -344,13 +351,23 @@ func (s *streamWriter) write(b []byte) error {
 			return err
 		}
 	}
+	stopMon := func() bool { return false }
 	if s.trace {
 		s.log.Info(applog.EvWriteStart, "write", s.n, "bytes", len(b))
+		// The monitor: a timer goroutine independent of the (possibly
+		// blocked) write, so the record appears while the write is stuck.
+		n, started := s.n, time.Now()
+		mon := time.AfterFunc(blockedAfter, func() {
+			s.log.Warn(applog.EvWriteBlocked, "write", n, "bytes", len(b),
+				"started_at", started.UTC().Format(time.RFC3339Nano), "after_ms", blockedAfter.Milliseconds())
+		})
+		stopMon = mon.Stop
 	}
 	_, err := s.w.Write(b)
 	if err == nil {
 		err = s.rc.Flush()
 	}
+	stopMon()
 	if err == nil && s.deadline > 0 {
 		// Clear it: an idle healthy board must not fail its next write
 		// because a stale deadline expired in between.

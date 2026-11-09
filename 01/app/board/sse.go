@@ -42,6 +42,17 @@ func encodeShutdown(retry time.Duration) []byte {
 // heartbeat is a comment line; clients ignore it.
 var heartbeat = []byte(": hb\n")
 
+// filler is a comment line of exactly n bytes (n >= 4), test mode only.
+func filler(n int) []byte {
+	b := make([]byte, n)
+	b[0], b[1] = ':', ' '
+	for i := 2; i < n-1; i++ {
+		b[i] = 'x'
+	}
+	b[n-1] = '\n'
+	return b
+}
+
 func block(event, id string, data []byte) []byte {
 	b := make([]byte, 0, 32+len(id)+len(data))
 	b = append(b, "event: "...)
