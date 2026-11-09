@@ -142,7 +142,7 @@ YAML 不寫死 IP，`measure.sh` 會自動查 Gateway 的 IP。
 | 叫號編號照提交順序、看板交接不漏不重複 | App 設計 | 4.1、4.2；實作計畫 A1～A3 | 必測案例全部通過 |
 | 重送不重複下單 | App 設計 | 4.8；實作計畫 A6 | 必測案例全部通過；key 提交後至少保留 24 小時 |
 | 各步驟的成績差異 | 環境實測 | 5.1～5.7 | 只代表單一主機、單一資料庫實例 |
-| 哪些操作會重啟資料庫 | 規範 | [CloudNativePG v1.30.1 文件](https://github.com/cloudnative-pg/cloudnative-pg/tree/v1.30.1/docs/src) | CNPG v1.30.1；官方支援 Kubernetes 1.34～1.36，tk8s 的 1.37 屬於「測過、不在支援清單」（[supported_releases](https://github.com/cloudnative-pg/cloudnative-pg/blob/v1.30.1/docs/src/supported_releases.md)） |
+| 哪些操作會重啟資料庫 | 規範 | [CloudNativePG v1.30.1：rolling updates](https://github.com/cloudnative-pg/cloudnative-pg/blob/v1.30.1/docs/src/rolling_update.md) | CNPG v1.30.1；官方支援 Kubernetes 1.34～1.36，tk8s 的 1.37 屬於「測過、不在支援清單」（[supported_releases](https://github.com/cloudnative-pg/cloudnative-pg/blob/v1.30.1/docs/src/supported_releases.md)） |
 | 整筆交易的總時間上限（`transaction_timeout`），用來保證 key 提交後至少保留 24 小時 | 規範 | [PostgreSQL 用戶端連線設定](https://www.postgresql.org/docs/17/runtime-config-client.html) | 需要 PostgreSQL 17 以上；映像檔固定為 `ghcr.io/cloudnative-pg/postgresql:17.11-202611020810-system-trixie`，index digest `sha256:03a1c6a62b27e8ad31cae5c085131b5ac706b09403d6fcb6c58d16c8daa257cd`（[env-findings 5](../env-findings.md)） |
 
 ---

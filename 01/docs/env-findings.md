@@ -176,21 +176,27 @@ Cilium 1.20.4 對 Gateway 產生的設定（以上述 golden 檔為準）：
 | 是否啟用 | **預設啟用**（依 chart 預設，叢集不存在無法直接看）：agent 內建 Hubble server，socket `/var/run/cilium/hubble.sock` | chart `values.yaml` 第 1448～1450 行 `hubble: enabled: true`、第 1599 行 `socketPath`；`cilium-configmap.yaml` 第 1054 行 `enable-hubble`；tk8s 的 `cni.py` 沒有覆寫任何 `hubble.*` |
 | Hubble Relay、UI | **預設關閉** | values.yaml 第 1761～1763 行 `relay.enabled: false`、第 2004～2006 行 `ui.enabled: false`；tk8s 沒開 |
 | 主機上的 `hubble` CLI | **沒有** | `which hubble` 沒有輸出 |
-| `hubble observe` 在主機上能不能跑 | **不能直接跑**（沒有 CLI、也沒有 Relay）。**降級做法**：在 agent Pod 內執行 `kubectl -n kube-system exec ds/cilium -c cilium-agent -- hubble observe -o json`（agent 映像檔設了 `HUBBLE_SERVER=unix:///var/run/cilium/hubble.sock`，`images/cilium/Dockerfile` 第 105 行）。這只看得到**該節點**的流量，多節點要每個 agent Pod 各一條。agent 映像檔內有沒有 `hubble` 執行檔待確認 | 同上 |
+| `hubble observe` 在主機上能不能跑 | **不能直接跑**（沒有 CLI、也沒有 Relay）。**降級做法（本身也待確認）**：在 agent Pod 內執行 `kubectl -n kube-system exec ds/cilium -c cilium-agent -- hubble observe -o json`。旁證：[`images/README.md`](https://github.com/cilium/cilium/blob/v1.20.4/images/README.md) 寫 cilium 映像檔含 `hubble-cli`，[`images/cilium/Dockerfile` 第 105 行](https://github.com/cilium/cilium/blob/v1.20.4/images/cilium/Dockerfile#L105)設了 `HUBBLE_SERVER=unix:///var/run/cilium/hubble.sock`。但 Dockerfile 沒有直接 COPY `hubble` 執行檔（是從 builder 階段整包複製），**執行檔是否真的在 `/usr/bin/hubble` 沒有驗證，待確認**。做法有效的話，也只看得到**該節點**的流量，多節點要每個 agent Pod 各一條 | 同上 |
 | 能看到 Gateway 的 L7 嗎 | 待確認：`envoy.log.accessLogEnabled` 預設 true（Envoy access log 轉送給 Hubble），但欄位是否足夠做 A11 的對帳待確認 | values.yaml `envoy.log.accessLogEnabled` |
 
-結論：A11 流量那一列「`hubble observe -n koupa -o json`」要改成「在每個 `cilium` agent Pod 內執行 `hubble observe`」，且 L7 內容待確認。Hubble 在本課程是輔助來源，不是 A14 對帳的依據。
+結論：A11 流量那一列「`hubble observe -n koupa -o json`」在主機上**做不到**；改成「在每個 `cilium` agent Pod 內執行 `hubble observe`」是**待確認**的降級做法（執行檔存在與否未驗證），且 L7 內容待確認。Hubble 在本課程是輔助來源，不是 A14 對帳的依據。
 
 ## 5. CNPG 與 PostgreSQL 17（步驟 5）
 
 ### 5.1 CNPG operator
 
+以下指令用 python 取代 `jq` 格式化（API 回應內容未改，只取 `tag_name`、`published_at`、`prerelease`、`draft` 四欄，以 tab 分隔，2026-11-09 執行；可重現的指令是第一行的 URL）：
+
 ```console
-$ curl -s 'https://api.github.com/repos/cloudnative-pg/cloudnative-pg/releases?per_page=8'
-v1.30.1  2026-09-23  prerelease=False
-v1.29.3  2026-09-23
-v1.30.0  2026-06-29
-...
+$ curl -s "https://api.github.com/repos/cloudnative-pg/cloudnative-pg/releases?per_page=8" | python3 -I -c "import json,sys; [print('\t'.join(map(str,[r['tag_name'],r['published_at'],r['prerelease'],r['draft']]))) for r in json.load(sys.stdin)]"
+v1.30.1	2026-09-23T13:35:42Z	False	False
+v1.29.3	2026-09-23T13:00:24Z	False	False
+v1.30.0	2026-06-29T16:36:13Z	False	False
+v1.29.2	2026-06-29T16:06:03Z	False	False
+v1.28.4	2026-06-29T15:38:44Z	False	False
+v1.30.0-rc1	2026-06-19T14:46:47Z	False	False
+v1.29.1	2026-05-08T14:33:15Z	False	False
+v1.28.3	2026-05-08T14:06:59Z	False	False
 ```
 
 - **選定：CloudNativePG v1.30.1**（最新穩定版，非 rc）。安裝清單：`https://github.com/cloudnative-pg/cloudnative-pg/releases/download/v1.30.1/cnpg-1.30.1.yaml`（內含 `ghcr.io/cloudnative-pg/cloudnative-pg:1.30.1`）。
@@ -201,14 +207,16 @@ v1.30.0  2026-06-29
 
 ```console
 $ podman pull ghcr.io/cloudnative-pg/postgresql:17.11-202611020810-system-trixie
-$ podman image inspect <image> --format '{{.Digest}} {{.Architecture}} {{.Os}} {{.Created}}'
-sha256:314285da12534860b0c7693a4a9b896212c765c80c6b13ba82f29ba39212a58d amd64 linux 2026-11-02 08:10:53 UTC
-$ podman run --rm --entrypoint postgres <image> --version
+$ podman image inspect ghcr.io/cloudnative-pg/postgresql:17.11-202611020810-system-trixie --format '{{.Digest}} {{.Architecture}} {{.Os}} {{.Created}}'
+sha256:314285da12534860b0c7693a4a9b896212c765c80c6b13ba82f29ba39212a58d amd64 linux 2026-11-02 08:10:53.809420933 +0000 UTC
+$ podman run --rm --network none --entrypoint postgres ghcr.io/cloudnative-pg/postgresql:17.11-202611020810-system-trixie --version
 postgres (PostgreSQL) 17.11 (Debian 17.11-1.pgdg13+2)
-$ curl -sI -H 'Accept: application/vnd.oci.image.index.v1+json' \
-    https://ghcr.io/v2/cloudnative-pg/postgresql/manifests/17.11-202611020810-system-trixie
+$ TOK=$(curl -sS "https://ghcr.io/token?scope=repository:cloudnative-pg/postgresql:pull" | python3 -I -c "import json,sys;print(json.load(sys.stdin)['token'])")
+$ curl -sI -H "Authorization: Bearer $TOK" -H "Accept: application/vnd.oci.image.index.v1+json" https://ghcr.io/v2/cloudnative-pg/postgresql/manifests/17.11-202611020810-system-trixie | grep -i docker-content-digest
 docker-content-digest: sha256:03a1c6a62b27e8ad31cae5c085131b5ac706b09403d6fcb6c58d16c8daa257cd
 ```
+
+（`podman run` 不加 `--network none` 時，這台主機的 pasta 網路會出錯，與映像檔無關。）
 
 - **選定映像檔**：`ghcr.io/cloudnative-pg/postgresql:17.11-202611020810-system-trixie`。
 - **Digest（多架構 index）**：`sha256:03a1c6a62b27e8ad31cae5c085131b5ac706b09403d6fcb6c58d16c8daa257cd`。
@@ -275,6 +283,30 @@ docker-content-digest: sha256:03a1c6a62b27e8ad31cae5c085131b5ac706b09403d6fcb6c5
 | 3 | koupa 路由實際的 route timeout、retry、stream idle、max stream duration | config dump，對照 3.1、3.2 |
 | 4 | `CiliumGatewayClassConfig.spec.telemetry` 可用、四個欄位實際輸出 | 2.4 |
 | 5 | `/stats` 的 cluster 名稱與計數器名稱 | `cilium-dbg envoy admin metrics` |
-| 6 | Hubble 是否啟用、agent 內有無 `hubble` 執行檔 | `cilium status`、`kubectl exec ... -- hubble observe` |
+| 6 | Hubble 是否啟用、agent 內有無 `hubble` 執行檔（降級做法是否成立） | `cilium status`、`kubectl exec ... -- hubble observe` |
 | 7 | terminating 端點在 Envoy EDS 的處理 | 追原始碼或實測 calibrate |
 | 8 | CNPG 接受 `tag@digest`，且 `SHOW transaction_timeout` 可用 | 建 Cluster 時 |
+
+## 8. 來源網址對照
+
+所有網址固定在 tag 或 commit。Cilium：`https://github.com/cilium/cilium/blob/v1.20.4/`（commit `beb276d2f38d4aadfda14710acf8d14a0f1ba723`）；Envoy：`https://github.com/envoyproxy/envoy/blob/v1.39.5/`；cilium/proxy：`https://github.com/cilium/proxy/blob/8c73b2816bc8239e27f1fd53b271884688137459/`。行號是下載該 tag 原始碼時的行號。
+
+| 主張 | 來源 |
+|---|---|
+| Envoy 版本 1.39.5 | [Cilium `images/cilium/Dockerfile#L11`](https://github.com/cilium/cilium/blob/v1.20.4/images/cilium/Dockerfile#L11)；[cilium/proxy `ENVOY_VERSION`](https://github.com/cilium/proxy/blob/8c73b2816bc8239e27f1fd53b271884688137459/ENVOY_VERSION) |
+| admin socket 路徑 | [`bootstrap-config.yaml#L366`](https://github.com/cilium/cilium/blob/v1.20.4/install/kubernetes/cilium/files/cilium-envoy/configmap/bootstrap-config.yaml#L366)；[`cilium-dbg/cmd/envoy_adminclient.go`](https://github.com/cilium/cilium/blob/v1.20.4/cilium-dbg/cmd/envoy_adminclient.go) |
+| access log 設定（`spec.telemetry.accessLogs`） | [`gatewayclassconfig_types.go#L157-L215`](https://github.com/cilium/cilium/blob/v1.20.4/pkg/k8s/apis/cilium.io/v2alpha1/gatewayclassconfig_types.go#L157-L215)；[`access-logs.rst`](https://github.com/cilium/cilium/blob/v1.20.4/Documentation/network/servicemesh/gateway-api/access-logs.rst)；[`translation/helper.go`（`buildAccessLogs`）](https://github.com/cilium/cilium/blob/v1.20.4/operator/pkg/model/translation/helper.go) |
+| cilium-envoy 編入 stdout access logger | [`extensions_build_config.bzl#L16`](https://github.com/cilium/proxy/blob/8c73b2816bc8239e27f1fd53b271884688137459/envoy_build_config/extensions_build_config.bzl#L16) |
+| `%UPSTREAM_REQUEST_ATTEMPT_COUNT%` 為 `value_or(0)` | [`stream_info_formatter.cc#L1681-L1688`](https://github.com/envoyproxy/envoy/blob/v1.39.5/source/common/formatter/stream_info_formatter.cc#L1681-L1688) |
+| 格式運算子與回應旗標說明 | [`substitution_formatter.rst`](https://github.com/envoyproxy/envoy/blob/v1.39.5/docs/root/configuration/advanced/substitution_formatter.rst)（attempt count 第 213 行、`RESPONSE_CODE_DETAILS` 第 173 行、`RESPONSE_FLAGS` 第 489 行、`REQUEST_HEADER` 第 939 行） |
+| 重試只在 HTTPRoute 有 `retry` 時產生 | [`envoy_virtual_host.go#L462-L497`](https://github.com/cilium/cilium/blob/v1.20.4/operator/pkg/model/translation/envoy_virtual_host.go#L462-L497)；[`ingestion/gateway.go#L522`](https://github.com/cilium/cilium/blob/v1.20.4/operator/pkg/model/ingestion/gateway.go#L522) |
+| route timeout 沒設時的處理、max stream duration 0 | [`envoy_virtual_host.go#L501-L518`](https://github.com/cilium/cilium/blob/v1.20.4/operator/pkg/model/translation/envoy_virtual_host.go#L501-L518)；[`envoy_http_connection_manager.go#L148`](https://github.com/cilium/cilium/blob/v1.20.4/operator/pkg/model/translation/envoy_http_connection_manager.go#L148) |
+| Envoy 預設 route timeout 15 秒、0 為停用 | [`config_impl.h#L976`](https://github.com/envoyproxy/envoy/blob/v1.39.5/source/common/router/config_impl.h#L976)；[`route_components.proto#L1373-L1376`](https://github.com/envoyproxy/envoy/blob/v1.39.5/api/envoy/config/route/v3/route_components.proto#L1373-L1376) |
+| stream idle 300 秒、idle 60 秒 | [`ciliumenvoyconfig/cell.go#L39-L42`](https://github.com/cilium/cilium/blob/v1.20.4/operator/pkg/ciliumenvoyconfig/cell.go#L39-L42)；[`values.yaml#L2812-L2815`](https://github.com/cilium/cilium/blob/v1.20.4/install/kubernetes/cilium/values.yaml#L2812-L2815) |
+| 實際產生的設定（golden） | [`testdata/basic_http_listener/cec-output.yaml`](https://github.com/cilium/cilium/blob/v1.20.4/operator/pkg/model/translation/gateway-api/testdata/basic_http_listener/cec-output.yaml) |
+| outlier detection | [`envoy_cluster.go#L36`](https://github.com/cilium/cilium/blob/v1.20.4/operator/pkg/model/translation/envoy_cluster.go#L36) |
+| Hubble 預設值 | [`values.yaml#L1448-L1450`](https://github.com/cilium/cilium/blob/v1.20.4/install/kubernetes/cilium/values.yaml#L1448-L1450)（enabled）、[`#L1761-L1763`](https://github.com/cilium/cilium/blob/v1.20.4/install/kubernetes/cilium/values.yaml#L1761-L1763)（relay） |
+| Envoy cluster 統計名稱 | [`cluster_stats.rst`](https://github.com/envoyproxy/envoy/blob/v1.39.5/docs/root/configuration/upstream/cluster_manager/cluster_stats.rst) |
+| CNPG 支援矩陣、預設映像檔 | [`supported_releases.md`](https://github.com/cloudnative-pg/cloudnative-pg/blob/v1.30.1/docs/src/supported_releases.md)；[`versions.go`](https://github.com/cloudnative-pg/cloudnative-pg/blob/v1.30.1/pkg/versions/versions.go) |
+| tk8s 版本與安裝參數 | tk8s commit `94250ef`：`versions.yaml`、`src/tk8s/create/cni.py`（本機 `/home/bigred/tk8s`；是否有公開網址待確認） |
+| Envoy 預設重試次數 1 次（有 `retry_on` 時） | 沒有查證來源，待確認 |
