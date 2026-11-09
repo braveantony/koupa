@@ -121,14 +121,20 @@ elif action == "problem":
         s = load()
     except (OSError, ValueError):
         sys.exit(1)
-    if s.get("invalid"):
+    if not isinstance(s, dict) or s.get("invalid") is not False:
         sys.exit(1)
-    seen = [("%s 已確認 %d" % (n, (v or {}).get("confirmed", 0))) for n, v in items(s)
-            if n not in ("訂單", "多出的訂單") and (v or {}).get("confirmed", 0) > 0]
+    # Only a real integer count is an observation (JSON true == 1, 1.0 ...).
+    def confirmed(v):
+        c = v.get("confirmed") if isinstance(v, dict) else None
+        return c if type(c) is int else 0
+    seen = [("%s 已確認 %d" % (n, confirmed(v))) for n, v in items(s)
+            if n not in ("訂單", "多出的訂單") and confirmed(v) > 0]
     print("；".join(seen))
     sys.exit(0 if seen else 1)
 elif action == "is-invalid":
     try:
-        sys.exit(0 if load().get("invalid") else 1)
+        # Valid only with an explicit "invalid": false.
+        s = load()
+        sys.exit(1 if isinstance(s, dict) and s.get("invalid") is False else 0)
     except (OSError, ValueError):
         sys.exit(0)

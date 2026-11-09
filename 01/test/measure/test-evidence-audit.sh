@@ -90,4 +90,14 @@ mk_run
 "$STAGE/scripts/evidence.sh" "$run" >"$T/out" 2>&1
 check "0 orders with {}: exit 0" [ $? -eq 0 ]
 rm -f "$FAKE/audit-orders"
+
+# The order count must be the integer 0, not false (False == 0 in Python).
+scorecard 's["items"]["orders"]["confirmed"] = False; s["facts"]["audit"]["orders"] = {}'
+echo '{}' >"$FAKE/audit-orders"
+mk_run
+"$STAGE/scripts/evidence.sh" "$run" >"$T/out" 2>&1
+rc=$?
+check "order count false with {}: exit 1 (rc=$rc)" [ "$rc" -eq 1 ]
+check "order count false: FAILED orders and used-by-scorecard" bash -c 'grep -q "^FAILED  audit/orders.json" "$1" && grep -q "^FAILED  audit/used-by-scorecard.json" "$1"' _ "$run/evidence-index.txt"
+rm -f "$FAKE/audit-orders"
 finish

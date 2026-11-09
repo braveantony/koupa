@@ -185,7 +185,9 @@ def orders_why(x):
     if "error" in x:
         return "orders is an error: %s" % str(x["error"])[:100]
     if not x:
-        return None if n_orders == 0 else "orders is empty but the scorecard counted %s orders" % n_orders
+        # type() check: JSON false would compare equal to 0.
+        return None if type(n_orders) is int and n_orders == 0 else \
+            "orders is empty but the scorecard counted %r orders" % (n_orders,)
     prefix = run_id + "-"
     for k, ids in x.items():
         if not k.startswith(prefix):
