@@ -1,0 +1,25 @@
+{"run":"r1","board":"board-1","conn":1,"kind":"connect","at":"2026-11-09T09:59:59Z","pod_uid":"uid-a","status":200,"err":""}
+{"run":"r1","board":"board-1","conn":1,"kind":"hello","at":"2026-11-09T09:59:59Z","pod_uid":"uid-a","start":0,"version":"v1","err":""}
+{"run":"r1","board":"board-1","conn":1,"kind":"ready","at":"2026-11-09T10:00:02.01Z","pod_uid":"uid-a","ready_seq":1,"number":"A001","err":""}
+{"run":"r1","board":"board-1","conn":1,"kind":"ready","at":"2026-11-09T10:00:02.11Z","pod_uid":"uid-a","ready_seq":2,"number":"A002","err":""}
+{"run":"r1","board":"board-1","conn":1,"kind":"ready","at":"2026-11-09T10:00:02.21Z","pod_uid":"uid-a","ready_seq":3,"number":"A003","err":""}
+{"run":"r1","board":"board-1","conn":1,"kind":"shutdown","at":"2026-11-09T10:00:03Z","pod_uid":"uid-a","err":""}
+{"run":"r1","board":"board-1","conn":1,"kind":"disconnect","at":"2026-11-09T10:00:03.1Z","pod_uid":"uid-a","shutdown_seen":true,"err":""}
+{"run":"r1","board":"board-1","conn":2,"kind":"connect","at":"2026-11-09T10:00:03.2Z","pod_uid":"uid-a","status":200,"err":""}
+{"run":"r1","board":"board-1","conn":2,"kind":"hello","at":"2026-11-09T10:00:03.2Z","pod_uid":"uid-a","start":3,"version":"v1","err":""}
+{"run":"r1","board":"board-1","conn":2,"kind":"ready","at":"2026-11-09T10:00:03.51Z","pod_uid":"uid-a","ready_seq":4,"number":"A004","err":""}
+{"run":"r1","board":"board-2","conn":1,"kind":"connect","at":"2026-11-09T09:59:59Z","pod_uid":"uid-a","status":200,"err":""}
+{"run":"r1","board":"board-2","conn":1,"kind":"hello","at":"2026-11-09T09:59:59Z","pod_uid":"uid-a","start":0,"version":"v1","err":""}
+{"run":"r1","board":"board-2","conn":1,"kind":"ready","at":"2026-11-09T10:00:02.01Z","pod_uid":"uid-a","ready_seq":1,"number":"A001","err":""}
+{"run":"r1","board":"board-2","conn":1,"kind":"disconnect","at":"2026-11-09T10:00:02.05Z","pod_uid":"uid-a","shutdown_seen":false,"err":"unexpected EOF"}
+{"run":"r1","board":"board-2","conn":2,"kind":"connect","at":"2026-11-09T10:00:02.3Z","pod_uid":"uid-a","status":200,"err":""}
+{"run":"r1","board":"board-2","conn":2,"kind":"hello","at":"2026-11-09T10:00:02.3Z","pod_uid":"uid-a","start":3,"version":"v1","err":""}
+{"run":"r1","board":"board-2","conn":2,"kind":"ready","at":"2026-11-09T10:00:02.31Z","pod_uid":"uid-a","ready_seq":3,"number":"A003","err":""}
+{"run":"r1","board":"board-2","conn":2,"kind":"ready","at":"2026-11-09T10:00:03.51Z","pod_uid":"uid-a","ready_seq":4,"number":"A004","err":""}
+{"run":"r1","board":"board-3","conn":1,"kind":"connect","at":"2026-11-09T09:59:59Z","pod_uid":"uid-a","status":200,"err":""}
+{"run":"r1","board":"board-3","conn":1,"kind":"hello","at":"2026-11-09T09:59:59Z","pod_uid":"uid-a","start":0,"version":"v1","err":""}
+{"run":"r1","board":"board-3","conn":1,"kind":"ready","at":"2026-11-09T10:00:02.01Z","pod_uid":"uid-a","ready_seq":1,"number":"A001","err":""}
+{"run":"r1","board":"board-3","conn":1,"kind":"ready","at":"2026-11-09T10:00:02.11Z","pod_uid":"uid-a","ready_seq":2,"number":"A002","err":""}
+{"run":"r1","board":"board-3","conn":1,"kind":"ready","at":"2026-11-09T10:00:02.21Z","pod_uid":"uid-a","ready_seq":3,"number":"A003","err":""}
+{"run":"r1","board":"board-3","conn":1,"kind":"ready","at":"2026-11-09T10:00:03.51Z","pod_uid":"uid-a","ready_seq":4,"number":"A004","err":""}
+{"run":"r1","board":"board-3","conn":1,"kind":"disconnect","at":"2026-11-09T10:01:50.5Z","pod_uid":"uid-a","shutdown_seen":false,"err":"context canceled"}
