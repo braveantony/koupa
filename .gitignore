@@ -1,0 +1,6 @@
+evidence/
+*.bak
+.DS_Store
+/bin/
+node_modules/
+.claude/
