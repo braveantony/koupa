@@ -1,0 +1,22 @@
+# Critical-timing experiments (plan A12): timings 3 and 4 with the step-3 mechanism off.
+# Only this row's switch is off; everything else is step 4 plus TEST_HOOKS
+# (k8s/test-hooks). Never used for real measurements.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../../k8s/test-hooks
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: koupa
+        namespace: koupa
+      spec:
+        template:
+          spec:
+            containers:
+              - name: koupa
+                env:
+                  - name: RESUME_FROM_LAST_ID
+                    value: "0"
