@@ -5,8 +5,9 @@
 #   experiments/verify/compare-tools.sh [--runs 5]          measure, then compare
 #   experiments/verify/compare-tools.sh compare DIR         only the comparison
 #
-# Exit 0 when both tools have valid runs of both steps and agree on the
-# direction of both counts; 1 otherwise (then investigate, A14).
+# Exit 0 when both tools have 5 valid runs of both steps (a k6 run whose
+# process exited non-zero is invalid) and agree on the direction of both
+# counts; 1 otherwise: the comparison is incomplete, or investigate (A14).
 #
 # Each round, in this order: measure.sh step-0 --runs 1 (Rush Hour, the real
 # measurement with its evidence pack), k6 step 0, measure.sh step-2 --runs 1,
@@ -128,7 +129,10 @@ k6_run() {
 	local krc=$?
 	K6_NAME=""
 	grep '^ATTEMPT\|msg="ATTEMPT ' "$dir/k6.stderr" | sed -n 's/.*msg="ATTEMPT \(.*\)" source=console.*/\1/p' | sed 's/\\"/"/g' >"$dir/attempts.jsonl"
-	[ -f "$dir/result.json" ] || invalid="${invalid:+$invalid; }k6 wrote no result (exit $krc)"
+	[ -f "$dir/result.json" ] || invalid="${invalid:+$invalid; }k6 wrote no result"
+	# A k6 process that did not end successfully (thresholds, script
+	# errors, interruption) invalidates the run whatever it wrote.
+	[ "$krc" = 0 ] || invalid="${invalid:+$invalid; }k6 exited $krc"
 	python3 -I - "$dir/k6-run.json" "$runid" "$step" "$t0" "$change_at" "$done_at" "$invalid" "$krc" "$dir/result.json" "$(podman image inspect --format '{{.Id}}' "$K6_IMAGE" 2>/dev/null)" <<'PY'
 import json, os, sys
 out, run, step, t0, ch, done, invalid, krc, res, iid = sys.argv[1:]
@@ -163,7 +167,12 @@ for f in sorted(glob.glob(os.path.join(root, "rush-hour", "step-*", "scorecard.j
 for f in sorted(glob.glob(os.path.join(root, "k6", "*", "k6-run.json"))):
     k = json.load(open(f))
     r = k.get("result") or {}
-    rows.append({"tool": "k6", "step": k["step"], "run": k["run"], "valid": k["valid"], "invalid_reason": k.get("invalid_reason"),
+    valid, why = k["valid"], k.get("invalid_reason")
+    if k.get("k6_exit") != 0:
+        valid, why = False, "; ".join(x for x in (why, "k6 exited %s" % k.get("k6_exit")) if x)
+    if not r:
+        valid, why = False, "; ".join(x for x in (why, "no k6 result") if x)
+    rows.append({"tool": "k6", "step": k["step"], "run": k["run"], "valid": valid, "invalid_reason": why,
                  "orders": r.get("orders"), "first": r.get("first_try_failed"), "first_unknown": 0,
                  "after": r.get("failed_after_retry"), "after_unknown": 0, "mtime": os.path.getmtime(f),
                  "rollout_completed_offset_s": k.get("rollout_completed_offset_s")})
@@ -217,7 +226,11 @@ for tool in ("rush-hour", "k6"):
         summary[(tool, step)] = s
 P("%-10s %-7s %3s  %-26s %-26s" % ("工具", "步驟", "次數", "第一次送出沒有成功回應", "重試後仍沒有成功回應"))
 fmt = lambda x: "中位數 %s，範圍 %s～%s" % (x["median"], x["min"], x["max"]) if x["median"] is not None else "沒有有效資料"
+REQUIRED = 5  # plan A14: five valid runs per tool and step
+BAD = []
 for (tool, step), s in summary.items():
+    if s["n"] < REQUIRED:
+        BAD.append("%s %s：有效 %d 次，不足 %d 次" % (tool, step, s["n"], REQUIRED))
     P("%-10s %-7s %3d  %-26s %-26s" % (tool, step, s["n"], fmt(s["first"]), fmt(s["after"])))
 P("")
 P("第一次送出沒有成功回應，依客人端看到的結果（中位數，範圍）：")
@@ -236,7 +249,6 @@ def direction(a, b):
         return "無法判斷"
     return "減少" if b < a else "增加" if b > a else "持平"
 dirs = {}
-BAD = []
 for key, label in (("first", "第一次送出沒有成功回應"), ("after", "重試後仍沒有成功回應")):
     d = {t: direction(summary[(t, "step-0")][key]["median"], summary[(t, "step-2")][key]["median"]) for t in ("rush-hour", "k6")}
     dirs[key] = d
@@ -255,6 +267,8 @@ for key, label in (("first", "第一次送出沒有成功回應"), ("after", "�
             continue
         overlap = not (a["max"] < b["min"] or b["max"] < a["min"])
         P("  %s：Rush Hour %s～%s，k6 %s～%s（範圍%s）" % (step, a["min"], a["max"], b["min"], b["max"], "重疊" if overlap else "不重疊"))
+P("")
+P("比較不完整：" + "；".join(b for b in BAD if "次，不足" in b) if any("次，不足" in b for b in BAD) else "每個工具、每個步驟都有 %d 次有效量測" % REQUIRED)
 text = "\n".join(out) + "\n"
 open(os.path.join(root, "compare.txt"), "w").write(text)
 json.dump({"rows": rows, "summary": {"%s %s" % k: v for k, v in summary.items()}, "direction": dirs},
