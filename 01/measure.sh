@@ -219,6 +219,11 @@ elif action == "control-ok":
                 why.append("%s 已確認 %d" % (name, v["confirmed"]))
         if ((s.get("items") or {}).get("orders") or {}).get("confirmed", 0) <= 0:
             why.append("沒有送出任何訂單")
+        # The board check needs called numbers: with cursor C = 0 nothing
+        # was marked ready and "0 missed" says nothing about the boards.
+        cursor = ((s.get("facts") or {}).get("audit") or {}).get("cursor")
+        if not isinstance(cursor, int) or cursor <= 0:
+            why.append("沒有任何叫號（截止游標 C = %s），漏號 0 不代表看板沒有漏號" % cursor)
     print("；".join(why) if why else "0 失敗、0 漏號、0 重複，沒有未知")
     sys.exit(1 if why else 0)
 elif action == "problem":

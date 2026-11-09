@@ -25,6 +25,13 @@ echo 2 >"$FAKE/rh-rc"
 check "invalid: exit 3" [ $? -eq 3 ]
 rm -f "$FAKE/rh-rc"
 
+# No order was ever marked ready (cursor C = 0): "0 missed" proves nothing.
+scorecard 's["facts"]["audit"]["cursor"] = 0'
+"$STAGE/measure.sh" control --runs 1 --duration 30 >"$T/out" 2>&1
+rc=$?
+check "no ready at all (C = 0): exit 3 (rc=$rc)" [ "$rc" -eq 3 ]
+check "says no number was called" grep -q '沒有任何叫號' "$T/out"
+
 scorecard_clean
 "$STAGE/measure.sh" control --runs 1 --duration 30 >"$T/out" 2>&1
 rc=$?
