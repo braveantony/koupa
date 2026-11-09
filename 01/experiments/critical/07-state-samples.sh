@@ -51,7 +51,7 @@ run07() {
 	timeout 90 kubectl -n "$NS" wait --for=delete "pod/$p" --timeout=80s >&2 || return 1
 	sleep 3
 }
-run07 || log "$exp: a step failed or timed out (evidence kept)"
+run07 || orch_fail "$d" "a 07 step failed or timed out"
 sed 's/^/    | /' "$d/crit.log" >&2
 stop_collector
 # The two client attempts, as the client saw them.
@@ -87,6 +87,8 @@ ok(get(fo, "report", "pod_name") == fo.get("pod") and get(fo, "client", "full_re
    "write_flush_ok sample: paused on %s, the client never got a full response" % fo.get("pod"))
 ok(get(re_, "report", "pod_name") == re_.get("pod") and get(re_, "client", "full_success") is not True and bool(re_.get("sigterm_at")),
    "reached_not_ended sample: paused on %s, Pod deleted, SIGTERM logged, no success for the client (%s)" % (re_.get("pod"), get(re_, "client", "err")))
+FL = lines(fo.get("pod") or "-")
+ok(any(l.get("event") == "hook_released" and l.get("attempt") == fa for l in FL), "write_flush_ok attempt %s was released (hook_released)" % fa)
 ok(get(cl, fa, "log_covered") is True and get(cl, ra, "log_covered") is True, "the collector covers both attempts (A11): %s / %s" % (get(cl, fa, "pod_coverage"), get(cl, ra, "pod_coverage")))
 ok(get(cl, fa, "state") == "write_flush_ok", "verdict.State = write_flush_ok (「App 回報寫入和 flush 成功」): %s" % get(cl, fa, "state"))
 ok(get(cl, ra, "state") == "reached_not_ended", "verdict.State = reached_not_ended (「送到了，App 沒有結束這個請求」): %s" % get(cl, ra, "state"))

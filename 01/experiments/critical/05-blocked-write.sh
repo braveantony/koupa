@@ -39,6 +39,7 @@ metadata:
 spec:
   restartPolicy: Never
   automountServiceAccountToken: false
+  imagePullSecrets: [{name: $PULL_SECRET}]
   securityContext: {runAsNonRoot: true, runAsUser: 65532, seccompProfile: {type: RuntimeDefault}}
   affinity:
     nodeAffinity:
@@ -49,6 +50,7 @@ spec:
   containers:
     - name: slow-board
       image: $CRIT_SLOW_BOARD_IMAGE
+      imagePullPolicy: Always
       args: ["--target", "$ip:8080", "--healthy", "2", "--duration", "5m"]
       securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
 YAML
@@ -88,7 +90,7 @@ YAML
 	timeout 90 kubectl -n "$NS" wait --for=delete "pod/$target" --timeout=80s >&2 && printf ',"pod_gone":true' >>"$d/result.json"
 	sleep 1
 }
-run || log "$exp: a step failed or timed out (evidence kept)"
+run || orch_fail "$d" "a 05 step failed or timed out"
 [ -f "$d/result.json" ] && echo '}' >>"$d/result.json"
 export SHUTDOWN_TIMEOUT_S GRACE_S MARGIN_MS
 check "$d" <<'PY'

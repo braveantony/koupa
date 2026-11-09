@@ -17,6 +17,8 @@ for setting in off on; do
 	run=crit03$setting$(date +%H%M%S)
 	if deploy $overlay "$d" && hooks_up && follow_logs "$d/logs"; then
 		run_crit "$d" 120 handoff --base "$(gateway_base)" --run "$run" --hooks "$HOOKS"
+	else
+		orch_fail "$d" "deploy, hook port-forwards or log followers failed"
 	fi
 	check "$d" <<'PY'
 pod = get(R, "report", "pod_name")
@@ -28,6 +30,9 @@ L = lines(pod) if pod else []
 paused = [i for i, l in enumerate(L) if l.get("event") == "hook_paused" and l.get("hook") == "sse.after_hello"]
 ends = [l for l in all_lines() if l.get("event") == "request_end" and l.get("ready_seq") == seq]
 ok(bool(paused) and bool(ends), "the call was assigned while the board was paused (hook_paused, then ready request_end)")
+att = get(R, "report", "attempt")
+ok(any(l.get("event") == "hook_released" and l.get("attempt") == att and l.get("hook") == "sse.after_hello" for l in L),
+   "the reported board attempt %s was released (hook_released)" % att)
 ok(ready.count(seq) == 1, "the board got ready_seq %s exactly once (got %s)" % (seq, ready))
 ok(len(ready) == len(set(ready)) and ready == sorted(ready), "no duplicate and increasing: %s" % ready)
 PY

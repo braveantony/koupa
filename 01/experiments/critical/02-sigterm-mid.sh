@@ -22,6 +22,8 @@ for setting in off on; do
 		BG_PIDS+=($!)
 		run_crit "$d" 200 sigterm --base "$(gateway_base)" --run "$run" --hooks "$HOOKS" --graceful $g --logs "$d/logs"
 		sleep 2
+	else
+		orch_fail "$d" "deploy, hook port-forwards or log followers failed"
 	fi
 	if [ $setting = off ]; then
 		check "$d" <<'PY'

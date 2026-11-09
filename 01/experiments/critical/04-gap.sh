@@ -16,6 +16,8 @@ for setting in off on; do
 	run=crit04$setting$(date +%H%M%S)
 	if deploy $overlay "$d" && follow_logs "$d/logs"; then
 		run_crit "$d" 120 gap --base "$(gateway_base)" --run "$run"
+	else
+		orch_fail "$d" "deploy, hook port-forwards or log followers failed"
 	fi
 	if [ $setting = off ]; then
 		check "$d" <<'PY'

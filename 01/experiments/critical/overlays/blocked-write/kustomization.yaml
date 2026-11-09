@@ -24,3 +24,19 @@ patches:
                     value: 10ms
                   - name: TEST_SSE_FILLER_BYTES
                     value: "65536"
+  # Experiment images: pulled each rollout through the pull secret that
+  # lib.sh creates (none when the images are public; then pulled anonymously).
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: koupa
+        namespace: koupa
+      spec:
+        template:
+          spec:
+            imagePullSecrets:
+              - name: ghcr-experiments
+            containers:
+              - name: koupa
+                imagePullPolicy: Always

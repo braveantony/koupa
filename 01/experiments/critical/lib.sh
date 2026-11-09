@@ -23,6 +23,8 @@ RH_BIN=$stage/bin/rush-hour
 V1_IMAGE=ghcr.io/braveantony/koupa:v1
 HOOK_NAMES=(order.before_commit order.after_commit request.mid sse.after_hello)
 APP_SELECTOR=app.kubernetes.io/name=koupa
+TEST_POD_SELECTOR=app.kubernetes.io/name=crit-slow-board
+PULL_SECRET=ghcr-experiments
 
 log() { printf '%s %s\n' "$(date -u +%H:%M:%S.%3N)" "$*" >&2; }
 now_rfc() { date -u +%Y-%m-%dT%H:%M:%S.%NZ; }
@@ -137,6 +139,7 @@ deploy() {
 	fi
 	log "applying overlay $name ($CRIT_APP_IMAGE)"
 	rm -f "$mark"
+	pull_secret_up || return 1
 	apply_overlay "$crit_dir/overlays/$name" "$CRIT_APP_IMAGE" "$edir/manifest.yaml" || { log "apply $name failed"; return 1; }
 	echo "$name $CRIT_APP_IMAGE" >"$mark"
 }
@@ -148,12 +151,52 @@ restore_step4() {
 	mkdir -p "$CRIT_EVIDENCE"
 	rm -f "$CRIT_EVIDENCE/.deployed"
 	apply_overlay "$stage/k8s/steps/step-4" "$V1_IMAGE" "$CRIT_EVIDENCE/restore-manifest.yaml" || { log "restore failed"; return 1; }
-	if kubectl -n "$NS" get deploy koupa -o json | grep -c 'TEST_HOOKS\|TEST_MUTATION\|TEST_SSE' >/dev/null ||
+	if kubectl -n "$NS" get deploy koupa -o json | grep -c 'TEST_HOOKS\|TEST_MUTATION\|TEST_SSE\|ghcr-experiments\|koupa-experiments' >/dev/null ||
 		kubectl -n "$NS" get pods -l "$APP_SELECTOR" -o json | grep -c 'TEST_HOOKS\|TEST_MUTATION\|TEST_SSE' >/dev/null; then
 		log "restore: test settings still present"
 		return 1
 	fi
-	log "restored: step-4, $V1_IMAGE, no test settings"
+	timeout 60 kubectl -n "$NS" delete pod -l "$TEST_POD_SELECTOR" --ignore-not-found --wait=false >&2 || return 1
+	pull_secret_down || return 1
+	log "restored: step-4, $V1_IMAGE, no test settings, no test Pods, no $PULL_SECRET secret"
+}
+
+# ------------------------------------------------------------ pull secret
+
+# The experiment images are pulled by the kubelet (imagePullPolicy Always
+# in the overlays) through the Secret $PULL_SECRET, referenced only by the
+# experiment overlays and the slow-board Pod. The credential goes from the
+# host's podman auth file to kubectl through a pipe, never through a
+# command line or a file. When the images can be pulled anonymously (the
+# package was made public), no Secret is created.
+images_public() {
+	local img
+	for img in "$CRIT_APP_IMAGE" "$CRIT_SLOW_BOARD_IMAGE"; do
+		timeout 60 skopeo inspect --no-creds --format '{{.Digest}}' "docker://$img" >/dev/null 2>&1 || return 1
+	done
+}
+
+pull_secret_up() {
+	if images_public; then
+		log "experiment images are public: no pull secret"
+		pull_secret_down
+		return
+	fi
+	python3 -I - "$NS" "$PULL_SECRET" "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/containers/auth.json" <<'PY' |
+import base64, json, sys
+ns, name, path = sys.argv[1:]
+auth = json.load(open(path))["auths"]["ghcr.io"]["auth"]
+cfg = json.dumps({"auths": {"ghcr.io": {"auth": auth}}}).encode()
+print(json.dumps({"apiVersion": "v1", "kind": "Secret", "type": "kubernetes.io/dockerconfigjson",
+    "metadata": {"name": name, "namespace": ns, "labels": {"app.kubernetes.io/name": "crit-experiments"}},
+    "data": {".dockerconfigjson": base64.b64encode(cfg).decode()}}))
+PY
+		timeout 30 kubectl apply -f - >/dev/null || { log "cannot create pull secret $PULL_SECRET"; return 1; }
+	log "pull secret $PULL_SECRET created (images are private)"
+}
+
+pull_secret_down() {
+	timeout 30 kubectl -n "$NS" delete secret "$PULL_SECRET" --ignore-not-found >/dev/null
 }
 
 # ------------------------------------------------------------ port-forwards, logs
@@ -264,6 +307,9 @@ def ok(cond, text):
     print(("ok   " if cond else "FAIL ") + text)
     if not cond:
         FAILED.append(text)
+_of = os.path.join(D, "orchestration.failed")
+ok(not os.path.exists(_of), "every orchestration step completed in time" +
+   (": " + open(_of).read().strip().replace("\n", "; ") if os.path.exists(_of) else ""))
 import datetime, re
 def T(s):
     """RFC 3339 (any offset, up to nanoseconds) -> aware datetime; None if empty."""
@@ -282,7 +328,10 @@ def get(d, *path):
         d = d.get(p)
     return d
 PY
-		cat
+		echo 'try:'
+		sed 's/^/    /'
+		echo 'except Exception as e:'
+		echo '    ok(False, "expectations could not be evaluated: %r" % e)'
 		echo 'sys.exit(1 if FAILED else 0)'
 	} >"$dir/checks.py"
 	python3 -I "$dir/checks.py" "$dir" >"$dir/checks.txt" 2>&1
@@ -309,8 +358,17 @@ run_crit() {
 	timeout "$t" "$CRIT_BIN" "$@" >"$dir/result.json" 2>"$dir/crit.log"
 	local rc=$?
 	sed 's/^/    | /' "$dir/crit.log" >&2
-	[ "$rc" = 0 ] || log "crit $1 exited $rc"
-	return 0
+	if [ "$rc" != 0 ]; then
+		orch_fail "$dir" "crit $1 exited $rc (124 = timeout)"
+		return 1
+	fi
+}
+
+# orch_fail DIR WHY: an orchestration step failed or timed out; check()
+# then fails the setting whatever the expectations say.
+orch_fail() {
+	log "orchestration failed: $2"
+	echo "$2" >>"$1/orchestration.failed"
 }
 
 mkdir -p "$CRIT_EVIDENCE"

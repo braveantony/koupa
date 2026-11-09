@@ -4,3 +4,20 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - ../../../../k8s/test-hooks
+patches:
+  # Experiment images: pulled each rollout through the pull secret that
+  # lib.sh creates (none when the images are public; then pulled anonymously).
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: koupa
+        namespace: koupa
+      spec:
+        template:
+          spec:
+            imagePullSecrets:
+              - name: ghcr-experiments
+            containers:
+              - name: koupa
+                imagePullPolicy: Always
