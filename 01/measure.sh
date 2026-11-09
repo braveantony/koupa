@@ -843,6 +843,7 @@ print(c["lifecycle"]["preStop"]["sleep"]["seconds"])' "$cur_dir/manifest/applied
 						abort_run "kubectl drain $drain_target 失敗（結束狀態 $drc）：$(grep -v '^node/' "$cur_dir/drain.log" | head -3 | tr '\n' ' ')"
 					elif [ "$seen" -lt "$deadline_ns" ]; then
 						done_at=$seen
+						distribution "$cur_dir/distribution-at-drain.json" || true
 					else
 						rollout_invalid="drain 在第 $((duration - ROLLOUT_MARGIN_S)) 秒（D − $ROLLOUT_MARGIN_S）前沒有完成"
 					fi
@@ -860,6 +861,10 @@ json.dump({"mode": "$mode", "change": "$desc",
     "status_at_deadline": None if "$done_at" else "${status:-}",
     "deployment_at_completion": "${status:-}" if "$done_at" else None,
     "drain_exit": int("$drc") if "$drc" else None,
+    "completion_rule": ("kubectl drain returned (every Pod evicted and gone) before D - 10 s; the "
+                        "replacement Pod may stay Pending until uncordon (topology spread "
+                        "DoNotSchedule with the worker cordoned), so 3 available is not required"
+                        ) if "$change" == "drain" else "Deployment rollout status done before D - 10 s",
     "invalid_reason": """$rollout_invalid""" or None,
     "${img_after##*:}_digest_check" if "$img_after" else "digest_check":
         json.load(open(sys.argv[2])) if __import__("os").path.exists(sys.argv[2]) else None},
@@ -905,6 +910,9 @@ PY
 	if ! "$stage/scripts/evidence.sh" "$cur_dir" >>"$cur_dir/measure.log" 2>&1; then
 		scorecard_py "$cur_dir" is-invalid ||
 			scorecard_py "$cur_dir" invalid "證據包不完整（見 evidence-index.txt）"
+	fi
+	if [ "$change" = drain ] && ! scorecard_py "$cur_dir" is-invalid; then
+		printf '\n註：drain 的「完成」是 kubectl drain 在第 D − 10 秒前結束（Pod 都已驅逐並結束）；worker cordon 期間，替代 Pod 受 topology spread（DoNotSchedule）限制，可能到 uncordon 才排程，所以這段時間可能只有 2 個 Pod（見 rollout.json、distribution-at-drain.json）。\n' >>"$cur_dir/scorecard.txt"
 	fi
 	if [ "$mode" = calibrate ]; then
 		if ! "$HOST_RH" calibrate --prestop "${calib_prestop}s" --json "$cur_dir/calibrate.json" "$cur_dir" \
