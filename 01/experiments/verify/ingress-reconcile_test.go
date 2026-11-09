@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"koupa/rush-hour/record"
 )
@@ -90,16 +91,16 @@ func TestReconcileAttempts(t *testing.T) {
 	check("Matched", r.Matched, 9)
 	check("SameStatus", r.SameStatus, 6)
 	check("ClientTimeout", r.Diff[CatClientTimeout], 2)            // a2-t1 (DC), a3-t1 (answered late)
-	check("NotViaIngress", r.Diff[CatNotViaIngress], 1)            // a3-t2 refused, no line
+	check("NotViaIngress", r.Diff[CatNotViaIngress], 0)            // no independent evidence of a bypass
 	check("IngressRetry", r.Diff[CatIngressRetry], 1)              // a5-t1 upstream_attempts 2
 	check("OtherTraffic", r.Diff[CatOther], 4)                     // other run, no header, kitchen, GET
-	check("Unexplained", r.Diff[CatUnexplained], 3)                // a4-t1 no line, a9 no record, a6 mismatch
+	check("Unexplained", r.Diff[CatUnexplained], 4)                // a3-t2 and a4-t1 no line, a9 no record, a6 mismatch
 	check("FirstTryFailedRH", r.FirstTryFailedRH, 4)               // a2 a3 a4 a7
 	check("FailedAfterRetryRH", r.FailedAfterRetryRH, 2)           // a3 a7
 	check("FirstTryFailedIngress", r.FirstTryFailedIngress, 4)     // a2 (0) a4 (no line) a6 (503) a7
 	check("FailedAfterRetryIngress", r.FailedAfterRetryIngress, 3) // a3 (no line) a6 a7
-	if len(r.UnexplainedList) != 3 {
-		t.Errorf("UnexplainedList = %v, want 3 entries", r.UnexplainedList)
+	if len(r.UnexplainedList) != 4 {
+		t.Errorf("UnexplainedList = %v, want 4 entries", r.UnexplainedList)
 	}
 }
 
@@ -240,20 +241,48 @@ func TestRunRendersTables(t *testing.T) {
 	}
 }
 
-// A collector that re-reads an access-log stream from the same second
-// writes some lines twice (collect-timeline.sh missing.jsonl says so):
-// identical lines count once, and the number removed is reported.
+// A collector that re-reads an access-log stream from a second (its
+// missing.jsonl entry says from when, and when it restarted) writes the
+// lines logged since then twice. Only a copy received after the restart of
+// a line logged inside [from, restart] is dropped; any other identical line
+// stays (two real requests can look alike) and is counted as ambiguous.
 func TestDedupeRereadLines(t *testing.T) {
+	stamped := func(stamp, l string) string { return stamp + l[strings.IndexByte(l, ' '):] }
+	in := "2026-11-09T13:14:05.300Z" // logged 13:14:05.303, inside the reread window
+	out := "2026-11-09T13:13:00.000Z"
 	text := strings.Join([]string{
-		line("r1-a1-t1", "POST", "/orders", 201, "-", 1, t0, 3),
-		line("r1-a1-t1", "POST", "/orders", 201, "-", 1, t0, 3),
-		line("", "GET", "/api/orders", 200, "-", 1, t0, 3),
-		line("", "GET", "/api/orders", 200, "-", 1, t0, 3),
-		line("", "GET", "/api/orders", 200, "-", 1, t0, 4),
+		stamped("1794230045.31", line("r1-a1-t1", "POST", "/orders", 201, "-", 1, in, 3)),
+		stamped("1794230046.10", line("r1-a1-t1", "POST", "/orders", 201, "-", 1, in, 3)), // reread copy
+		stamped("1794229980.01", line("", "GET", "/api/orders", 200, "-", 1, out, 3)),
+		stamped("1794229980.02", line("", "GET", "/api/orders", 200, "-", 1, out, 3)), // look-alike, no reread
+		stamped("1794229980.03", line("", "GET", "/api/orders", 200, "-", 1, out, 4)),
 	}, "\n")
 	lines, _ := ParseIngress(strings.NewReader(text))
-	got, dups := DedupeLines(lines)
-	if len(got) != 3 || dups != 2 {
-		t.Errorf("got %d lines, %d duplicates; want 3, 2", len(got), dups)
+	missing := `{"source":"hubble","reason":"x","at":"2026-11-09T13:14:05.999Z"}
+{"source":"ingress","reason":"cilium-envoy-6rzcp 的 access log 串流中斷（rc=1），從 2026-11-09T13:14:05Z 重新讀取；同一秒內可能重複或缺行","at":"2026-11-09T13:14:05.999167822Z"}
+`
+	rr := ParseRereads(strings.NewReader(missing))
+	if len(rr) != 1 || rr[0].From.Format(time.RFC3339) != "2026-11-09T13:14:05Z" {
+		t.Fatalf("rereads %+v", rr)
+	}
+	got, dropped, ambiguous := DedupeLines(lines, rr)
+	if len(got) != 4 || dropped != 1 || ambiguous != 1 {
+		t.Errorf("kept %d, dropped %d, ambiguous %d; want 4, 1, 1", len(got), dropped, ambiguous)
+	}
+	if _, d, a := DedupeLines(lines, nil); d != 0 || a != 2 {
+		t.Errorf("without reread evidence: dropped %d ambiguous %d; want 0, 2", d, a)
+	}
+}
+
+// Malformed attempt lines are counted and shown, not silently skipped.
+func TestRunShowsParseFailures(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "attempts.jsonl"), []byte("{bad\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "params.json"), []byte(`{"run_id":"r1"}`), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "ingress.log"), []byte(line("r1-a1-t1", "POST", "/orders", 201, "-", 1, t0, 3)+"\n1.0 {not json\n"), 0o644)
+	var out, errb bytes.Buffer
+	runMain([]string{dir}, &out, &errb)
+	if !strings.Contains(out.String(), "attempts.jsonl 無法解析 1 行") || !strings.Contains(out.String(), "ingress.log 無法解析 1 行") {
+		t.Errorf("output lacks parse-failure counts:\n%s", out.String())
 	}
 }

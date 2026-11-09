@@ -66,6 +66,9 @@ type IngressLine struct {
 	UpstreamAttempts    json.RawMessage `json:"upstream_attempts"`
 	DurationMs          json.RawMessage `json:"duration_ms"`
 	Attempt             *string         `json:"attempt"`
+	// Stamp: the collector's receive time (rush-hour stamp prefix, Unix
+	// seconds); zero when the line has no numeric prefix.
+	Stamp float64 `json:"-"`
 }
 
 func rawInt(r json.RawMessage) (int, bool) {
@@ -133,27 +136,82 @@ func ParseIngress(r io.Reader) ([]IngressLine, int) {
 			bad++
 			continue
 		}
+		if f := strings.Fields(string(b[:i])); len(f) > 0 {
+			l.Stamp, _ = strconv.ParseFloat(f[0], 64)
+		}
 		out = append(out, l)
 	}
 	return out, bad
 }
 
-// DedupeLines drops lines identical to an earlier one (all fields): a
-// collector that restarts an access-log stream re-reads from the same
-// second (collect-timeline.sh records that in missing.jsonl). Returns the
-// lines kept and how many were dropped.
-func DedupeLines(lines []IngressLine) ([]IngressLine, int) {
-	seen := map[string]bool{}
-	out := make([]IngressLine, 0, len(lines))
-	for _, l := range lines {
-		b, _ := json.Marshal(l)
-		if seen[string(b)] {
+// Reread is one access-log stream restart recorded by collect-timeline.sh
+// in missing.jsonl: the follower broke at At and re-read from From (whole
+// seconds), so lines logged in [From, At] may be in ingress.log twice.
+type Reread struct {
+	From, At time.Time
+	Reason   string
+}
+
+var rereadFrom = regexp.MustCompile(`從 (\S+?Z) 重新讀取`)
+
+// ParseRereads reads the ingress restarts from a missing.jsonl.
+func ParseRereads(r io.Reader) []Reread {
+	var out []Reread
+	sc := bufio.NewScanner(r)
+	for sc.Scan() {
+		var m struct{ Source, Reason, At string }
+		if json.Unmarshal(sc.Bytes(), &m) != nil || m.Source != "ingress" {
 			continue
 		}
-		seen[string(b)] = true
-		out = append(out, l)
+		f := rereadFrom.FindStringSubmatch(m.Reason)
+		if f == nil {
+			continue
+		}
+		from, err1 := time.Parse(time.RFC3339Nano, f[1])
+		at, err2 := time.Parse(time.RFC3339Nano, m.At)
+		if err1 == nil && err2 == nil {
+			out = append(out, Reread{From: from, At: at, Reason: m.Reason})
+		}
 	}
-	return out, len(lines) - len(out)
+	return out
+}
+
+func stampTime(f float64) time.Time { return time.Unix(0, int64(f*1e9)) }
+
+// DedupeLines drops a line only with evidence that the collector re-read
+// it: identical (every field) to an earlier line, the earlier copy received
+// (collector stamp) inside a restart's [From, At] and this copy received
+// after At. (Envoy buffers its access log, so start_time + duration is not
+// when the line was written; the collector's own receive stamps are the
+// evidence.) Other identical lines are kept (two requests can look alike,
+// e.g. without an attempt id) and counted as ambiguous.
+func DedupeLines(lines []IngressLine, rereads []Reread) (kept []IngressLine, dropped, ambiguous int) {
+	first := map[string]float64{}
+	kept = make([]IngressLine, 0, len(lines))
+	for _, l := range lines {
+		b, _ := json.Marshal(l)
+		k := string(b)
+		f, dup := first[k]
+		if !dup {
+			first[k] = l.Stamp
+			kept = append(kept, l)
+			continue
+		}
+		reread := false
+		for _, r := range rereads {
+			if f > 0 && l.Stamp > 0 && !stampTime(f).Before(r.From) && !stampTime(f).After(r.At) && !stampTime(l.Stamp).Before(r.At) {
+				reread = true
+				break
+			}
+		}
+		if reread {
+			dropped++
+			continue
+		}
+		ambiguous++
+		kept = append(kept, l)
+	}
+	return kept, dropped, ambiguous
 }
 
 // ---------------------------------------------------------------- per attempt
@@ -231,10 +289,10 @@ func ReconcileAttempts(run string, atts []record.Attempt, lines []IngressLine) A
 		}
 		l, in := byID[a.Attempt]
 		switch {
-		case !in && !a.FullResponse && a.ErrKind != "":
-			// refused / reset / timeout with nothing logged at the ingress.
-			t.Diff[CatNotViaIngress]++
 		case !in:
+			// No access-log line. Even a refused/reset/timed-out attempt
+			// may have reached the ingress (the line can be lost); without
+			// independent evidence of a bypass it stays unexplained.
 			unexplained("%s：Rush Hour 收到 %s，入口沒有紀錄", a.Attempt, statusText(a))
 		default:
 			t.Matched++
@@ -506,7 +564,10 @@ type Result struct {
 	Dir            string       `json:"dir"`
 	Run            string       `json:"run"`
 	IngressBad     int          `json:"ingress_bad_lines"`
+	AttemptsBad    int          `json:"attempts_bad_lines"`
 	RereadLines    int          `json:"reread_duplicate_lines"`
+	AmbiguousDups  int          `json:"identical_lines_kept"`
+	Rereads        []Reread     `json:"ingress_rereads"`
 	Attempts       AttemptTable `json:"attempts"`
 	Stats          *StatsTable  `json:"stats,omitempty"`
 	StatsError     string       `json:"stats_error,omitempty"`
@@ -516,9 +577,9 @@ type Result struct {
 func render(w io.Writer, r Result) {
 	a := r.Attempts
 	fmt.Fprintf(w, "入口對帳（A14）　量測編號 %s\n證據：%s\n\n", r.Run, r.Dir)
-	if r.RereadLines > 0 {
-		fmt.Fprintf(w, "入口紀錄裡完全相同的重複行 %d 行已去掉（收集端重新讀取串流，見 missing.jsonl）\n\n", r.RereadLines)
-	}
+	fmt.Fprintf(w, "無法解析的紀錄：attempts.jsonl 無法解析 %d 行；ingress.log 無法解析 %d 行\n", r.AttemptsBad, r.IngressBad)
+	fmt.Fprintf(w, "入口串流重新讀取 %d 次（missing.jsonl）；在重讀時間窗內收到的重複行 %d 行已去掉；其他完全相同的行 %d 行沒有重讀證據，保留\n\n",
+		len(r.Rereads), r.RereadLines, r.AmbiguousDups)
 	fmt.Fprintln(w, "【一】逐筆：POST /orders，同一次量測（X-Koupa-Attempt 屬於這次），最終回應")
 	fmt.Fprintf(w, "  Rush Hour 下單嘗試           %6d\n", a.RushHour)
 	fmt.Fprintf(w, "  入口紀錄（access log）        %6d\n", a.Ingress)
@@ -532,7 +593,7 @@ func render(w io.Writer, r Result) {
 			CatClientTimeout: "Rush Hour 逾時放棄，入口仍有紀錄（DC 或之後才回應）",
 			CatIngressRetry:  "兩邊都有，但入口送了上游不只一次（upstream_attempts > 1）；不影響逐筆對應",
 			CatOther:         "不在範圍內的入口紀錄：其他路徑、其他量測、沒有嘗試編號的請求",
-			CatNotViaIngress: "Rush Hour 沒有回應（refused/reset/timeout），入口沒有任何紀錄",
+			CatNotViaIngress: "需要另外的證據證明請求沒經過入口；目前沒有這種證據，入口沒有紀錄的嘗試一律列為對不上",
 			CatUnexplained:   "以上都解釋不了，逐筆列在下面",
 		}[c]
 		fmt.Fprintf(w, "    %-14s %6d　%s\n", c, a.Diff[c], note)
@@ -592,7 +653,12 @@ func runMain(args []string, stdout, stderr io.Writer) int {
 	}
 	lines, bad := ParseIngress(f)
 	f.Close()
-	lines, reread := DedupeLines(lines)
+	var rereads []Reread
+	if mf, err := os.Open(filepath.Join(dir, "missing.jsonl")); err == nil {
+		rereads = ParseRereads(mf)
+		mf.Close()
+	}
+	lines, reread, ambiguous := DedupeLines(lines, rereads)
 	if len(lines) == 0 {
 		fmt.Fprintln(stdout, "入口紀錄取不到（ingress.log 沒有任何紀錄）")
 		return 3
@@ -611,12 +677,12 @@ func runMain(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "ingress-reconcile: no run id (params.json run_id or --run)")
 		return 2
 	}
-	atts, err := readAttempts(filepath.Join(dir, "attempts.jsonl"))
+	atts, attBad, err := readAttempts(filepath.Join(dir, "attempts.jsonl"))
 	if err != nil {
 		fmt.Fprintln(stderr, "ingress-reconcile:", err)
 		return 2
 	}
-	res := Result{Dir: dir, Run: run, IngressBad: bad, RereadLines: reread, Attempts: ReconcileAttempts(run, atts, lines), TimeoutSeconds: timeout.Seconds()}
+	res := Result{Dir: dir, Run: run, IngressBad: bad, AttemptsBad: attBad, RereadLines: reread, AmbiguousDups: ambiguous, Rereads: rereads, Attempts: ReconcileAttempts(run, atts, lines), TimeoutSeconds: timeout.Seconds()}
 	s0, err0 := readStats(filepath.Join(dir, "envoy-stats-start.txt"))
 	s1, err1 := readStats(filepath.Join(dir, "envoy-stats-end.txt"))
 	if err := errors.Join(err0, err1); err != nil {
@@ -636,22 +702,25 @@ func runMain(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func readAttempts(path string) ([]record.Attempt, error) {
+func readAttempts(path string) ([]record.Attempt, int, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	var out []record.Attempt
+	bad := 0
 	for _, l := range bytes.Split(b, []byte("\n")) {
 		if len(bytes.TrimSpace(l)) == 0 {
 			continue
 		}
 		var a record.Attempt
-		if json.Unmarshal(l, &a) == nil {
-			out = append(out, a)
+		if json.Unmarshal(l, &a) != nil {
+			bad++
+			continue
 		}
+		out = append(out, a)
 	}
-	return out, nil
+	return out, bad, nil
 }
 
 func readStats(path string) (Stats, error) {
