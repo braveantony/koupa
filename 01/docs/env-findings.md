@@ -851,3 +851,78 @@ $ ip neigh show 172.22.0.201      # MAC 是 tkha-worker-1 的 eth0
 | tk8s 版本與安裝參數 | tk8s commit `94250ef`：`versions.yaml`、`src/tk8s/create/cni.py`（本機 `/home/bigred/tk8s`；是否有公開網址待確認） |
 | Envoy 預設重試次數 1 次（有 `retry_on` 時） | 沒有查證來源，待確認 |
 | 預設沒有 15 秒 route timeout 的原因 | [`config_impl.cc#L553`](https://github.com/envoyproxy/envoy/blob/v1.39.5/source/common/router/config_impl.cc#L553)（`using_new_timeouts_ = route.route().has_max_stream_duration()`）；[`router.cc#L191`](https://github.com/envoyproxy/envoy/blob/v1.39.5/source/common/router/router.cc#L191)（`finalTimeout` 只在 `!usingNewTimeouts()` 時用 `route.timeout()`）。以及 Task 1b 的即時實測（3.2） |
+
+## 9. 步驟 2 的 503 與 preStop 重新校正（Task 23b）
+
+背景：Task 26 量到步驟 2 的「第一次送出沒有成功回應」沒有比步驟 0 少，失敗幾乎都是入口回 503（`UF`，`delayed_connect_error: Connection refused`），而且每次差很多（一次不是 0，就是 40～60）。原本推測是步驟 1 的 `preStop` 7 秒不夠，入口在舊 Pod 停止 listen 之後還選它。逐筆核對後，**推測不成立**：這些 503 全部送到**新 Pod**，原因是新 Pod 啟動時的 DNS 查詢被 Cilium 丟掉，App 晚了 5 秒才開始 listen。
+
+### 9.1 逐筆分析（Task 26 的 10 次量測）
+
+做法：每一筆入口紀錄（狀態 ≥ 500 或有回應旗標）依 `upstream_host` 對到 Pod（App log 的 meta 檔有 Pod IP），再看開始時間落在這個 Pod 時間線的哪一段：舊 Pod 分「刪除請求前、刪除請求～SIGTERM（preStop）、SIGTERM～程式結束、程式結束後」；新 Pod 用 App 的啟動標記和 `listen_active` 標記。
+
+| 量測 | 新 Pod 的 `UF` | 舊 Pod：SIGTERM～結束的 `UF` | 舊 Pod：處理中被切斷（`UC`） | 啟動到 listen 約 5 秒的新 Pod |
+|---|---|---|---|---|
+| step-0 d905 | 0 | 13 | 19 | 0／3 |
+| step-0 8210 | 151 | 24 | 2 | 2／3 |
+| step-0 d858 | 71 | 21 | 0 | 1／3 |
+| step-0 d5c2 | 136 | 19 | 0 | 2／3 |
+| step-0 9fd7 | 79 | 16 | 0 | 1／3 |
+| step-2 c093 | 95 | 0 | 0 | 1／3 |
+| step-2 08fb | 0 | 0 | 0 | 0／3 |
+| step-2 1a0a | 81 | 0 | 0 | 1／3 |
+| step-2 7902 | 79 | 0 | 0 | 1／3 |
+| step-2 7e01 | 85 | 0 | 0 | 1／3 |
+
+（另有每次 3 筆 `/events` 的 `UPE` 和 0～8 筆客人端先斷線的 `DC`，和這裡的問題無關。）
+
+- **步驟 2 的舊 Pod 沒有任何失敗**：入口最後一次把請求送到舊 Pod，是在刪除請求後 0.4～1.5 秒，比 SIGTERM 早 6.4 秒以上；「SIGTERM 之後才送到這個 Pod 的請求」是 0。步驟 0 沒有 preStop，舊 Pod 在 SIGTERM 之後仍被選到（每次 13～24 筆 `UF`），這部分步驟 1 已經消除。
+- **新 Pod 的 `UF` 只出現在「啟動到 listen 約 5 秒」的那個 Pod**，時間在 App 啟動標記後 0.2～5.0 秒；啟動正常（約 0.03～0.1 秒就 listen）的新 Pod 沒有失敗。每次量測有 0、1 或 2 個這種 Pod，所以「第一次失敗」是 0、約 45 或約 100，這就是雙峰的來源。
+
+### 9.2 原因：新 Pod 在 `reserved:init` 身分時的 DNS 查詢被丟掉
+
+以 step-2 c093 的 `koupa-766f799769-5z5q8`（10.244.4.20）為例（Hubble、App log、入口紀錄）：
+
+| 時間（UTC） | 事件 |
+|---|---|
+| 13:04:10.294 | App 啟動標記 |
+| 13:04:10.295 | 這個 Pod 往 CoreDNS 的 UDP 53 被 `DROPPED POLICY_DENIED`，來源身分 `reserved:init` |
+| 13:04:10.309～10.329 | Pod Ready、EndpointSlice `ready=true`（沒有 readinessProbe，容器啟動就 Ready） |
+| 13:04:10.516～11.061 | 入口（`reserved:ingress`）連這個 Pod 的 SYN 被 `POLICY_DENIED`（目的身分仍是 `reserved:init`） |
+| 13:04:11.218～15.22 | Pod 已取得正式身分，SYN 送到了，但 Pod 回 RST（沒有程式 listen 8080），入口記 `UF ... Connection refused` |
+| 13:04:15.298 | DNS 重送成功（距第一次 5.003 秒，等於解析器預設的 5 秒逾時） |
+| 13:04:15.306～15.314 | 連上資料庫（`tx_timeout_check`），`listen_active` |
+| 13:04:15.309 起 | 入口送到這個 Pod 的請求都成功 |
+
+16 個「5 秒才 listen」的新 Pod（Task 26 的 10 個 + 這次重跑的 6 個），啟動到 listen 都是 5.02～5.03 秒；Hubble 有資料的節點上，每一個都在啟動後 1 ms 內有 `reserved:init` 的 DNS 封包被丟掉（worker-1 的 Hubble ring buffer 被覆蓋，那幾個 Pod 看不到，但時間形狀相同）。叢集沒有任何 NetworkPolicy／CiliumNetworkPolicy；這是 Cilium 端點在取得正式身分前（`reserved:init`）的預設行為。
+
+結論：**503 不是「入口在 Pod 停止 listen 之後仍選它」，而是「新 Pod 還沒 listen 就已 Ready、被入口選到」**，也就是設計 4.9 預先列的情況（「量到新 Pod 還沒準備好就接收流量造成的失敗」）。加長 `preStop` 對它沒有作用。
+
+### 9.3 preStop 重新校正（入口紀錄當 L）
+
+`rush-hour calibrate` 現在讀 `DIR/ingress.log`：每個探測的 access log `start_time`（`upstream_attempts` = 1）當成入口選取時間；`start_time` 只到毫秒（無條件捨去），比送出時間早不到 1 ms 時取送出時間，超過 1 ms 視為時鐘不一致。實測入口 `start_time` − 送出時間 最小 −0.55 ms，沒有超過 1 ms 的。上界 U 仍然只能用模型推估（沒有涵蓋所有入口實例的端點更新紀錄）。
+
+| 校正 | 有效樣本 | 候選值（max U − 刪除請求） | 無效原因 | L − 刪除請求 | 任何請求最後一次選到 − 刪除請求 |
+|---|---|---|---|---|---|
+| 18:14（Task 23，以入口 L 重算） | 6／9 | 1.445 秒 | 沒有上界：2 個 runs test p < 0.05，1 個刪除前後命中比例不同（p = 0.022） | 0.38～1.44 秒 | 0.39～1.44 秒 |
+| 22:06（這次，3 次 run） | 6／9 | **1.504 秒** | 沒有上界：2 個 runs test p < 0.05，1 個刪除前後命中比例不同（p = 0.025） | 0.44～1.46 秒 | 0.44～1.46 秒 |
+
+步驟 1 的 `preStop` = ceil(1.504) + 5 = **7 秒，不變**（緩衝 5 秒仍是暫定）；步驟 2 的寬限 40 秒仍符合 7 + 15 + 5 < 40。每次 run 都有 1 個 Pod 因檢定不通過而沒有上界，表示入口的挑選不完全是獨立的，模型假設本身可疑；這次的 L 和「任何請求最後一次選到」都在 1.5 秒內，和模型上界一致。
+
+### 9.4 重跑（preStop 7 秒）
+
+| 量測 | 第一次送出沒有成功回應 | 重試後仍沒有成功回應 | 其中新 Pod 的 `UF`（含重試） | 舊 Pod 的失敗 | 5 秒才 listen 的新 Pod |
+|---|---|---|---|---|---|
+| step-1 r1 c4a2 | 60 | 41 | 101 | 0 | 2 |
+| step-1 r2 2060 | 59 | 42 | 101 | 0 | 2 |
+| step-1 r3 2074 | 0 | 0 | 0 | 0 | 0 |
+| step-2 r1 a297 | 42 | 4 | 46 | 0 | 1 |
+| step-2 r2 61ac | 0 | 0 | 0 | 0 | 0 |
+| step-2 r3 6cab | 0 | 0 | 0 | 0 | 0 |
+
+`preStop` 沒有改（候選值仍是 7 秒），所以 503 不會因此減少；重跑確認了：所有失敗都來自 5 秒才 listen 的新 Pod，舊 Pod 的失敗是 0，SIGTERM 之後送到舊 Pod 的請求也是 0。步驟 1 的重試也大多失敗，因為立刻重試時，那個新 Pod 的 5 秒還沒過。
+
+### 9.5 下一步假設（未驗證，需要決定）
+
+1. **readinessProbe**（設計 4.9 的觸發條件已量到）：探測 HTTP 伺服器、資料庫和 `LISTEN` 都準備好才 Ready，新 Pod 在 listen 前就不會進 EndpointSlice。要先確認 kubelet 的探測不會也被 `reserved:init` 擋住（主機來源通常允許），以及 Ready 前入口真的不選它。
+2. 不靠 probe 的替代（只供講師手冊比較）：App 啟動時先 listen 再連資料庫並不正確（會接到請求卻無法處理）；縮短解析器逾時（`dnsConfig.options timeout:1`）只能把 5 秒縮成 1 秒；Cilium 端點身分延遲本身屬於環境問題，不在課程修正範圍。
+3. 還沒解釋：為什麼約三成的新 Pod 會在取得正式身分前送出 DNS 查詢（取決於容器啟動和 Cilium 端點產生的先後）。
