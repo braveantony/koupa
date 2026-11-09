@@ -4,6 +4,8 @@
 #   scripts/drain-target.sh OUT_JSON
 #
 # Every worker (no control-plane role, schedulable), in name order, must:
+#   - not be the infra worker (label koupa.dev/infra=true, set by setup.sh:
+#     database and CNPG operator live there);
 #   - run a koupa Pod (namespace koupa, app.kubernetes.io/name=koupa);
 #   - run no database Pod (label cnpg.io/cluster);
 #   - run no other Pod with an emptyDir volume, except DaemonSet Pods (left
@@ -39,6 +41,7 @@ pods = json.load(open(os.path.join(tmp, "pods.json")))["items"]
 workers = sorted(n["metadata"]["name"] for n in nodes
                  if "node-role.kubernetes.io/control-plane" not in n["metadata"].get("labels", {}))
 unsched = {n["metadata"]["name"] for n in nodes if n.get("spec", {}).get("unschedulable")}
+infra = {n["metadata"]["name"]: n["metadata"].get("labels", {}).get("koupa.dev/infra") for n in nodes}
 def kind(p):
     return next((o.get("kind") for o in p["metadata"].get("ownerReferences", []) if o.get("controller")), None)
 def is_koupa(p):
@@ -50,6 +53,8 @@ for w in workers:
     reasons, koupa = [], [p for p in on if is_koupa(p)]
     if w in unsched:
         reasons.append("cordoned (unschedulable)")
+    if infra.get(w) == "true":
+        reasons.append("infra worker (label koupa.dev/infra=true: database and operator)")
     if not koupa:
         reasons.append("no koupa Pod")
     for p in on:
@@ -97,7 +102,7 @@ for line in open(os.path.join(tmp, "dry.tsv")):
             x["reasons"].append("kubectl drain --dry-run=server failed: " + why.strip())
 ch = next((x for x in c if x["node"] == chosen), None)
 json.dump({"checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-           "rules": "koupa Pod present; no database Pod; no non-DaemonSet running Pod with emptyDir; "
+           "rules": "not the infra worker (koupa.dev/infra=true); koupa Pod present; no database Pod; no non-DaemonSet running Pod with emptyDir; "
                     "kubectl drain --ignore-daemonsets --dry-run=server passes (A15)",
            "chosen": chosen or None, "koupa_pods_affected": ch["koupa_pods"] if ch else None,
            "candidates": c}, open(out, "w"), indent=2)

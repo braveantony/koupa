@@ -1,18 +1,24 @@
 #!/usr/bin/env bash
 # Deploy Koupa step 0 in stages (design 3.5). Safe to run again.
 #
-#   1. CNPG operator, then the koupa-db Cluster; wait until it is Ready
+#   0. label the infra worker (INFRA_NODE, default: the first worker by
+#      name) koupa.dev/infra=true; the label is removed from other nodes
+#   1. CNPG operator (its controller pinned to the infra worker), then the
+#      koupa-db Cluster (pinned there too); wait until it is Ready
 #   2. migration Job (old one deleted first); stop and print logs on failure
 #   3. app, Service, Gateway, HTTPRoute (k8s/base); wait for the rollout
 #      and for the Gateway to be Programmed, then print its address
 #
-# Uses the current kubectl context.
+# Uses the current kubectl context. The database and the operator live on
+# the infra worker so another worker can be drained without
+# --delete-emptydir-data (plan A15; measure.sh drain never picks it).
 set -euo pipefail
 cd "$(dirname "$0")"
 
 CNPG_VERSION=1.30.1
 CNPG_MANIFEST=https://github.com/cloudnative-pg/cloudnative-pg/releases/download/v${CNPG_VERSION}/cnpg-${CNPG_VERSION}.yaml
 NS=koupa
+INFRA_LABEL=koupa.dev/infra
 
 log() { printf '\n==> %s\n' "$*"; }
 die() { echo "setup.sh: $*" >&2; exit 1; }
@@ -24,9 +30,29 @@ log "context: $(kubectl config current-context)"
 log "checking the step-0 manifest"
 scripts/check-manifests.sh base >/dev/null || { scripts/check-manifests.sh base | grep -v '^ok' >&2; die "k8s/base fails its checks"; }
 
+# --- 0. infra worker ---------------------------------------------------------
+workers=$(kubectl get nodes -l '!node-role.kubernetes.io/control-plane' -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | sort)
+INFRA_NODE=${INFRA_NODE:-$(echo "$workers" | head -1)}
+echo "$workers" | grep -qx "$INFRA_NODE" || die "INFRA_NODE=$INFRA_NODE is not a worker (workers: $(echo $workers))"
+log "0/3 infra worker $INFRA_NODE ($INFRA_LABEL=true): database and CNPG operator"
+for n in $(kubectl get nodes -l "$INFRA_LABEL=true" -o jsonpath='{.items[*].metadata.name}'); do
+  [ "$n" = "$INFRA_NODE" ] || kubectl label node "$n" "$INFRA_LABEL-"
+done
+kubectl label node "$INFRA_NODE" "$INFRA_LABEL=true" --overwrite
+# The database volume is local-path: it cannot move. Refuse a pin elsewhere.
+pv=$(kubectl -n "$NS" get pvc koupa-db-1 -o jsonpath='{.spec.volumeName}' 2>/dev/null || true)
+if [ -n "$pv" ]; then
+  pv_node=$(kubectl get pv "$pv" -o jsonpath='{.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values[0]}' 2>/dev/null || true)
+  [ -z "$pv_node" ] || [ "$pv_node" = "$INFRA_NODE" ] ||
+    die "the koupa-db volume $pv is on $pv_node, not INFRA_NODE=$INFRA_NODE (local-path); use INFRA_NODE=$pv_node"
+fi
+
 # --- 1. database --------------------------------------------------------------
 log "1/3 CloudNativePG operator v${CNPG_VERSION}"
 kubectl apply --server-side --force-conflicts -f "$CNPG_MANIFEST" >/dev/null
+# Pin the controller (it has an emptyDir) to the infra worker.
+kubectl -n cnpg-system patch deployment cnpg-controller-manager --type merge \
+  -p "{\"spec\":{\"template\":{\"spec\":{\"nodeSelector\":{\"$INFRA_LABEL\":\"true\"}}}}}"
 kubectl -n cnpg-system rollout status deployment/cnpg-controller-manager --timeout=300s
 
 log "1/3 PostgreSQL Cluster koupa-db"
@@ -42,6 +68,17 @@ for i in $(seq 1 30); do
   sleep 5
 done
 kubectl -n "$NS" wait cluster/koupa-db --for=condition=Ready --timeout=600s
+# A changed spec (e.g. the infra pin) restarts the instance a moment after
+# the apply, while Ready may still read True: require a healthy phase and
+# Ready on three reads 5 s apart.
+ok=0
+for i in $(seq 1 120); do
+  st=$(kubectl -n "$NS" get cluster koupa-db -o jsonpath='{.status.phase}|{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
+  if [ "$st" = "Cluster in healthy state|True" ]; then ok=$((ok + 1)); else ok=0; fi
+  [ "$ok" -ge 3 ] && break
+  [ "$i" -eq 120 ] && die "koupa-db not healthy after 600 s ($st)"
+  sleep 5
+done
 kubectl -n "$NS" get secret koupa-db-app >/dev/null || die "secret koupa-db-app missing"
 
 # --- 2. migrations ------------------------------------------------------------

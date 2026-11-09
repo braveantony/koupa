@@ -16,8 +16,12 @@ spec:
     initdb:
       database: koupa
       owner: koupa
-  # Workers only, like the app (tk8s control planes are not tainted).
+  # Workers only, like the app (tk8s control planes are not tainted), and
+  # on the infra worker that setup.sh labels, so the other workers can be
+  # drained without --delete-emptydir-data (plan A15).
   affinity:
+    nodeSelector:
+      koupa.dev/infra: "true"
     nodeAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
         nodeSelectorTerms:

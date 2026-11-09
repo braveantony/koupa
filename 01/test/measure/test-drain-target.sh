@@ -42,6 +42,31 @@ sys.exit(0 if not w1["ok"] and any("koupa-db-1" in x for x in w1["reasons"]) and
 check "dry run used, no real drain" bash -c 'grep -q "^kubectl drain tkha-worker-2 --ignore-daemonsets --dry-run=server" "$1" && ! grep "^kubectl drain" "$1" | grep -qv dry-run' _ "$FAKE/calls.log"
 check "never --delete-emptydir-data" bash -c '! grep -q -- "--delete-emptydir-data" "$1"' _ "$FAKE/calls.log"
 
+# 1b. worker-2 is the infra worker (koupa.dev/infra=true): excluded even
+#     though it has no database Pod or emptyDir Pod -> worker-3.
+python3 -I -c '
+import json, sys
+p = sys.argv[1]; n = json.load(open(p))
+for x in n["items"]:
+    if x["metadata"]["name"] == "tkha-worker-2":
+        x["metadata"]["labels"]["koupa.dev/infra"] = "true"
+json.dump(n, open(p, "w"))' "$FAKE/nodes.json"
+: >"$FAKE/calls.log"
+out=$("$DT" "$T/t1b.json" 2>/dev/null)
+check "infra label on worker-2: worker-3 chosen (got '$out')" [ "$out" = tkha-worker-3 ]
+check "infra label: worker-2 reason says infra worker" python3 -I -c '
+import json, sys
+r = json.load(open(sys.argv[1]))
+w2 = next(c for c in r["candidates"] if c["node"] == "tkha-worker-2")
+sys.exit(0 if not w2["ok"] and any("infra worker" in x for x in w2["reasons"]) else 1)' "$T/t1b.json"
+check "infra label: no dry run against the infra worker" bash -c '! grep -q "^kubectl drain tkha-worker-2" "$1"' _ "$FAKE/calls.log"
+python3 -I -c '
+import json, sys
+p = sys.argv[1]; n = json.load(open(p))
+for x in n["items"]:
+    x["metadata"]["labels"].pop("koupa.dev/infra", None)
+json.dump(n, open(p, "w"))' "$FAKE/nodes.json"
+
 # 2. worker-2 has a Pod with an emptyDir (metrics-server): worker-3. A
 #    DaemonSet's emptyDir (cilium) and a finished Job Pod do not count.
 other_pods 'items += [pod("kube-system", "metrics-server-x", "tkha-worker-2", empty=True),
@@ -87,6 +112,8 @@ check "rebalance: exit 0 (rc=$rc)" [ "$rc" -eq 0 ]
 [ "$rc" -eq 0 ] || tail -30 "$T/out" | sed 's/^/    /'
 check "rebalance: drained worker-2 with --ignore-daemonsets" grep -q '^kubectl drain tkha-worker-2 --ignore-daemonsets --timeout=' "$FAKE/calls.log"
 check "rebalance: uncordon after the drain" bash -c 'awk "/^kubectl drain tkha-worker-2 --ignore-daemonsets --timeout/{d=1} d && /^kubectl uncordon tkha-worker-2/{u=1} END{exit !u}" "$1"' _ "$FAKE/calls.log"
+check "drain: scorecard notes the completion rule" grep -q 'drain 的「完成」是 kubectl drain' "$run/scorecard.txt"
+check "drain: rollout.json completion_rule" grep -q '"completion_rule": "kubectl drain returned' "$run/rollout.json"
 check "rebalance: a crowded Pod deleted" grep -q '^kubectl .*delete pod koupa-abc' "$FAKE/calls.log"
 check "rebalance: restore.json says balanced" python3 -I -c '
 import json, sys
