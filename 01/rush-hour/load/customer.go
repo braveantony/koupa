@@ -79,25 +79,28 @@ func (c *Customer) randomItems() []orderItem {
 
 // Place sends order number seq, scheduled for `scheduled`. The first attempt
 // is retried up to Retries times with the same client_ref and body unless
-// it got a complete 2xx/4xx response. Every attempt is recorded.
-func (c *Customer) Place(ctx context.Context, seq uint64, scheduled time.Time) {
+// it got a complete 2xx response (any other status, or no full response,
+// counts as failed). Every attempt is recorded; a record-write error is
+// returned (and stays in W.Err()).
+func (c *Customer) Place(ctx context.Context, seq uint64, scheduled time.Time) error {
 	c.init()
 	ref := fmt.Sprintf("%s-c%d", c.Run, seq)
 	body, _ := json.Marshal(orderReq{ClientRef: ref, Items: c.randomItems()})
+	var werr error
 	for try := 1; try <= 1+c.Retries; try++ {
 		rec := c.attempt(ctx, seq, try, ref, body, scheduled)
-		_ = c.W.Write(rec)
+		if err := c.W.Write(rec); err != nil && werr == nil {
+			werr = err
+		}
 		if !shouldRetry(rec) || ctx.Err() != nil {
-			return
+			break
 		}
 	}
+	return werr
 }
 
 func shouldRetry(r record.Attempt) bool {
-	if !r.FullResponse {
-		return true
-	}
-	return r.Status >= 500
+	return !r.FullResponse || r.Status == nil || *r.Status/100 != 2
 }
 
 func (c *Customer) attempt(ctx context.Context, seq uint64, try int, ref string, body []byte, scheduled time.Time) record.Attempt {
@@ -125,7 +128,8 @@ func (c *Customer) attempt(ctx context.Context, seq uint64, try int, ref string,
 		return rec
 	}
 	defer resp.Body.Close()
-	rec.Status = resp.StatusCode
+	st := resp.StatusCode
+	rec.Status = &st
 	rec.PodUID = resp.Header.Get(wire.HeaderPodUID)
 	data, err := io.ReadAll(resp.Body)
 	rec.RespondedAt = time.Now()
@@ -139,7 +143,10 @@ func (c *Customer) attempt(ctx context.Context, seq uint64, try int, ref string,
 			OrderID int64 `json:"order_id"`
 		}
 		if json.Unmarshal(data, &out) == nil {
-			rec.OrderID = out.OrderID
+			if out.OrderID != 0 {
+				id := out.OrderID
+				rec.OrderID = &id
+			}
 		}
 	}
 	return rec

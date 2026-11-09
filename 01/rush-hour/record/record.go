@@ -24,44 +24,79 @@ const (
 )
 
 // Attempt is one JSONL line: one request attempt (retries get their own line).
+// OrderID, Status and ReadySeq are pointers: nil (omitted) means not observed,
+// which is different from an observed 0.
 type Attempt struct {
 	Run          string    `json:"run"`
 	Kind         string    `json:"kind"`
 	ClientRef    string    `json:"client_ref"`
-	OrderID      int64     `json:"order_id"`
+	OrderID      *int64    `json:"order_id,omitempty"`
 	Attempt      string    `json:"attempt"`
 	Try          int       `json:"try"`
 	ScheduledAt  time.Time `json:"scheduled_at"`
 	SentAt       time.Time `json:"sent_at"`
 	RespondedAt  time.Time `json:"responded_at"`
-	Status       int       `json:"status"`
+	Status       *int      `json:"status,omitempty"`
 	ErrKind      string    `json:"err_kind"`
 	PodUID       string    `json:"pod_uid"`
-	ReadySeq     int64     `json:"ready_seq"`
+	ReadySeq     *int64    `json:"ready_seq,omitempty"`
 	SchedLagMs   int64     `json:"sched_lag_ms"`
 	FullResponse bool      `json:"full_response"`
 }
 
 // Writer writes one JSON object per line, safe for concurrent use. Each
-// record is written with a single Write call, so it is flushed immediately.
+// record is written with a single Write call and, if the destination
+// implements Flush() error or Sync() error, flushed right after. It is meant
+// for an *os.File. The first error is sticky and available from Err; the run
+// must treat the measurement as invalid when Err() != nil.
 type Writer struct {
-	mu sync.Mutex
-	w  io.Writer
+	mu  sync.Mutex
+	w   io.Writer
+	err error
 }
 
-// NewWriter wraps w. w is not buffered by the Writer; pass an unbuffered
-// destination (e.g. *os.File) so every record reaches it at once.
+// NewWriter wraps w.
 func NewWriter(w io.Writer) *Writer { return &Writer{w: w} }
 
-// Write appends a.
+// Err returns the first write/flush error, if any.
+func (w *Writer) Err() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.err
+}
+
+// Write appends a. A failure (including a short write) is returned and kept.
 func (w *Writer) Write(a Attempt) error {
 	b, err := json.Marshal(a)
 	if err != nil {
-		return err
+		return w.fail(err)
 	}
 	b = append(b, '\n')
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	_, err = w.w.Write(b)
+	n, err := w.w.Write(b)
+	if err == nil && n < len(b) {
+		err = io.ErrShortWrite
+	}
+	if err == nil {
+		switch f := w.w.(type) {
+		case interface{ Flush() error }:
+			err = f.Flush()
+		case interface{ Sync() error }:
+			err = f.Sync()
+		}
+	}
+	if err != nil && w.err == nil {
+		w.err = err
+	}
+	return err
+}
+
+func (w *Writer) fail(err error) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.err == nil {
+		w.err = err
+	}
 	return err
 }
