@@ -11,11 +11,13 @@ var (
 	txTimeout = 60 * time.Second
 )
 
-func ip(n int) *int                { return &n }
-func i64(n int64) *int64           { return &n }
-func tp(t time.Time) *time.Time    { return &t }
-func ing(n int) *IngressRecord     { return &IngressRecord{Finished: true, UpstreamAttempts: ip(n)} }
-func at(d time.Duration) time.Time { return t0.Add(d) }
+func ip(n int) *int                     { return &n }
+func i64(n int64) *int64                { return &n }
+func tp(t time.Time) *time.Time         { return &t }
+func ing(n int) *IngressRecord          { return &IngressRecord{Finished: true, UpstreamAttempts: ip(n)} }
+func bp(b bool) *bool                   { return &b }
+func dp(d time.Duration) *time.Duration { return &d }
+func at(d time.Duration) time.Time      { return t0.Add(d) }
 
 func TestCountString(t *testing.T) {
 	cases := []struct {
@@ -57,11 +59,13 @@ func TestSettle(t *testing.T) {
 		{"1 + not_started", AttemptEvidence{Ingress: ing(1), AppReceived: true, AppEnd: &AppEnd{TxOutcome: TxNotStarted}}, true},
 		{"1 + unrecognised outcome", AttemptEvidence{Ingress: ing(1), AppReceived: true, AppEnd: &AppEnd{TxOutcome: "weird"}}, false},
 		{"1 + commit_unknown 59s after COMMIT", AttemptEvidence{Ingress: ing(1), AppReceived: true,
-			AppEnd: &AppEnd{TxOutcome: TxCommitUnknown, CommitSentAt: now.Add(-59 * time.Second)}}, false},
+			AppEnd: &AppEnd{TxOutcome: TxCommitUnknown, CommitSentAt: tp(now.Add(-59 * time.Second))}}, false},
 		{"1 + commit_unknown exactly 60s after COMMIT", AttemptEvidence{Ingress: ing(1), AppReceived: true,
-			AppEnd: &AppEnd{TxOutcome: TxCommitUnknown, CommitSentAt: now.Add(-60 * time.Second)}}, false},
+			AppEnd: &AppEnd{TxOutcome: TxCommitUnknown, CommitSentAt: tp(now.Add(-60 * time.Second))}}, false},
 		{"1 + commit_unknown 61s after COMMIT", AttemptEvidence{Ingress: ing(1), AppReceived: true,
-			AppEnd: &AppEnd{TxOutcome: TxCommitUnknown, CommitSentAt: now.Add(-61 * time.Second)}}, true},
+			AppEnd: &AppEnd{TxOutcome: TxCommitUnknown, CommitSentAt: tp(now.Add(-61 * time.Second))}}, true},
+		{"1 + commit_unknown with COMMIT time missing", AttemptEvidence{Ingress: ing(1), AppReceived: true,
+			AppEnd: &AppEnd{TxOutcome: TxCommitUnknown}}, false},
 		{"1 + received only + Pod exited 59s ago", AttemptEvidence{Ingress: ing(1), AppReceived: true, LogCovered: true,
 			PodExitedAt: tp(now.Add(-59 * time.Second))}, false},
 		{"1 + received only + Pod exited 61s ago", AttemptEvidence{Ingress: ing(1), AppReceived: true, LogCovered: true,
@@ -85,12 +89,22 @@ func TestSettle(t *testing.T) {
 			}
 		})
 	}
+	// A zero or negative transaction_timeout is not evidence that time has passed.
+	for _, e := range []AttemptEvidence{
+		{Ingress: ing(1), AppReceived: true, AppEnd: &AppEnd{TxOutcome: TxCommitUnknown, CommitSentAt: tp(now.Add(-time.Hour))}},
+		{Ingress: ing(1), AppReceived: true, LogCovered: true, PodExitedAt: tp(now.Add(-time.Hour))},
+	} {
+		if got := Settle(e, now, 0); got.Settled {
+			t.Errorf("txTimeout 0: settled (%q), want not settled", got.Reason)
+		}
+	}
 }
 
 func TestState(t *testing.T) {
-	end := func(writeErr, canceled bool) *AppEnd {
-		return &AppEnd{TxOutcome: TxCommitted, WriteErr: writeErr, CtxCanceled: canceled}
+	end3 := func(writeErr, flushErr, canceled *bool) *AppEnd {
+		return &AppEnd{TxOutcome: TxCommitted, WriteErr: writeErr, FlushErr: flushErr, CtxCanceled: canceled}
 	}
+	end := func(writeErr, canceled bool) *AppEnd { return end3(bp(writeErr), bp(false), bp(canceled)) }
 	cases := []struct {
 		name    string
 		e       AttemptEvidence
@@ -111,6 +125,12 @@ func TestState(t *testing.T) {
 		{"1 + end with write error", AttemptEvidence{Ingress: ing(1), AppReceived: true, AppEnd: end(true, false), LogCovered: true}, false, WriteFailedOrCanceled},
 		{"1 + end with ctx canceled", AttemptEvidence{Ingress: ing(1), AppReceived: true, AppEnd: end(false, true), LogCovered: true}, false, WriteFailedOrCanceled},
 		{"1 + end write and flush ok", AttemptEvidence{Ingress: ing(1), AppReceived: true, AppEnd: end(false, false), LogCovered: true}, false, WriteFlushOK},
+		{"1 + end with flush error", AttemptEvidence{Ingress: ing(1), AppReceived: true, AppEnd: end3(bp(false), bp(true), bp(false)), LogCovered: true}, false, WriteFailedOrCanceled},
+		{"1 + end: write error, other fields missing", AttemptEvidence{Ingress: ing(1), AppReceived: true, AppEnd: end3(bp(true), nil, nil), LogCovered: true}, false, WriteFailedOrCanceled},
+		{"1 + end: write field missing", AttemptEvidence{Ingress: ing(1), AppReceived: true, AppEnd: end3(nil, bp(false), bp(false)), LogCovered: true}, false, Unknown},
+		{"1 + end: flush field missing", AttemptEvidence{Ingress: ing(1), AppReceived: true, AppEnd: end3(bp(false), nil, bp(false)), LogCovered: true}, false, Unknown},
+		{"1 + end: cancel field missing", AttemptEvidence{Ingress: ing(1), AppReceived: true, AppEnd: end3(bp(false), bp(false), nil), LogCovered: true}, false, Unknown},
+		{"1 + end: all write/flush/cancel fields missing", AttemptEvidence{Ingress: ing(1), AppReceived: true, AppEnd: end3(nil, nil, nil), LogCovered: true}, false, Unknown},
 		{"1 + end but log not covered", AttemptEvidence{Ingress: ing(1), AppReceived: true, AppEnd: end(false, false)}, false, Unknown},
 		{"1 + end without received (contradiction)", AttemptEvidence{Ingress: ing(1), AppEnd: end(false, false), LogCovered: true}, false, Unknown},
 		{"1 + records flagged contradictory", AttemptEvidence{Ingress: ing(1), AppReceived: true, AppEnd: end(false, false),
@@ -131,7 +151,7 @@ func TestCause(t *testing.T) {
 		return AttemptEvidence{
 			Ingress:      &IngressRecord{Finished: true, UpstreamAttempts: ip(1), UpstreamPod: "pod-a", IngressStart: tp(at(5 * time.Second))},
 			PodTermStart: tp(at(4 * time.Second)),
-			Precision:    prec,
+			Precision:    dp(prec),
 		}
 	}
 	midway := func() AttemptEvidence {
@@ -163,6 +183,7 @@ func TestCause(t *testing.T) {
 		{"routed: upstream not a Pod", mod(routed, func(e *AttemptEvidence) { e.Ingress.UpstreamPod = "" }), Unknown, CauseUnknown},
 		{"routed: ingress start missing", mod(routed, func(e *AttemptEvidence) { e.Ingress.IngressStart = nil }), Unknown, CauseUnknown},
 		{"routed: Pod term start missing", mod(routed, func(e *AttemptEvidence) { e.PodTermStart = nil }), Unknown, CauseUnknown},
+		{"routed: precision missing", mod(routed, func(e *AttemptEvidence) { e.Precision = nil }), Unknown, CauseUnknown},
 		{"routed: later but within precision", mod(routed, func(e *AttemptEvidence) {
 			e.Ingress.IngressStart = tp(at(4*time.Second + prec))
 		}), Unknown, CauseUnknown},
@@ -206,63 +227,71 @@ func TestMissing(t *testing.T) {
 		want MissingResult
 	}{
 		{"single miss", MissingInput{
-			DBReady: rows(1, 2, 3, 4, 5), Cursor: 5,
-			Boards: []BoardSeq{{Name: "b1", Start: i64(0), Received: []int64{1, 2, 4, 5}, CaughtUp: true}},
+			DBComplete: true, DBReady: rows(1, 2, 3, 4, 5), Cursor: 5,
+			Boards: []BoardSeq{{Name: "b1", Start: i64(0), Received: []int64{1, 2, 4, 5}, CaughtUp: true, Complete: true}},
 		}, MissingResult{PerBoard: map[string]Count{"b1": {1, 0}}, NotIncreasing: map[string]bool{"b1": false}}},
 		{"multiple misses across boards", MissingInput{
-			DBReady: rows(1, 2, 3, 4, 5, 6), Cursor: 6,
+			DBComplete: true, DBReady: rows(1, 2, 3, 4, 5, 6), Cursor: 6,
 			Boards: []BoardSeq{
-				{Name: "b1", Start: i64(0), Received: []int64{1, 4, 6}, CaughtUp: true},
-				{Name: "b2", Start: i64(0), Received: []int64{1, 2, 3, 4, 5, 6}, CaughtUp: true},
+				{Name: "b1", Start: i64(0), Received: []int64{1, 4, 6}, CaughtUp: true, Complete: true},
+				{Name: "b2", Start: i64(0), Received: []int64{1, 2, 3, 4, 5, 6}, CaughtUp: true, Complete: true},
 			},
 		}, MissingResult{PerBoard: map[string]Count{"b1": {3, 0}, "b2": {0, 0}}, NotIncreasing: map[string]bool{"b1": false, "b2": false}}},
 		{"duplicate received", MissingInput{
-			DBReady: rows(1, 2, 3), Cursor: 3,
-			Boards: []BoardSeq{{Name: "b1", Start: i64(0), Received: []int64{1, 2, 2, 3, 3, 3}, CaughtUp: true}},
+			DBComplete: true, DBReady: rows(1, 2, 3), Cursor: 3,
+			Boards: []BoardSeq{{Name: "b1", Start: i64(0), Received: []int64{1, 2, 2, 3, 3, 3}, CaughtUp: true, Complete: true}},
 		}, MissingResult{PerBoard: map[string]Count{"b1": {0, 0}}, Duplicates: map[string][]int64{"b1": {2, 3}},
 			NotIncreasing: map[string]bool{"b1": true}}},
 		{"recovered after reconnect (replay fills the gap)", MissingInput{
-			DBReady: rows(1, 2, 3, 4, 5), Cursor: 5,
+			DBComplete: true, DBReady: rows(1, 2, 3, 4, 5), Cursor: 5,
 			// connection 1 got 1,2; reconnect with Last-Event-ID 2 replays 3,4; then live 5.
-			Boards: []BoardSeq{{Name: "b1", Start: i64(0), Received: []int64{1, 2, 3, 4, 5}, CaughtUp: true}},
+			Boards: []BoardSeq{{Name: "b1", Start: i64(0), Received: []int64{1, 2, 3, 4, 5}, CaughtUp: true, Complete: true}},
 		}, MissingResult{PerBoard: map[string]Count{"b1": {0, 0}}, NotIncreasing: map[string]bool{"b1": false}}},
 		{"recovered late out of order: not missing, but not increasing", MissingInput{
-			DBReady: rows(1, 2, 3, 4), Cursor: 4,
-			Boards: []BoardSeq{{Name: "b1", Start: i64(0), Received: []int64{1, 2, 4, 3}, CaughtUp: true}},
+			DBComplete: true, DBReady: rows(1, 2, 3, 4), Cursor: 4,
+			Boards: []BoardSeq{{Name: "b1", Start: i64(0), Received: []int64{1, 2, 4, 3}, CaughtUp: true, Complete: true}},
 		}, MissingResult{PerBoard: map[string]Count{"b1": {0, 0}}, NotIncreasing: map[string]bool{"b1": true}}},
 		{"start boundary: seq equal to start not counted", MissingInput{
-			DBReady: rows(1, 2, 3, 4, 5), Cursor: 5,
-			Boards: []BoardSeq{{Name: "b1", Start: i64(3), Received: []int64{4, 5}, CaughtUp: true}},
+			DBComplete: true, DBReady: rows(1, 2, 3, 4, 5), Cursor: 5,
+			Boards: []BoardSeq{{Name: "b1", Start: i64(3), Received: []int64{4, 5}, CaughtUp: true, Complete: true}},
 		}, MissingResult{PerBoard: map[string]Count{"b1": {0, 0}}, NotIncreasing: map[string]bool{"b1": false}}},
 		{"start boundary: seq start+1 counted", MissingInput{
-			DBReady: rows(1, 2, 3, 4, 5), Cursor: 5,
-			Boards: []BoardSeq{{Name: "b1", Start: i64(3), Received: []int64{5}, CaughtUp: true}},
+			DBComplete: true, DBReady: rows(1, 2, 3, 4, 5), Cursor: 5,
+			Boards: []BoardSeq{{Name: "b1", Start: i64(3), Received: []int64{5}, CaughtUp: true, Complete: true}},
 		}, MissingResult{PerBoard: map[string]Count{"b1": {1, 0}}, NotIncreasing: map[string]bool{"b1": false}}},
 		{"cursor boundary: seq equal to C counted, above C not", MissingInput{
-			DBReady: rows(1, 2, 3, 4, 5, 6), Cursor: 5,
-			Boards: []BoardSeq{{Name: "b1", Start: i64(0), Received: []int64{1, 2, 3, 4}, CaughtUp: true}},
+			DBComplete: true, DBReady: rows(1, 2, 3, 4, 5, 6), Cursor: 5,
+			Boards: []BoardSeq{{Name: "b1", Start: i64(0), Received: []int64{1, 2, 3, 4}, CaughtUp: true, Complete: true}},
 		}, MissingResult{PerBoard: map[string]Count{"b1": {1, 0}}, NotIncreasing: map[string]bool{"b1": false}}},
 		{"empty set", MissingInput{
-			Cursor: 0,
-			Boards: []BoardSeq{{Name: "b1", Start: i64(0), CaughtUp: true}},
+			DBComplete: true, Cursor: 0,
+			Boards: []BoardSeq{{Name: "b1", Start: i64(0), CaughtUp: true, Complete: true}},
 		}, MissingResult{PerBoard: map[string]Count{"b1": {0, 0}}, NotIncreasing: map[string]bool{"b1": false}}},
 		{"empty received with DB rows: all missing", MissingInput{
-			DBReady: rows(1, 2), Cursor: 2,
-			Boards: []BoardSeq{{Name: "b1", Start: i64(0), CaughtUp: true}},
+			DBComplete: true, DBReady: rows(1, 2), Cursor: 2,
+			Boards: []BoardSeq{{Name: "b1", Start: i64(0), CaughtUp: true, Complete: true}},
 		}, MissingResult{PerBoard: map[string]Count{"b1": {2, 0}}, NotIncreasing: map[string]bool{"b1": false}}},
 		{"unsettled seqs are unknown, not missing", MissingInput{
-			DBReady: rows(1, 2, 3, 4, 7), Cursor: 4, UnsettledSeqs: map[int64]bool{3: true, 7: true, 2: true},
-			Boards: []BoardSeq{{Name: "b1", Start: i64(0), Received: []int64{1, 2}, CaughtUp: true}},
+			DBComplete: true, DBReady: rows(1, 2, 3, 4, 7), Cursor: 4, UnsettledSeqs: map[int64]bool{3: true, 7: true, 2: true},
+			Boards: []BoardSeq{{Name: "b1", Start: i64(0), Received: []int64{1, 2}, CaughtUp: true, Complete: true}},
 		}, MissingResult{PerBoard: map[string]Count{"b1": {1, 1}}, NotIncreasing: map[string]bool{"b1": false}}},
 		{"not caught up: all in-range not received are unknown", MissingInput{
-			DBReady: rows(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15), Cursor: 15,
-			Boards: []BoardSeq{{Name: "b1", Start: i64(0), Received: []int64{1, 2, 3}, CaughtUp: false}},
+			DBComplete: true, DBReady: rows(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15), Cursor: 15,
+			Boards: []BoardSeq{{Name: "b1", Start: i64(0), Received: []int64{1, 2, 3}, CaughtUp: false, Complete: true}},
 		}, MissingResult{PerBoard: map[string]Count{"b1": {0, 12}}, NotIncreasing: map[string]bool{"b1": false}}},
+		{"board record incomplete: in-range not received are unknown", MissingInput{
+			DBComplete: true, DBReady: rows(1, 2, 3, 4), Cursor: 4,
+			Boards: []BoardSeq{{Name: "b1", Start: i64(0), Received: []int64{1}, CaughtUp: true, Complete: false}},
+		}, MissingResult{PerBoard: map[string]Count{"b1": {0, 3}}, NotIncreasing: map[string]bool{"b1": false}}},
+		{"DB/audit evidence incomplete -> invalid", MissingInput{
+			DBComplete: false, DBReady: rows(1, 2), Cursor: 2,
+			Boards: []BoardSeq{{Name: "b1", Start: i64(0), Received: []int64{1}, CaughtUp: true, Complete: true}},
+		}, MissingResult{PerBoard: map[string]Count{"b1": {1, 0}}, NotIncreasing: map[string]bool{"b1": false}, Invalid: true}},
 		{"start missing -> invalid", MissingInput{
-			DBReady: rows(1, 2), Cursor: 2,
+			DBComplete: true, DBReady: rows(1, 2), Cursor: 2,
 			Boards: []BoardSeq{
-				{Name: "b1", Start: nil, Received: []int64{1, 2}, CaughtUp: true},
-				{Name: "b2", Start: i64(0), Received: []int64{1}, CaughtUp: true},
+				{Name: "b1", Start: nil, Received: []int64{1, 2}, CaughtUp: true, Complete: true},
+				{Name: "b2", Start: i64(0), Received: []int64{1}, CaughtUp: true, Complete: true},
 			},
 		}, MissingResult{PerBoard: map[string]Count{"b2": {1, 0}}, NotIncreasing: map[string]bool{"b1": false, "b2": false}, Invalid: true}},
 	}
@@ -292,7 +321,9 @@ func TestDuplicates(t *testing.T) {
 		{"one ref with 3 orders", map[string][]int64{"a": {1, 2, 3}, "b": {4}}, nil, Count{1, 0}, Count{2, 0}},
 		{"unsettled single order may grow", map[string][]int64{"a": {1}, "b": {2, 3}}, map[string]bool{"a": true}, Count{1, 1}, Count{1, 1}},
 		{"unsettled dup may grow further", map[string][]int64{"a": {1, 2}}, map[string]bool{"a": true}, Count{1, 0}, Count{1, 1}},
-		{"unsettled with no order yet", map[string][]int64{"b": {2}}, map[string]bool{"a": true}, Count{0, 0}, Count{0, 0}},
+		{"unsettled with no order yet", map[string][]int64{"b": {2}}, map[string]bool{"a": true}, Count{0, 1}, Count{0, 1}},
+		{"unsettled ref listed with empty orders", map[string][]int64{"a": {}}, map[string]bool{"a": true}, Count{0, 1}, Count{0, 1}},
+		{"unsettled flag false is ignored", map[string][]int64{"a": {1}}, map[string]bool{"a": false, "z": false}, Count{0, 0}, Count{0, 0}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

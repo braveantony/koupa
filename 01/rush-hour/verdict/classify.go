@@ -38,11 +38,23 @@ func State(a AttemptEvidence, gotFullErrorResponse bool) StateKind {
 		return Unknown // request end without received: contradiction
 	case a.AppEnd == nil:
 		return ReachedNotEnded
-	case a.AppEnd.WriteErr || a.AppEnd.CtxCanceled:
-		return WriteFailedOrCanceled
-	default:
-		return WriteFlushOK
 	}
+	// Request end logged: any reported failure wins; success needs all
+	// three fields present and false.
+	end := a.AppEnd
+	flags := []*bool{end.WriteErr, end.FlushErr, end.CtxCanceled}
+	complete := true
+	for _, f := range flags {
+		if f == nil {
+			complete = false
+		} else if *f {
+			return WriteFailedOrCanceled
+		}
+	}
+	if !complete {
+		return Unknown
+	}
+	return WriteFlushOK
 }
 
 // CauseKind is the inferred cause of a failed attempt (A10 原因 table).
@@ -75,8 +87,9 @@ func Cause(a AttemptEvidence, state StateKind) CauseKind {
 func routedAfterTermination(a AttemptEvidence) bool {
 	n, _, ok := upstreamCount(a.Ingress)
 	if !ok || n != 1 || a.Ingress.UpstreamPod == "" ||
-		a.Ingress.IngressStart == nil || a.PodTermStart == nil {
+		a.Ingress.IngressStart == nil || a.PodTermStart == nil ||
+		a.Precision == nil || *a.Precision < 0 {
 		return false
 	}
-	return a.Ingress.IngressStart.After(a.PodTermStart.Add(a.Precision))
+	return a.Ingress.IngressStart.After(a.PodTermStart.Add(*a.Precision))
 }

@@ -27,12 +27,16 @@ type IngressRecord struct {
 
 // AppEnd is the App's "request end" log line for one attempt.
 type AppEnd struct {
-	TxOutcome    string
-	CommitSentAt time.Time // meaningful only when TxOutcome is commit_unknown
-	// WriteErr is true when writing or flushing the response returned an error.
-	WriteErr bool
-	// CtxCanceled is true when the request context was canceled.
-	CtxCanceled bool
+	TxOutcome string
+	// CommitSentAt is when COMMIT was sent (used for commit_unknown); nil
+	// when not logged.
+	CommitSentAt *time.Time
+	// WriteErr, FlushErr and CtxCanceled report whether writing the
+	// response, flushing it, or the request context failed / was canceled.
+	// nil means the field was not logged, which is not evidence of success.
+	WriteErr    *bool
+	FlushErr    *bool
+	CtxCanceled *bool
 }
 
 // AttemptEvidence is everything collected about one attempt (one
@@ -56,13 +60,15 @@ type AttemptEvidence struct {
 	LogCovered bool
 	// Contradictory: the collector found records for this attempt that
 	// disagree (e.g. duplicate or out-of-order lines, DB vs log mismatch).
-	// Used by State.
+	// It is the result of a check the collector always runs when
+	// LogCovered is set; without LogCovered it is not consulted. Used by State.
 	Contradictory bool
-	// PodTermStart is the estimated termination start of the upstream Pod,
-	// Precision the timing margin applied when comparing against it. Used
-	// by Cause.
+	// PodTermStart is the estimated termination start of the upstream Pod;
+	// Precision is the timing margin applied when comparing against it, nil
+	// when the precision is unknown (a 0 margin must be stated explicitly).
+	// Used by Cause.
 	PodTermStart *time.Time
-	Precision    time.Duration
+	Precision    *time.Duration
 }
 
 // Settlement says whether the server-side outcome of an attempt is final.
@@ -91,6 +97,7 @@ func upstreamCount(in *IngressRecord) (n int, why string, ok bool) {
 // Settle applies A9 step 3: whether the server-side result of this attempt
 // is settled at time now, given the database transaction_timeout.
 // "More than transaction_timeout" is strict: exactly txTimeout is not enough.
+// A txTimeout <= 0 is treated as unknown: no time-based rule can settle.
 func Settle(e AttemptEvidence, now time.Time, txTimeout time.Duration) Settlement {
 	n, why, ok := upstreamCount(e.Ingress)
 	if !ok {
@@ -111,7 +118,13 @@ func Settle(e AttemptEvidence, now time.Time, txTimeout time.Duration) Settlemen
 		case TxCommitted, TxRolledBack, TxNotStarted:
 			return settled("request ended with " + e.AppEnd.TxOutcome)
 		case TxCommitUnknown:
-			if now.Sub(e.AppEnd.CommitSentAt) > txTimeout {
+			if e.AppEnd.CommitSentAt == nil {
+				return unsettled("commit_unknown without a COMMIT time")
+			}
+			if txTimeout <= 0 {
+				return unsettled("transaction_timeout unknown")
+			}
+			if now.Sub(*e.AppEnd.CommitSentAt) > txTimeout {
 				return settled("commit_unknown older than transaction_timeout")
 			}
 			return unsettled("commit_unknown within transaction_timeout")
@@ -127,6 +140,9 @@ func Settle(e AttemptEvidence, now time.Time, txTimeout time.Duration) Settlemen
 	}
 	if e.PodExitedAt == nil {
 		return unsettled("received without end; Pod program not known to have exited")
+	}
+	if txTimeout <= 0 {
+		return unsettled("transaction_timeout unknown")
 	}
 	if now.Sub(*e.PodExitedAt) > txTimeout {
 		return settled("received without end; Pod exited more than transaction_timeout ago")
