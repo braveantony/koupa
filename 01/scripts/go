@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Run the Go toolchain in a container (the host has no Go installed).
+set -euo pipefail
+tty=(); [ -t 0 ] && [ -t 1 ] && tty=(-t)
+exec podman run --rm "${tty[@]}" --network host \
+  -v /home/bigred/app:/home/bigred/app:Z -w "$PWD" \
+  -v koupa-gomod:/go/pkg/mod -v koupa-gocache:/root/.cache/go-build \
+  -e KOUPA_TEST_DSN -e CGO_ENABLED="${CGO_ENABLED:-1}" -e GOFLAGS \
+  docker.io/library/golang:1.26 go "$@"
