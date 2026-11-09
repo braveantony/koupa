@@ -35,11 +35,18 @@ func DropReady(n int, log *slog.Logger) func(subID uint64, seq int64) bool {
 	}
 }
 
+// Transaction outcomes DuplicateOrder's done callback acts on (the values of
+// store.TxCommitted and store.TxCommitUnknown).
+const (
+	OutcomeCommitted     = "committed"
+	OutcomeCommitUnknown = "commit_unknown"
+)
+
 // DuplicateOrder returns the store.PlaceOptions pair for duplicate-order=n.
 // reserve is true for the next n client_refs and takes one from the count;
-// done settles it: committed logs the injection, otherwise the count is
-// given back. Both are nil when n <= 0. Safe for concurrent use.
-func DuplicateOrder(n int, log *slog.Logger) (reserve func(clientRef string) bool, done func(clientRef string, committed bool)) {
+// done settles it: committed or commit_unknown logs the injection, otherwise the
+// count is given back. Both are nil when n <= 0. Safe for concurrent use.
+func DuplicateOrder(n int, log *slog.Logger) (reserve func(clientRef string) bool, done func(clientRef, outcome string)) {
 	if n <= 0 {
 		return nil, nil
 	}
@@ -54,9 +61,11 @@ func DuplicateOrder(n int, log *slog.Logger) (reserve func(clientRef string) boo
 		left--
 		return true
 	}
-	done = func(ref string, committed bool) {
-		if committed {
-			log.Warn(applog.EvMutationDuplicateOrder, "client_ref", ref)
+	done = func(ref, outcome string) {
+		// A commit_unknown transaction may have committed the duplicate, so
+		// it counts as injected; only a definite non-commit gives it back.
+		if outcome == OutcomeCommitted || outcome == OutcomeCommitUnknown {
+			log.Warn(applog.EvMutationDuplicateOrder, "client_ref", ref, "outcome", outcome)
 			return
 		}
 		mu.Lock()

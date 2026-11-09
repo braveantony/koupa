@@ -46,9 +46,10 @@ type PlaceOptions struct {
 	// extra order is inserted in the same transaction, bypassing
 	// idempotency_keys.
 	DuplicateOrder func(clientRef string) bool
-	// DuplicateDone settles a true DuplicateOrder: committed says whether the
-	// transaction holding the extra order committed. nil in normal use.
-	DuplicateDone func(clientRef string, committed bool)
+	// DuplicateDone settles a true DuplicateOrder with the transaction's
+	// outcome (a TxOutcome string; commit_unknown means the extra order may
+	// exist). nil in normal use.
+	DuplicateDone func(clientRef, outcome string)
 	// RequestCtx is the request's context, used for the order.before_commit
 	// pause (DB work keeps its own context); nil means the DB context.
 	RequestCtx context.Context
@@ -106,7 +107,7 @@ func PlaceOrder(ctx context.Context, pool *pgxpool.Pool, req OrderRequest, opts 
 	}
 	settle := func(ref string, txr TxResult, err error) {
 		if dupReserved && opts.DuplicateDone != nil {
-			opts.DuplicateDone(ref, err == nil && txr.Outcome == TxCommitted)
+			opts.DuplicateDone(ref, string(txr.Outcome))
 		}
 		dupReserved = false
 	}

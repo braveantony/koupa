@@ -87,16 +87,18 @@ func (r *Registry) Pause(ctx context.Context, name, attemptID string) {
 	}
 	r.mu.Lock()
 	p, ok := r.points[name]
-	if !ok || !p.armed {
+	// A request whose ctx has already ended never becomes a pause.
+	if !ok || !p.armed || ctx.Err() != nil {
 		r.mu.Unlock()
 		return
 	}
 	ps := &pause{attempt: attemptID, rel: make(chan struct{})}
 	p.pauses = append(p.pauses, ps)
 	p.notify()
+	// Logged under the lock so release (which also holds it) logs after.
+	r.log.Info(applog.EvHookPaused, "hook", name, "attempt", attemptID)
 	r.mu.Unlock()
 
-	r.log.Info(applog.EvHookPaused, "hook", name, "attempt", attemptID)
 	select {
 	case <-ps.rel:
 	case <-ctx.Done():

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strings"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -159,27 +159,36 @@ func TestRequestEndFields(t *testing.T) {
 // countingTracer counts statements sent on a pool.
 type countingTracer struct{ n atomic.Int64 }
 
-func (c *countingTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
-	// Only audit statements: a new connection's setup query and the
-	// broadcaster's polls are not part of what the test measures.
-	if strings.Contains(d.SQL, "client_ref LIKE") {
-		c.n.Add(1)
-	}
+func (c *countingTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	c.n.Add(1)
 	return ctx
 }
 func (c *countingTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 func TestAuditCursorSingleStatement(t *testing.T) {
 	base := testdb.New(t)
+	e := newEnv(t, testConfig("v1"), base)
+	// The audit requests run on a dedicated one-connection pool that
+	// nothing else uses (the broadcaster polls on base) and that is warmed
+	// up first, so every traced statement belongs to the audit request.
 	pcfg := base.Config().Copy()
 	tr := &countingTracer{}
 	pcfg.ConnConfig.Tracer = tr
-	pool, err := pgxpool.NewWithConfig(context.Background(), pcfg)
+	pcfg.MaxConns = 1
+	pcfg.MinConns = 1
+	auditPool, err := pgxpool.NewWithConfig(context.Background(), pcfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(pool.Close)
-	e := newEnv(t, testConfig("v1"), pool)
+	t.Cleanup(auditPool.Close)
+	if err := auditPool.Ping(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	as := New(testConfig("v1"), Deps{Pool: auditPool, Broadcaster: e.srv.deps.Broadcaster, Log: quietLog()})
+	as.started.Store(true)
+	ats := httptest.NewServer(as.Handler())
+	t.Cleanup(ats.Close)
+	audit := &testEnv{srv: as, ts: ats, pool: auditPool, log: e.log, cfg: e.cfg}
 
 	// Run "r_1" (with a LIKE metachar) and runs that must not match it.
 	refs := []string{"r_1-a", "r_1-b", "r_1-c", "rx1-a", "r_10-a", "r_1"}
@@ -194,7 +203,7 @@ func TestAuditCursorSingleStatement(t *testing.T) {
 	var cur struct {
 		Cursor int64 `json:"cursor"`
 	}
-	if resp := e.do(t, "GET", "/api/audit?run=r_1&mode=cursor", "", "", &cur); resp.StatusCode != 200 || cur.Cursor != 0 {
+	if resp := audit.do(t, "GET", "/api/audit?run=r_1&mode=cursor", "", "", &cur); resp.StatusCode != 200 || cur.Cursor != 0 {
 		t.Fatalf("empty cursor: %d %+v", resp.StatusCode, cur)
 	}
 	var want int64
@@ -208,7 +217,7 @@ func TestAuditCursorSingleStatement(t *testing.T) {
 		}
 	}
 	tr.n.Store(0)
-	if resp := e.do(t, "GET", "/api/audit?run=r_1&mode=cursor", "", "", &cur); resp.StatusCode != 200 {
+	if resp := audit.do(t, "GET", "/api/audit?run=r_1&mode=cursor", "", "", &cur); resp.StatusCode != 200 {
 		t.Fatalf("cursor status %d", resp.StatusCode)
 	}
 	if cur.Cursor != want {
@@ -219,7 +228,7 @@ func TestAuditCursorSingleStatement(t *testing.T) {
 	}
 
 	var orders map[string][]int64
-	e.do(t, "GET", "/api/audit?run=r_1&mode=orders", "", "", &orders)
+	audit.do(t, "GET", "/api/audit?run=r_1&mode=orders", "", "", &orders)
 	if len(orders) != 3 || orders["r_1-a"][0] != ids["r_1-a"] || len(orders["r_1-c"]) != 1 {
 		t.Errorf("orders = %v", orders)
 	}
@@ -228,13 +237,13 @@ func TestAuditCursorSingleStatement(t *testing.T) {
 		ReadySeq     int64   `json:"ready_seq"`
 		ReadyAttempt *string `json:"ready_attempt"`
 	}
-	e.do(t, "GET", "/api/audit?run=r_1&mode=ready", "", "", &ready)
+	audit.do(t, "GET", "/api/audit?run=r_1&mode=ready", "", "", &ready)
 	if len(ready) != 2 || ready[0].OrderID != ids["r_1-a"] || ready[1].ReadySeq != want ||
 		ready[0].ReadyAttempt == nil || *ready[0].ReadyAttempt != "att-r_1-a" {
 		t.Errorf("ready = %+v", ready)
 	}
 	for _, q := range []string{"run=&mode=cursor", "run=r_1&mode=bogus", "mode=cursor"} {
-		if resp := e.do(t, "GET", "/api/audit?"+q, "", "", nil); resp.StatusCode != 400 {
+		if resp := audit.do(t, "GET", "/api/audit?"+q, "", "", nil); resp.StatusCode != 400 {
 			t.Errorf("%s: status %d, want 400", q, resp.StatusCode)
 		}
 	}

@@ -778,10 +778,10 @@ func TestBeforeCommitPausesBeforeCommit(t *testing.T) {
 // back gives committed=false, committed gives true.
 func TestDuplicateDoneReportsOutcome(t *testing.T) {
 	pool := testdb.New(t)
-	var got []bool
+	var got []string
 	opts := idemOpts()
 	opts.DuplicateOrder = func(string) bool { return true }
-	opts.DuplicateDone = func(_ string, c bool) { got = append(got, c) }
+	opts.DuplicateDone = func(_, o string) { got = append(got, o) }
 	setHook(t, &hookBeforeCommit, func(context.Context, pgx.Tx) error { return errors.New("boom") })
 	if _, _, err := place(t, pool, "dd-1", oneTea, opts); err == nil {
 		t.Fatal("want error")
@@ -790,8 +790,40 @@ func TestDuplicateDoneReportsOutcome(t *testing.T) {
 	if _, _, err := place(t, pool, "dd-2", oneTea, opts); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || got[0] || !got[1] {
-		t.Fatalf("settled = %v, want [false true]", got)
+	if len(got) != 2 || got[0] != "rolled_back" || got[1] != "committed" {
+		t.Fatalf("settled = %v, want [rolled_back committed]", got)
+	}
+}
+
+// commit_unknown (COMMIT sent, reply lost) is reported as such: the extra
+// order may exist.
+func TestDuplicateDoneCommitUnknown(t *testing.T) {
+	pool := testdb.New(t)
+	cc := pool.Config().ConnConfig
+	proxy := testproxy.NewTCP(net.JoinHostPort(cc.Host, strconv.Itoa(int(cc.Port))))
+	defer proxy.Close()
+	proxy.OnClientMessage(func(msg []byte) testproxy.Action {
+		if isCommit(msg) {
+			return testproxy.ForwardThenCutClient
+		}
+		return testproxy.Forward
+	})
+	u := url.URL{Scheme: "postgres", User: url.UserPassword(cc.User, cc.Password),
+		Host: proxy.Addr(), Path: "/" + cc.Database, RawQuery: "sslmode=disable"}
+	proxied, err := pgxpool.New(context.Background(), u.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxied.Close()
+	var got []string
+	opts := idemOpts()
+	opts.DuplicateOrder = func(string) bool { return true }
+	opts.DuplicateDone = func(_, o string) { got = append(got, o) }
+	if _, _, err := place(t, proxied, "dcu-1", oneTea, opts); err == nil {
+		t.Fatal("want an error when the COMMIT reply is lost")
+	}
+	if len(got) != 1 || got[0] != "commit_unknown" {
+		t.Fatalf("settled = %v, want [commit_unknown]", got)
 	}
 }
 

@@ -294,3 +294,65 @@ func TestCancelledPauseNotReported(t *testing.T) {
 		t.Fatalf("wait named a cancelled pause: %d %v", code, m)
 	}
 }
+
+// A ctx that has already ended never produces a pause, so nothing is
+// reported or logged for it.
+func TestPreCancelledNeverReported(t *testing.T) {
+	log, buf := newLog()
+	r := New(true, log)
+	h := r.Handler()
+	post(t, h, "/hooks/request.mid/arm")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for i := 0; i < 50; i++ {
+		r.Pause(ctx, "request.mid", "dead")
+	}
+	if code, m := wait1(t, h, "20ms"); code != http.StatusRequestTimeout {
+		t.Fatalf("wait named a pre-cancelled request: %d %v", code, m)
+	}
+	if n := len(buf.lines()); n != 0 {
+		t.Fatalf("logged %d lines for pre-cancelled requests", n)
+	}
+}
+
+// For each request the pause line comes before its release line, even when
+// release runs concurrently with the pause.
+func TestPauseLoggedBeforeRelease(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		log, buf := newLog()
+		r := New(true, log)
+		h := r.Handler()
+		post(t, h, "/hooks/request.mid/arm")
+		var wg sync.WaitGroup
+		for j := 0; j < 8; j++ {
+			wg.Add(1)
+			go func() { defer wg.Done(); r.Pause(context.Background(), "request.mid", "x") }()
+		}
+		post(t, h, "/hooks/request.mid/release")
+		// Requests that arrive after release pass; release again until
+		// every Pause has returned.
+		done := make(chan struct{})
+		go func() { wg.Wait(); close(done) }()
+	loop:
+		for {
+			select {
+			case <-done:
+				break loop
+			default:
+				post(t, h, "/hooks/request.mid/release")
+			}
+		}
+		paused, released := 0, 0
+		for _, l := range buf.lines() {
+			switch l["event"] {
+			case applog.EvHookPaused:
+				paused++
+			case applog.EvHookReleased:
+				released++
+				if released > paused {
+					t.Fatalf("iteration %d: release logged before its pause", i)
+				}
+			}
+		}
+	}
+}

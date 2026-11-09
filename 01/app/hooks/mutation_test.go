@@ -42,18 +42,21 @@ func TestDuplicateOrderLogsClientRefs(t *testing.T) {
 	if len(buf.lines()) != 0 {
 		t.Fatal("logged before the commit was confirmed")
 	}
-	done("r-1", true)
-	done("r-2", false) // rolled back: gives the count back
+	done("r-1", "committed")
+	done("r-2", "rolled_back") // gives the count back
 	if !reserve("r-4") {
 		t.Fatal("count not given back after rollback")
 	}
-	done("r-4", true)
+	done("r-4", "commit_unknown") // may exist: consumed and logged
 	if reserve("r-5") {
 		t.Fatal("duplicated more than n")
 	}
 	var refs []string
 	for _, l := range buf.lines() {
 		if l["event"] == applog.EvMutationDuplicateOrder {
+			if l["outcome"] == nil {
+				t.Errorf("no outcome: %v", l)
+			}
 			refs = append(refs, l["client_ref"].(string))
 		}
 	}
