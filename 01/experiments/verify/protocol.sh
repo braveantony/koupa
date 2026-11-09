@@ -10,9 +10,10 @@
 #   http://<gateway>/board, curl -N reads /events, `rush-hour run` (60 s,
 #   20/s, 3 boards) through the Gateway; at second 10 the image is set to v2
 #   (step 4 settings: graceful shutdown, resume), so every Pod terminates.
-#   Checks: over the call numbers both sides cover, the browser and each
-#   Rush Hour board (and curl) received the same ready_seq set, without
-#   duplicates; every connection, by the Pod it was on (X-Koupa-Pod-UID),
+#   Checks: for every pair of connections (browser vs each Rush Hour board,
+#   browser vs curl), over the interval both were connected — from the
+#   later hello start to the earlier last received ready_seq — the same
+#   ready_seq set; no client got a number twice; every connection, by the Pod it was on (X-Koupa-Pod-UID),
 #   got exactly one shutdown when that Pod terminated, none while it ran.
 # Phase same-pod: a port-forward to one Pod P; the browser page, curl -N and
 #   a one-board `rush-hour run --no-ingress` (2/s) all connect to P; then P
@@ -183,7 +184,7 @@ check_protocol() {
 		sed 's/^/    curl /' "$root/$f.check.txt" >&2
 	done
 	vcheck "$root" <<'PY' || rc=1
-import datetime, re
+import collections, datetime, re
 def T(s):
     m = re.match(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d+))?(Z|[+-]\d\d:\d\d)$", (s or "").strip())
     if not m:
@@ -223,22 +224,40 @@ def rh(path):
         elif e["kind"] == "shutdown":
             c["shutdown"].append(T(e["at"]))
     return conns
-def side(conns):
-    seqs = [s for c in conns.values() for s in c["seqs"]]
-    starts = [c["start"] for c in conns.values() if c["start"] is not None]
-    return {"start": min(starts) if starts else None, "seqs": seqs}
-def compare(name_a, a, name_b, b):
-    if a["start"] is None or b["start"] is None or not a["seqs"] or not b["seqs"]:
-        ok(False, "%s vs %s: both sides have a start and ready events" % (name_a, name_b))
+def compare(name_a, conns_a, name_b, conns_b):
+    """Compare per pair of connections over the interval both were
+    connected. A connection's recorded boundaries are its hello start and
+    the last ready_seq it received: it covered (start, last]. For each pair
+    whose coverage overlaps, (max start, min last] is a range both received
+    through, so any number in it that only one got is a real difference;
+    ranges where one client was between connections are not compared."""
+    ca = [c for c in conns_a.values() if c["start"] is not None]
+    cb = [c for c in conns_b.values() if c["start"] is not None]
+    if not ca or not cb or not any(c["seqs"] for c in ca) or not any(c["seqs"] for c in cb):
+        ok(False, "%s vs %s: both sides have a connection with a start and ready events" % (name_a, name_b))
         return None
-    lo, hi = max(a["start"], b["start"]), min(max(a["seqs"]), max(b["seqs"]))
-    sa = [s for s in a["seqs"] if lo < s <= hi]
-    sb = [s for s in b["seqs"] if lo < s <= hi]
-    ok(len(sa) == len(set(sa)) and len(sb) == len(set(sb)), "%s vs %s: no duplicate ready_seq in (%d, %d]" % (name_a, name_b, lo, hi))
-    only_a, only_b = sorted(set(sa) - set(sb)), sorted(set(sb) - set(sa))
-    ok(not only_a and not only_b and sa, "%s vs %s: same ready_seq over the common range (%d, %d]: %d numbers; only %s %s, only %s %s"
-       % (name_a, name_b, lo, hi, len(set(sa)), name_a, only_a[:5], name_b, only_b[:5]))
-    return {"pair": [name_a, name_b], "range": [lo, hi], "common": len(set(sa) & set(sb)), "only_a": only_a, "only_b": only_b}
+    for nm, cs in ((name_a, ca), (name_b, cb)):
+        allseq = [x for c in cs for x in c["seqs"]]
+        dup = sorted(x for x, n in collections.Counter(allseq).items() if n > 1)
+        ok(not dup, "%s: no ready_seq received twice (over all its connections): %s" % (nm, dup[:5]))
+    out = []
+    for a in ca:
+        for b in cb:
+            if not a["seqs"] or not b["seqs"]:
+                continue
+            lo, hi = max(a["start"], b["start"]), min(max(a["seqs"]), max(b["seqs"]))
+            if hi <= lo:
+                continue
+            sa = {x for x in a["seqs"] if lo < x <= hi}
+            sb = {x for x in b["seqs"] if lo < x <= hi}
+            only_a, only_b = sorted(sa - sb), sorted(sb - sa)
+            ok(not only_a and not only_b and sa,
+               "%s conn@%s vs %s conn@%s: same ready_seq over the interval both were connected (%d, %d]: %d numbers; only %s %s, only %s %s"
+               % (name_a, (a["pod"] or "?")[:8], name_b, (b["pod"] or "?")[:8], lo, hi, len(sa | sb), name_a, only_a[:5], name_b, only_b[:5]))
+            out.append({"pair": [name_a, name_b], "pods": [a["pod"], b["pod"]], "range": [lo, hi],
+                        "common": len(sa & sb), "only_a": only_a, "only_b": only_b})
+    ok(bool(out), "%s vs %s: at least one interval where both were connected" % (name_a, name_b))
+    return out
 def curl(prefix):
     c = load(prefix + ".check.json") or {}
     pod = None
@@ -265,11 +284,10 @@ cc, cpod = curl("gateway/curl-gateway")
 ok(not cc.get("failed") and cc, "gateway: curl raw stream grammar (with shutdown): %s" % (cc.get("failed") or ("ok" if cc else "no check result")))
 pairs = []
 if B:
-    bs = side(B)
     for board in sorted({b for b, _ in R}):
-        pairs.append(compare("browser", bs, board, side({k: v for k, v in R.items() if k[0] == board})))
+        pairs.append(compare("browser", B, board, {k: v for k, v in R.items() if k[0] == board}))
     if cc.get("seqs"):
-        pairs.append(compare("browser", bs, "curl", {"start": cc["start"], "seqs": cc["seqs"]}))
+        pairs.append(compare("browser", B, "curl", {1: {"pod": cpod, "start": cc["start"], "seqs": cc["seqs"]}}))
     for n, c in sorted(B.items()):
         want = 1 if c["pod"] in term else 0
         ok(len(c["shutdown"]) == want, "gateway: browser connection %d on Pod %s (%s) got %d shutdown, want %d"
@@ -297,9 +315,9 @@ b1 = B2.get(1, {"pod": None, "start": None, "seqs": [], "shutdown": [], "shutdow
 r1 = R2.get(("board-1", 1), {"pod": None, "start": None, "seqs": [], "shutdown": []})
 ok(puid is not None and b1["pod"] == puid and r1["pod"] == puid and c2pod == puid,
    "same-pod: browser, Rush Hour and curl are all on %s (%s, %s, %s)" % ((puid or "?")[:8], (b1["pod"] or "?")[:8], (r1["pod"] or "?")[:8], (c2pod or "?")[:8]))
-p2 = [compare("browser", {"start": b1["start"], "seqs": b1["seqs"]}, "board-1", {"start": r1["start"], "seqs": r1["seqs"]})]
+p2 = [compare("browser", {1: b1}, "board-1", {k: v for k, v in R2.items() if k[0] == "board-1"})]
 if c2.get("seqs"):
-    p2.append(compare("browser", {"start": b1["start"], "seqs": b1["seqs"]}, "curl", {"start": c2["start"], "seqs": c2["seqs"]}))
+    p2.append(compare("browser", {1: b1}, "curl", {1: {"pod": c2pod, "start": c2["start"], "seqs": c2["seqs"]}}))
 ok(len(b1["shutdown"]) == 1 and b1["shutdown_data"] == [""], "same-pod: the browser got exactly one shutdown, dispatched with empty data: %r" % b1["shutdown_data"])
 ok(len(r1["shutdown"]) == 1, "same-pod: Rush Hour board-1 got exactly one shutdown: %d" % len(r1["shutdown"]))
 ok(not c2.get("failed") and c2, "same-pod: curl raw stream grammar (with shutdown): %s" % (c2.get("failed") or ("ok" if c2 else "no check result")))
