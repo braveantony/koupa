@@ -94,7 +94,8 @@ type Follower struct {
 	MaxLine   int // longest accepted line (default 16 MiB)
 
 	afterRead func() // test hook: runs after every follow read
-	afterWait func() // test hook: runs right after kubectl was reaped
+	afterWait   func() // test hook: runs right after kubectl was reaped
+	afterCancel func() // test hook: runs at the end of the context's Cancel
 
 	out     io.Writer
 	st      FollowState
@@ -158,9 +159,18 @@ func (f *Follower) read(ctx context.Context, follow bool) (werr error, stderrS s
 	cmd := f.kubectl(ctx, args...)
 	cmd.WaitDelay = 2 * time.Second
 	// Our stop: the flag is set immediately before we signal kubectl, so a
-	// signal exit counts as ours only if we had already sent it.
+	// signal exit counts as ours only if we had already sent it. Cancel runs
+	// in exec's context goroutine, possibly after kubectl died but before
+	// Wait reaped it; the peek (which does not reap) tells a child killed by
+	// someone else from one still running, and only the latter is ours.
 	var stopSent atomic.Bool
 	cmd.Cancel = func() error {
+		if f.afterCancel != nil {
+			defer f.afterCancel()
+		}
+		if childExited(cmd.Process.Pid) {
+			return os.ErrProcessDone // ended by itself: a stream error, not our stop
+		}
 		stopSent.Store(true)
 		return cmd.Process.Kill()
 	}

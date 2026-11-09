@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -399,5 +401,64 @@ func TestFollowerExternalSignalBeforeStopIsGap(t *testing.T) {
 	m, _ := LoadPodLogMeta(filepath.Dir(app), "u1", nil, map[string]*podObj{"u1": runningPod()}, true)
 	if r := Coverage(m); r.Complete || len(m.Gaps) != 1 {
 		t.Errorf("external kill taken for our stop: gaps=%+v coverage=%+v", m.Gaps, r)
+	}
+}
+
+func TestFollowerExternalKillBeforeCancelIsGap(t *testing.T) {
+	// kubectl is killed by someone else and is a zombie (not reaped yet:
+	// a grandchild still holds its stdout, so Wait has not been called)
+	// when our stop arrives. The stop must see that it is already dead.
+	if runtime.GOOS != "linux" {
+		t.Skip("needs waitid")
+	}
+	kc, app := fakeSeq(t, `1) echo '`+lStartup+`'; echo '`+lA+`'; echo $$ >"$d/pid"; (read x <"$d/release") & kill -KILL $$;;`)
+	dir := filepath.Dir(app)
+	fifo := filepath.Join(dir, "release")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	release := func() {
+		// Opening for writing meets the grandchild's read; closing gives it
+		// EOF, so it exits and kubectl's stdout closes.
+		if w, err := os.OpenFile(fifo, os.O_WRONLY, 0); err == nil {
+			w.Close()
+		}
+	}
+	t.Cleanup(func() {
+		if r, err := os.OpenFile(fifo, os.O_RDWR|syscall.O_NONBLOCK, 0); err == nil {
+			r.Close() // unblocks a release that found no reader
+		}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f := Follower{Kubectl: kc, Namespace: "koupa", Pod: "koupa-a", UID: "u1", Dir: app, Poll: time.Millisecond, afterCancel: release}
+	done := make(chan error, 1)
+	go func() { done <- f.Run(ctx) }()
+	deadline := time.Now().Add(10 * time.Second)
+	var pid int
+	for pid == 0 || !childExited(pid) {
+		if time.Now().After(deadline) {
+			release()
+			t.Fatalf("kubectl (pid %d) never became a zombie", pid)
+		}
+		if pid == 0 {
+			b, _ := os.ReadFile(filepath.Join(dir, "pid"))
+			pid, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel() // kubectl is a zombie: Cancel runs, then releases the grandchild
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		release()
+		t.Fatal("follower did not stop")
+	}
+	m, _ := LoadPodLogMeta(dir, "u1", nil, map[string]*podObj{"u1": runningPod()}, true)
+	if r := Coverage(m); r.Complete || len(m.Gaps) != 1 {
+		t.Errorf("external kill before our stop taken for our stop: gaps=%+v coverage=%+v", m.Gaps, r)
 	}
 }

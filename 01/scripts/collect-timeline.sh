@@ -149,7 +149,7 @@ _watch() {
 # (unfiltered, read after the snapshot: the buffer only moves forward) must
 # not be later than SINCE; otherwise earlier flows were overwritten.
 hubble_snapshot() {
-	local since=$1 until=$2 pod out oldest ok=0
+	local since=$1 until=$2 pod out first oldest ok=0
 	: >"$dir/hubble.jsonl"
 	for pod in $("$KUBECTL" -n kube-system get pods -l k8s-app=cilium -o jsonpath='{.items[*].metadata.name}'); do
 		if ! out=$("$KUBECTL" -n kube-system exec "$pod" -c cilium-agent -- \
@@ -159,11 +159,17 @@ hubble_snapshot() {
 		fi
 		ok=$((ok + 1))
 		[ -z "$out" ] || "$RH" stamp --json <<<"$out" >>"$dir/hubble.jsonl"
-		oldest=$("$KUBECTL" -n kube-system exec "$pod" -c cilium-agent -- hubble observe --first 1 -o json 2>>"$dir/hubble.err" |
-			sed -n 's/^{"flow":{"time":"\([^"]*\)".*/\1/p' | head -1)
+		# A failure here must not end stop (set -e): it is recorded and the
+		# next agent is read.
+		if ! first=$("$KUBECTL" -n kube-system exec "$pod" -c cilium-agent -- hubble observe --first 1 -o json 2>>"$dir/hubble.err"); then
+			echo "$(stamp) agent=$pod oldest_flow=? since=$since (hubble observe --first 1 failed)" >>"$dir/hubble-buffer.txt"
+			missing hubble "buffer unreadable: hubble observe --first 1 失敗（見 hubble.err），不知道環形緩衝區是否被覆蓋" "$pod"
+			continue
+		fi
+		oldest=$(sed -n 's/^{"flow":{"time":"\([^"]*\)".*/\1/p' <<<"$first" | head -1) || oldest=
 		echo "$(stamp) agent=$pod oldest_flow=${oldest:-?} since=$since" >>"$dir/hubble-buffer.txt"
 		if [ -z "$oldest" ]; then
-			missing hubble "讀不到環形緩衝區最舊的一筆，不知道是否被覆蓋" "$pod"
+			missing hubble "buffer unreadable: 讀不到環形緩衝區最舊的一筆，不知道是否被覆蓋" "$pod"
 		elif later "$oldest" "$since"; then
 			missing hubble "ring buffer overwritten before $oldest（收集開始於 $since，之前的流量缺少）" "$pod"
 		fi

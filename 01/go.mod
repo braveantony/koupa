@@ -1,8 +1,11 @@
 module koupa
 
-go 1.26
+go 1.26.0
 
-require github.com/jackc/pgx/v5 v5.12.0
+require (
+	github.com/jackc/pgx/v5 v5.12.0
+	golang.org/x/sys v0.49.0
+)
 
 require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect
