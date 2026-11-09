@@ -61,7 +61,7 @@ YAML 不寫死 IP，`measure.sh` 會自動查 Gateway 的 IP。
 | 項目 | 實測後要決定的事 | 章節 |
 |---|---|---|
 | 叫號鎖 | 每秒 20 張負載下的等鎖時間和出餐延遲是否可以接受 | [4.1](04-step-mechanisms.md#41-標記完成與配發叫號編號) |
-| 入口切斷長連線 | 是哪一種逾時、切斷時間、心跳間隔，或改調 HTTPRoute。依 Cilium 1.20.4 原始碼，沒寫 `timeouts` 的路由會落到 Envoy 預設 route timeout 15 秒（[env-findings 3.2](../env-findings.md)），待即時 config dump 確認 | [4.3](04-step-mechanisms.md#43-閒置斷線小實驗) |
+| 入口切斷長連線 | 是哪一種逾時、切斷時間、心跳間隔，或改調 HTTPRoute。已在 tkha 實測（[env-findings 3.2](../env-findings.md)）：沒寫 `timeouts` 的路由**沒有** route timeout（Cilium 產生 `max_stream_duration: 0s`，Envoy 因此不採用 15 秒預設值），SSE 連續 100 秒未被切斷；寫了 `timeouts.request: 30s` 則 30 秒被切斷（`flags=UT`）；stream idle 300 秒在 config dump 已確認、實際切斷行為待測 | [4.3](04-step-mechanisms.md#43-閒置斷線小實驗) |
 | `preStop` 秒數、關機寬限時間 | 實際需要等多久；入口多快停止送流量給終止中的 Pod | [4.5](04-step-mechanisms.md#45-步驟-1prestop)、[4.6](04-step-mechanisms.md#46-步驟-2graceful-shutdown) |
 | readinessProbe | 要不要加進修正步驟 | [4.9](04-step-mechanisms.md#49-readinessprobe待實測) |
 | 各步驟的成績單 | 預期效果是否成立；講義的範例數字換成實測結果 | [4](04-step-mechanisms.md)、[5](05-measurement.md) |
@@ -70,7 +70,7 @@ YAML 不寫死 IP，`measure.sh` 會自動查 Gateway 的 IP。
 | Rush Hour 預設負載 | 每秒 20 張是否足以看出差異，又不會把系統壓垮 | [5.2](05-measurement.md#52-rush-hour-的角色) |
 | 對照組 | 不升級時是否真的 0 失敗；步驟 0 是否量得到問題 | [5.1](05-measurement.md#51-每次都量同一個方向) |
 | 入口停止送流量的延遲 | 「開始終止 → 入口不再送流量」要多久、每次差多少 | [5.4](05-measurement.md#54-因果時間線) |
-| 時間線的資料來源 | 已查（[env-findings](../env-findings.md)，依原始碼，待 koupa Gateway 建立後確認）：access log 用 `CiliumGatewayClassConfig` 開，輸出到各節點 `cilium-envoy` 的 stdout；admin 是 unix socket，用 `cilium-dbg envoy admin` 取得；入口預設不重試，HTTPRoute 不寫 `retry` 即可；Hubble 預設只開 agent 內建的 server，沒有 Relay 和主機 CLI，要進 agent Pod 執行。待確認：叢集當時不存在，所有項目都還沒用即時設定核對 | [5.4](05-measurement.md#54-因果時間線) |
+| 時間線的資料來源 | 已在 tkha 實測（[env-findings](../env-findings.md)）：access log 用 `CiliumGatewayClassConfig` 開，但只能掛在專屬 GatewayClass 的 `parametersRef`（Gateway 層級不支援），輸出到各節點 `cilium-envoy` 的 stdout，只有收到請求的節點有 log；admin 是 unix socket，用 `cilium-dbg envoy admin` 取得（容器內無 curl）；入口預設不重試，HTTPRoute 不寫 `retry` 即可，寫 `retry.attempts: N` 則最多 N+1 次上游嘗試；Hubble 在 agent Pod 內可用（`/usr/bin/hubble`，看得到 Gateway 的 HTTP 請求與耗時，但沒有上游位址和嘗試次數），沒有 Relay 和主機 CLI。待確認：stream idle 實際切斷行為、terminating 端點在 Envoy 的處理（calibrate） | [5.4](05-measurement.md#54-因果時間線) |
 | 主機資源 | 預設負載下主機會不會成為瓶頸 | [5.3](05-measurement.md#53-成績單的定義) |
 | 送單時段 | 預設 60 秒、第 10 秒觸發變更，是否容納得下 rollout | [5.1](05-measurement.md#51-每次都量同一個方向) |
 | 主機資源門檻、`preStop` 緩衝秒數 | 排程延遲和 CPU 多高算「主機資源吃緊」；校正值要加多少緩衝 | [5.3](05-measurement.md#53-成績單的定義)、[5.4](05-measurement.md#54-因果時間線) |
@@ -133,8 +133,8 @@ YAML 不寫死 IP，`measure.sh` 會自動查 Gateway 的 IP。
 | `preStop` 執行完才送 SIGTERM；刪除 Pod 後，端點更新和 kubelet 關機各自進行 | 規範 | [Pod 生命週期：Pod 的終止](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-termination) | — |
 | 終止中的 Pod 在 EndpointSlice 標成 `terminating`，`ready` 變成 false | 規範 | [Pod 終止與 EndpointSlice](https://kubernetes.io/docs/tutorials/services/pods-and-endpoint-termination-flow/) | — |
 | `deletionTimestamp` 是預計刪除的時間 | 規範 | [ObjectMeta](https://pkg.go.dev/k8s.io/apimachinery/pkg/apis/meta/v1#ObjectMeta) | — |
-| 入口多久才停止送流量給終止中的 Pod | 環境實測 | `measure.sh calibrate`（5.4） | Cilium 1.20.4、Envoy 1.39.5（tk8s `versions.yaml` 固定的版本；叢集實際版本待確認，見 [env-findings 1](../env-findings.md)） |
-| 入口的逾時和重試設定 | 環境實測 | tk8s 上 Envoy 的即時設定；`cilium-dbg envoy admin config`（[env-findings 2.1、3](../env-findings.md)） | 目前只有 Cilium 1.20.4 原始碼的推論（預設不重試；route timeout 15 秒；stream idle 300 秒），即時 config dump 待確認（4.3） |
+| 入口多久才停止送流量給終止中的 Pod | 環境實測 | `measure.sh calibrate`（5.4） | Cilium 1.20.4、Envoy 1.39.5（已在 tkha 實測，Kubernetes 1.37.2、CRI-O 1.37.2、Gateway API v1.6.3，見 [env-findings 1.4](../env-findings.md)） |
+| 入口的逾時和重試設定 | 環境實測 | tk8s 上 Envoy 的即時設定；`cilium-dbg envoy admin config`（[env-findings 2.1、3](../env-findings.md)） | 已用 tkha 即時 config dump 實測：預設不重試；沒寫 `timeouts` 時**沒有** route timeout（不是 15 秒）；stream idle 300 秒（config 已確認，切斷行為待測）；`retry.attempts: N` 是 N 次重試（見 [env-findings 3](../env-findings.md)）；4.3 要依此修正 |
 | `Shutdown` 先關 listener，再等進行中的請求；`RegisterOnShutdown` 在關機開始時執行 | 規範 | [Go `net/http` Server.Shutdown](https://pkg.go.dev/net/http#Server.Shutdown) | 以實作使用的 Go 版本為準 |
 | 沒有 `data:` 行的 SSE 事件不會觸發；重連時帶上 `Last-Event-ID`；`retry:` 設定重連間隔 | 規範 | [WHATWG Server-sent events](https://html.spec.whatwg.org/multipage/server-sent-events.html) | 用實際瀏覽器驗證（5.6） |
 | `NOTIFY` 在交易提交後才送出；`LISTEN` 生效前的通知收不到 | 規範 | [PostgreSQL NOTIFY](https://www.postgresql.org/docs/current/sql-notify.html)、[LISTEN](https://www.postgresql.org/docs/current/sql-listen.html) | 以 CNPG 使用的 PostgreSQL 版本為準 |
