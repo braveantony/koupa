@@ -38,8 +38,8 @@ type Config struct {
 	TestHooks        bool
 	// SSEFillerBytes (TEST_SSE_FILLER_BYTES) makes each heartbeat one
 	// comment line of this many bytes, so a board that stops reading fills
-	// the socket buffers quickly (plan A12 timing 5). Used only with
-	// TestHooks; 0 means the normal ": hb" line.
+	// the socket buffers quickly (plan A12 timing 5). Read only with
+	// TestHooks (otherwise 0); 0 means the normal ": hb" line.
 	SSEFillerBytes int
 	TestMutation     Mutation
 	ListenAddr       string // LISTEN_ADDR, default ":8080"
@@ -108,7 +108,9 @@ func Load(getenv func(string) string) (Config, error) {
 		cfg.HooksAddr = ":9090"
 	}
 
-	if v := getenv("TEST_SSE_FILLER_BYTES"); v != "" {
+	// Test-only: read (and validated) only with TEST_HOOKS, so a stray
+	// value can never stop a normal start.
+	if v := getenv("TEST_SSE_FILLER_BYTES"); v != "" && cfg.TestHooks {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 0 || (n > 0 && n < 4) || n > 1<<20 {
 			errs = append(errs, fmt.Errorf("TEST_SSE_FILLER_BYTES: %q is not 0 or a byte count from 4 to 1048576", v))

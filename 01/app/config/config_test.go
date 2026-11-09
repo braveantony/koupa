@@ -172,13 +172,26 @@ func TestLoadHooksAddr(t *testing.T) {
 
 func TestLoadFillerBytes(t *testing.T) {
 	withVersion(t, "v1")
-	cfg, err := Load(env(map[string]string{"DATABASE_URL": "u", "TEST_SSE_FILLER_BYTES": "65536"}))
+	cfg, err := Load(env(map[string]string{"DATABASE_URL": "u", "TEST_HOOKS": "1", "TEST_SSE_FILLER_BYTES": "65536"}))
 	if err != nil || cfg.SSEFillerBytes != 65536 {
 		t.Fatalf("got %d, %v", cfg.SSEFillerBytes, err)
 	}
 	for _, bad := range []string{"-1", "2", "x", "2000000"} {
-		if _, err := Load(env(map[string]string{"DATABASE_URL": "u", "TEST_SSE_FILLER_BYTES": bad})); err == nil {
+		if _, err := Load(env(map[string]string{"DATABASE_URL": "u", "TEST_HOOKS": "1", "TEST_SSE_FILLER_BYTES": bad})); err == nil {
 			t.Errorf("TEST_SSE_FILLER_BYTES=%q accepted", bad)
 		}
+	}
+}
+
+// Without TEST_HOOKS the filler setting is ignored, even when invalid.
+func TestFillerBytesIgnoredWithoutHooks(t *testing.T) {
+	withVersion(t, "v1")
+	cfg, err := Load(env(map[string]string{"DATABASE_URL": "u", "TEST_SSE_FILLER_BYTES": "x"}))
+	if err != nil || cfg.SSEFillerBytes != 0 {
+		t.Fatalf("got %d, %v; want 0, nil", cfg.SSEFillerBytes, err)
+	}
+	cfg, err = Load(env(map[string]string{"DATABASE_URL": "u", "TEST_SSE_FILLER_BYTES": "4096"}))
+	if err != nil || cfg.SSEFillerBytes != 0 {
+		t.Fatalf("got %d, %v; want 0 without TEST_HOOKS", cfg.SSEFillerBytes, err)
 	}
 }
