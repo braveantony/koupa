@@ -2,9 +2,9 @@
 # Koupa measurement (plan A8, A13; design 5.1, 5.4).
 #
 #   ./measure.sh <mode> [--runs 5] [--duration 60] [--rate 20] [--verbose] [--diagnostic]
+#   ./measure.sh all [--runs 5] [--dry-run] [...]
 #
-# mode: step-0 .. step-4, control. (calibrate, rollback, drain, scale-down
-# and all come with Task 23.)
+# mode: step-0 .. step-4, control, calibrate, rollback, drain, scale-down, all.
 #
 # One run, every time from step 1 (plan A8):
 #   1. render the step's overlay, set the image to v1, kubectl apply
@@ -21,6 +21,33 @@
 #   7. stop the collectors, complete the evidence pack (scripts/evidence.sh)
 #      in evidence/<run-id>/
 #
+# Other modes (plan A8 table, A11, A15):
+#   calibrate   k8s/calibrate (step 0 + preStop 20 s, grace 45 s); a
+#               `rush-hour probe` (50/s, new connection each) runs beside the
+#               load from before sending until the old Pods are gone; after
+#               each run `rush-hour calibrate` estimates every terminated Pod
+#               (calib.Estimate). Runs repeat until 5 valid samples or
+#               --runs; samples and candidate in evidence/calibrate-<time>/.
+#   rollback    step-4 settings applied with v2; the change sets v1.
+#   drain       step-4; before the run the Pods must be spread one per worker
+#               and scripts/drain-target.sh picks the worker (A15 checks, or
+#               the run stops); the change is `kubectl drain W
+#               --ignore-daemonsets` (never --delete-emptydir-data), complete
+#               when it returns before D - 10 s. Afterwards: uncordon, the
+#               node must be schedulable, 3 available Pods, then rebalance
+#               (delete a Pod on a crowded worker, re-check; at most
+#               MEASURE_REBALANCE_ATTEMPTS=5 times, else stop and report).
+#   scale-down  step-4; the change scales to 2 replicas; afterwards back to 3,
+#               all available.
+#   all         rounds (--runs, default 5) of control, step-0 .. step-4, one
+#               run each (measure.sh MODE --runs 1); --dry-run prints the
+#               sequence only. The step-0 gate is judged over all rounds.
+#
+# Host-side rush-hour (timeline collector, calibrate analysis): built from
+# the working tree at start (scripts/go build -o bin/rush-hour); its sha256
+# and the git commit (+ dirty flag) go into every run's tooling.json. A
+# failed build stops measure.sh: no stale binary is ever used.
+#
 # A13 gate: control must be 0 failures, 0 missed calls, 0 duplicates with no
 # unknown and not invalid; step-0 must observe at least one predefined
 # problem over its runs. Otherwise exit 3, unless --diagnostic: then the
@@ -28,13 +55,21 @@
 # 「診斷模式：對照組不成立，不可用於比較」. With --diagnostic on step-1..4 (a
 # comparison continued after a failed control) every scorecard gets it too.
 #
-# Exit: 0 ok; 1 a step failed or timed out (run marked invalid, stopped);
-# 2 at least one run invalid; 3 the A13 gate failed; 64 usage.
+# Interruption (EXIT, INT, TERM): rush-hour, the probe and the collectors
+# are stopped, a drained worker is uncordoned and a scaled Deployment set
+# back to 3 replicas (both confirmed), the run is marked invalid.
+#
+# Exit: 0 ok; 1 a step failed or timed out (run marked invalid, stopped), or
+# the cluster could not be restored; 2 at least one run invalid, or
+# calibrate ended with fewer than 5 valid samples; 3 the A13 gate failed;
+# 64 usage.
 #
 # Environment: RUSH_HOUR_IMAGE (default ghcr.io/braveantony/rush-hour:0.1.0);
 # RUSH_HOUR_BIN=<path> runs a local rush-hour binary instead of podman (tests,
 # development); MEASURE_EVIDENCE_DIR (default ./evidence); COLLECT_TIMELINE
-# (default scripts/collect-timeline.sh); KUBECTL; KOUPA_NS.
+# (default scripts/collect-timeline.sh); KUBECTL; KOUPA_NS;
+# MEASURE_HOST_RUSH_HOUR (default ./bin/rush-hour) and MEASURE_GO (default
+# scripts/go): where the host-side rush-hour is built and with what.
 set -uo pipefail
 stage=$(cd "$(dirname "$0")" && pwd)
 NS=${KOUPA_NS:-koupa}
@@ -51,9 +86,15 @@ APPLY_ROLLOUT_TIMEOUT_S=300
 OLD_PODS_TIMEOUT_S=180
 SENDING_TIMEOUT_S=90
 APP_START_TIMEOUT_S=${MEASURE_APP_START_TIMEOUT_S:-60}
+RESTORE_TIMEOUT_S=${MEASURE_RESTORE_TIMEOUT_S:-240}
+REBALANCE_ATTEMPTS=${MEASURE_REBALANCE_ATTEMPTS:-5}
+CALIB_MIN_VALID=5 # plan A11 step 6
+STEP1_BUFFER_S=5  # provisional buffer on top of the calibrated candidate
+HOST_RH=${MEASURE_HOST_RUSH_HOUR:-$stage/bin/rush-hour}
+GO=${MEASURE_GO:-$stage/scripts/go}
 
 usage() {
-	sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//' >&2
+	sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//' >&2
 	exit 64
 }
 log() { printf '[measure %s] %s\n' "$(date +%H:%M:%S)" "$*"; }
@@ -84,7 +125,7 @@ sleep_until() {
 # ---------------------------------------------------------------- arguments
 mode=${1:-}
 [ $# -ge 1 ] && shift
-runs=5 duration=60 rate=20 verbose=0 diagnostic=0
+runs=5 duration=60 rate=20 verbose=0 diagnostic=0 dry_run=0
 while [ $# -gt 0 ]; do
 	case $1 in
 	--runs) [ $# -ge 2 ] || usage; runs=$2; shift 2 ;;
@@ -92,21 +133,41 @@ while [ $# -gt 0 ]; do
 	--rate) [ $# -ge 2 ] || usage; rate=$2; shift 2 ;;
 	--verbose) verbose=1; shift ;;
 	--diagnostic) diagnostic=1; shift ;;
+	--dry-run) dry_run=1; shift ;;
 	-h | --help) usage ;;
 	*) warn "unknown argument: $1"; usage ;;
 	esac
 done
+# overlay: the settings applied (also preflight's step); change: what step 5
+# does (image: set image img_after; none; drain; scale).
+img_before=$IMG_V1 img_after=$IMG_V2 change=image overlay=$mode
 case $mode in
-step-0 | control) overlay_dir=$stage/k8s/base ;;
+step-0) overlay_dir=$stage/k8s/base ;;
+control) overlay_dir=$stage/k8s/base img_after="" change=none ;;
 step-[1-4]) overlay_dir=$stage/k8s/steps/$mode ;;
-calibrate | rollback | drain | scale-down | all)
-	warn "mode $mode is not implemented yet (Task 23)"
-	exit 64 ;;
+calibrate) overlay_dir=$stage/k8s/calibrate ;;
+rollback) overlay=step-4 overlay_dir=$stage/k8s/steps/step-4 img_before=$IMG_V2 img_after=$IMG_V1 ;;
+drain) overlay=step-4 overlay_dir=$stage/k8s/steps/step-4 img_after="" change=drain ;;
+scale-down) overlay=step-4 overlay_dir=$stage/k8s/steps/step-4 img_after="" change=scale ;;
+all) overlay="" overlay_dir="" ;;
 *) usage ;;
 esac
+[ "$dry_run" = 0 ] || [ "$mode" = all ] || { warn "--dry-run is only for all"; exit 64; }
 [[ $runs =~ ^[1-9][0-9]*$ ]] || { warn "--runs must be a positive integer"; exit 64; }
 [[ $duration =~ ^[0-9]+$ ]] && [ "$duration" -ge 30 ] || { warn "--duration must be whole seconds, at least 30 (plan A8)"; exit 64; }
 [[ $rate =~ ^[0-9]+([.][0-9]+)?$ ]] || { warn "--rate must be a positive number"; exit 64; }
+
+ALL_SEQUENCE=(control step-0 step-1 step-2 step-3 step-4)
+all_opts=(--duration "$duration" --rate "$rate")
+[ "$verbose" = 1 ] && all_opts+=(--verbose)
+[ "$diagnostic" = 1 ] && all_opts+=(--diagnostic)
+if [ "$mode" = all ] && [ "$dry_run" = 1 ]; then
+	echo "all: $runs round(s) of ${ALL_SEQUENCE[*]} (plan A8), one run each:"
+	for r in $(seq 1 "$runs"); do
+		for m in "${ALL_SEQUENCE[@]}"; do echo "round $r: measure.sh $m --runs 1 ${all_opts[*]}"; done
+	done
+	exit 0
+fi
 
 if [ -n "${RUSH_HOUR_BIN:-}" ]; then
 	rh_kind=bin rh_ref=$RUSH_HOUR_BIN
@@ -131,6 +192,42 @@ if [ -n "$leftover" ]; then
 	warn "leftovers of an earlier measurement: $leftover"
 	exit 1
 fi
+
+# ---------------------------------------------------------------- host rush-hour
+# Build the host-side rush-hour from the working tree, so the collectors
+# and the calibrate analysis never run a stale binary; record what ran.
+# Under `all` the parent builds once and the children reuse its record
+# (MEASURE_TOOLING_FILE) after checking the binary's sha256.
+sha_of() { sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
+tooling="" own_tooling=0 all_child=""
+if [ -n "${MEASURE_TOOLING_FILE:-}" ] && [ -f "$MEASURE_TOOLING_FILE" ] &&
+	[ "$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["host_rush_hour"]["sha256"])' "$MEASURE_TOOLING_FILE" 2>/dev/null)" = "$(sha_of "$HOST_RH")" ]; then
+	tooling=$MEASURE_TOOLING_FILE
+else
+	mkdir -p "$(dirname "$HOST_RH")"
+	build_log=$EVIDENCE/.build-rush-hour-$$.log
+	log "building the host-side rush-hour from the working tree ($HOST_RH)"
+	if ! (cd "$stage" && CGO_ENABLED=0 "$GO" build -o "$HOST_RH" ./rush-hour) >"$build_log" 2>&1; then
+		sed 's/^/  /' "$build_log" | tail -20 >&2
+		warn "cannot build the host-side rush-hour (go build ./rush-hour failed, see $build_log): not measuring with a stale binary"
+		exit 1
+	fi
+	rm -f "$build_log"
+	tooling=$EVIDENCE/.tooling-$$.json own_tooling=1
+	head=$(git -C "$stage" rev-parse HEAD 2>/dev/null || echo unknown)
+	dirty_n=$(git -C "$stage" status --porcelain 2>/dev/null | wc -l)
+	python3 -I - "$tooling" "$HOST_RH" "$(sha_of "$HOST_RH")" "$head" "$dirty_n" "$GO" <<'PY'
+import datetime, json, sys
+out, path, sha, head, dirty_n, go = sys.argv[1:]
+json.dump({"host_rush_hour": {"path": path, "sha256": sha,
+                              "built_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                              "build": "cd 01 && CGO_ENABLED=0 %s build -o %s ./rush-hour" % (go, path)},
+           "git": {"head": head, "dirty": int(dirty_n) > 0, "dirty_files": int(dirty_n)}},
+          open(out, "w"), indent=2)
+PY
+fi
+# collect-timeline.sh uses this binary and does not build its own.
+export RUSH_HOUR=$HOST_RH
 
 # rush_hour [--exec] [--name NAME] MOUNT_DIR ARGS...: run rush-hour (the
 # identified artifact: RUSH_HOUR_BIN, or the image by its recorded ID) with
@@ -159,13 +256,15 @@ scorecard_py() { python3 -I "$stage/scripts/lib/scorecard.py" "$@"; }
 
 # ---------------------------------------------------------------- one run
 cur_id="" cur_dir="" rh_pid="" cov_pid="" collecting=0 rh_image_id=""
+probe_pid="" drain_pid="" drained="" scaled=0 drain_target="" restore_failed=""
 
 write_params() {
 	python3 -I - "$cur_dir/params.json" <<PY
 import json, sys
 json.dump({
-    "run_id": "$cur_id", "mode": "$mode", "overlay": "$mode", "run_number": $1, "runs": $runs,
-    "image_before": "$IMG_V1", "image_after": $( [ "$mode" = control ] && echo None || echo "\"$IMG_V2\"" ),
+    "run_id": "$cur_id", "mode": "$mode", "overlay": "$overlay", "run_number": $1, "runs": $runs,
+    "image_before": "$img_before", "image_after": "$img_after" or None,
+    "change": "$change", "drain_target": "${drain_target:-}" or None, "probe": "$mode" == "calibrate",
     "duration_s": $duration, "change_at_s": $CHANGE_AT_S, "rollout_deadline_s": $((duration - ROLLOUT_MARGIN_S)),
     "rate": $rate, "boards": 3, "retries": 1, "tx_timeout": "60s", "verbose": bool($verbose),
     "diagnostic": bool($diagnostic), "base_url": "${base_url:-}", "namespace": "$NS",
@@ -210,6 +309,172 @@ stop_coverage() {
 	return 0
 }
 
+stop_probe() {
+	[ -n "$probe_pid" ] || return 0
+	if kill -0 "$probe_pid" 2>/dev/null; then
+		kill -TERM "$probe_pid" 2>/dev/null
+		local i
+		for i in $(seq 1 100); do
+			kill -0 "$probe_pid" 2>/dev/null || break
+			sleep 0.1
+		done
+		kill -KILL "$probe_pid" 2>/dev/null
+	fi
+	wait "$probe_pid" 2>/dev/null
+	probe_pid=""
+	[ "$rh_kind" = image ] && podman rm -f -t 5 "rush-hour-$cur_id-probe" >/dev/null 2>&1
+	return 0
+}
+
+stop_drain_cmd() {
+	[ -n "$drain_pid" ] || return 0
+	kill -TERM "$drain_pid" 2>/dev/null
+	wait "$drain_pid" 2>/dev/null
+	drain_pid=""
+}
+
+# distribution OUT: writes {"workers": {node: n}, "balanced", "crowded",
+# "unschedulable"} for the current koupa Pods (not terminating) against the
+# workers (no control-plane role); balanced = every worker has exactly one
+# and their number is spec.replicas.
+distribution() {
+	local out=$1 tmp
+	tmp=$(mktemp -d)
+	"$KUBECTL" get nodes -o json >"$tmp/nodes.json" 2>/dev/null
+	"$KUBECTL" -n "$NS" get pods -l app.kubernetes.io/name=koupa -o json >"$tmp/pods.json" 2>/dev/null
+	"$KUBECTL" -n "$NS" get deploy koupa -o json >"$tmp/deploy.json" 2>/dev/null
+	python3 -I - "$tmp" "$out" <<'PY'
+import json, os, sys
+tmp, out = sys.argv[1:]
+def load(n):
+    try:
+        return json.load(open(os.path.join(tmp, n)))
+    except (OSError, ValueError):
+        return None
+nodes, pods, dep = load("nodes.json"), load("pods.json"), load("deploy.json")
+res = {"workers": {}, "balanced": False, "crowded": None, "unschedulable": [], "pending": 0, "error": None}
+if not (nodes and pods and dep):
+    res["error"] = "cannot read nodes, Pods or the Deployment"
+else:
+    ws = sorted(n["metadata"]["name"] for n in nodes["items"]
+                if "node-role.kubernetes.io/control-plane" not in n["metadata"].get("labels", {}))
+    res["unschedulable"] = sorted(n["metadata"]["name"] for n in nodes["items"] if n.get("spec", {}).get("unschedulable"))
+    c = {w: [] for w in ws}
+    for p in pods["items"]:
+        if p["metadata"].get("deletionTimestamp"):
+            continue
+        n = p.get("spec", {}).get("nodeName")
+        if not n:
+            res["pending"] += 1
+            continue
+        c.setdefault(n, []).append(p["metadata"]["name"])
+    res["workers"] = {w: len(v) for w, v in sorted(c.items())}
+    want = dep["spec"].get("replicas", 1)
+    res["balanced"] = (len(ws) == want and all(len(c.get(w, [])) == 1 for w in ws)
+                       and sum(len(v) for v in c.values()) == want and not res["pending"])
+    crowded = [sorted(v)[-1] for w, v in sorted(c.items()) if len(v) > 1]
+    res["crowded"] = crowded[0] if crowded else None
+json.dump(res, open(out, "w"), indent=2)
+sys.exit(0 if res["balanced"] else 1)
+PY
+	local rc=$?
+	rm -rf "$tmp"
+	return "$rc"
+}
+
+# wait_available N: the Deployment is done with N available Pods and no
+# koupa Pod is terminating, within RESTORE_TIMEOUT_S.
+wait_available() {
+	local n=$1 deadline=$(($(now_ns) + RESTORE_TIMEOUT_S * 1000000000))
+	while :; do
+		if [ "$(deploy_status)" = done ] &&
+			"$KUBECTL" -n "$NS" get deploy koupa -o json 2>/dev/null | python3 -I -c '
+import json, sys
+d = json.load(sys.stdin)
+sys.exit(0 if d["spec"].get("replicas") == int(sys.argv[1]) and d.get("status", {}).get("availableReplicas") == int(sys.argv[1]) else 1)' "$n" &&
+			old_pods_gone; then
+			return 0
+		fi
+		[ "$(now_ns)" -lt "$deadline" ] || return 1
+		sleep 1
+	done
+}
+
+# rebalance OUT: delete a Pod on a crowded worker until the Pods are spread
+# one per worker (A15: never assume one delete is enough); at most
+# REBALANCE_ATTEMPTS deletions. OUT gets the last distribution. 0 balanced.
+rebalance_attempts=0
+rebalance() {
+	local out=$1 i pod
+	rebalance_attempts=0
+	for i in $(seq 0 "$REBALANCE_ATTEMPTS"); do
+		distribution "$out" && return 0
+		[ "$i" -lt "$REBALANCE_ATTEMPTS" ] || break
+		pod=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["crowded"] or "")' "$out")
+		if [ -z "$pod" ]; then
+			# Not crowded but not balanced (a Pod pending, a worker cordoned):
+			# wait for the Deployment instead of deleting.
+			wait_available 3 || true
+			continue
+		fi
+		rebalance_attempts=$((rebalance_attempts + 1))
+		log "rebalance: deleting $pod (on a worker with more than one koupa Pod)"
+		bg_wait "$KUBECTL" -n "$NS" delete pod "$pod" >>"$cur_dir/measure.log" 2>&1
+		wait_available 3 || true
+	done
+	return 1
+}
+
+# restore_cluster: undo the change of a drain or scale-down run and confirm
+# it (A15): uncordon + node schedulable + 3 available (+ rebalance when
+# REBALANCE=1), or scale back to 3 + 3 available. Writes restore.json;
+# returns 1 when the cluster is not back.
+restore_cluster() {
+	local rebal=${1:-0} actions=() ok=1 why="" node=$drained
+	[ -n "$drained" ] || [ "$scaled" = 1 ] || return 0
+	if [ -n "$drained" ]; then
+		stop_drain_cmd
+		log "uncordon $drained"
+		"$KUBECTL" uncordon "$drained" >>"$cur_dir/measure.log" 2>&1 || { ok=0; why="kubectl uncordon $drained 失敗"; }
+		actions+=("uncordon $drained")
+		drained=""
+	fi
+	if [ "$scaled" = 1 ]; then
+		log "scale deploy/koupa back to 3 replicas"
+		"$KUBECTL" -n "$NS" scale deploy/koupa --replicas=3 >>"$cur_dir/measure.log" 2>&1 || { ok=0; why="kubectl scale --replicas=3 失敗"; }
+		actions+=("scale deploy/koupa --replicas=3")
+		scaled=0
+	fi
+	if [ "$ok" = 1 ] && ! wait_available 3; then
+		ok=0 why="Deployment 在 ${RESTORE_TIMEOUT_S} 秒內沒有回到 3 個可用 Pod（$(deploy_status)）"
+	fi
+	distribution "$cur_dir/.dist.json"
+	if [ "$ok" = 1 ] && [ -n "$node" ] && python3 -I -c 'import json,sys; sys.exit(0 if sys.argv[2] in json.load(open(sys.argv[1]))["unschedulable"] else 1)' "$cur_dir/.dist.json" "$node"; then
+		ok=0 why="$node 仍然不可排程"
+	fi
+	if [ "$ok" = 1 ] && [ "$rebal" = 1 ] && ! rebalance "$cur_dir/.dist.json"; then
+		ok=0 why="重新平衡 $rebalance_attempts 次後，koupa Pod 仍然沒有每個 worker 剛好一個（$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["workers"])' "$cur_dir/.dist.json")）"
+	fi
+	python3 -I - "$cur_dir/restore.json" "$cur_dir/.dist.json" "$ok" "$why" "$rebalance_attempts" "$(printf '%s\n' "${actions[@]}")" <<'PY'
+import datetime, json, sys
+out, dist, ok, why, att, actions = sys.argv[1:]
+d = json.load(open(dist))
+json.dump({"at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "ok": ok == "1",
+           "reason": why or None, "actions": [a for a in actions.split("\n") if a],
+           "replicas": sum(d["workers"].values()), "distribution": d["workers"],
+           "unschedulable": d["unschedulable"], "rebalance_deletions": int(att)},
+          open(out, "w"), indent=2, ensure_ascii=False)
+PY
+	rm -f "$cur_dir/.dist.json"
+	if [ "$ok" = 1 ]; then
+		log "cluster restored: $(printf '%s; ' "${actions[@]}")3 Pods available"
+		return 0
+	fi
+	warn "cluster not restored: $why"
+	restore_failed=$why
+	return 1
+}
+
 stop_collect() {
 	[ "$collecting" = 1 ] || return 0
 	collecting=0
@@ -220,9 +485,10 @@ stop_collect() {
 }
 
 # record_left SIGNAL: write interrupted.json, the cluster state this run
-# leaves behind, and print it. measure.sh does not touch the cluster after
-# an interruption: a rollout in progress is finished by the Deployment
-# controller, and the next run starts from A8 step 1 (apply, image v1).
+# leaves behind, and print it. After an interruption measure.sh only undoes
+# a drain or scale-down (restore_cluster, recorded as "restored"); a
+# rollout in progress is finished by the Deployment controller, and the
+# next run starts from A8 step 1 (apply, image as the mode wants).
 record_left() {
 	"$KUBECTL" -n "$NS" get deploy koupa -o json >"$cur_dir/.deploy-left.json" 2>/dev/null || : >"$cur_dir/.deploy-left.json"
 	"$KUBECTL" -n "$NS" get pods -l app.kubernetes.io/name=koupa -o json >"$cur_dir/.pods-left.json" 2>/dev/null || : >"$cur_dir/.pods-left.json"
@@ -235,6 +501,7 @@ def load(name):
     except (OSError, ValueError):
         return None
 dep, pods = load(".deploy-left.json"), load(".pods-left.json")
+restored = load("restore.json")
 c = {"image": None, "generation": None, "observed_generation": None, "rollout": status, "pods": []}
 if dep:
     cs = dep["spec"]["template"]["spec"].get("containers", [])
@@ -246,10 +513,10 @@ for p in (pods or {}).get("items", []):
     c["pods"].append({"name": p["metadata"].get("name"), "phase": p.get("status", {}).get("phase"),
                       "terminating": bool(p["metadata"].get("deletionTimestamp")),
                       "image": st.get("image"), "ready": st.get("ready")})
-out = {"signal": sig, "mode": mode, "cluster": c,
-       "note": "measure.sh changed nothing after the interruption; a rollout in progress is "
-               "finished by the Deployment controller; the next measure.sh run applies the "
-               "overlay with image v1 again (A8 step 1)."}
+out = {"signal": sig, "mode": mode, "cluster": c, "restored": restored,
+       "note": "after the interruption measure.sh only undid a drain or scale-down (restored: "
+               "null when there was none); a rollout in progress is finished by the Deployment "
+               "controller; the next measure.sh run applies the overlay again (A8 step 1)."}
 json.dump(out, open(os.path.join(d, "interrupted.json"), "w"), indent=2, ensure_ascii=False)
 print("cluster left: Deployment koupa image %s, rollout %s, %d Pod(s)" % (c["image"], status, len(c["pods"])))
 PY
@@ -269,13 +536,23 @@ on_signal() {
 on_exit() {
 	local rc=$?
 	trap '' INT TERM
+	[ "$own_tooling" = 1 ] && rm -f "$tooling"
+	if [ -n "$all_child" ]; then
+		kill -TERM "$all_child" 2>/dev/null
+		wait "$all_child" 2>/dev/null
+	fi
 	[ "$in_run" = 1 ] || exit "$rc"
 	in_run=0
 	local sig=${interrupted_sig:-EXIT}
 	warn "the run $cur_id did not finish: stopping rush-hour and the collectors"
 	[ -n "$fg_pid" ] && kill "$fg_pid" 2>/dev/null
 	stop_rush_hour
+	stop_probe
 	stop_coverage
+	if [ -n "$drained" ] || [ "$scaled" = 1 ]; then
+		warn "undoing the change of this $mode run (A15)"
+		restore_cluster 0
+	fi
 	stop_collect
 	if [ -n "$cur_dir" ] && [ -d "$cur_dir" ]; then
 		local why="量測被中斷（measure.sh 收到 SIG$sig）"
@@ -303,7 +580,9 @@ abort_run() {
 	local why=$1
 	warn "本次量測無效：$why"
 	stop_rush_hour
+	stop_probe
 	stop_coverage
+	restore_cluster 0 || why="$why；$restore_failed"
 	stop_collect || why="$why；時間線收集停止失敗"
 	set -- "$why"
 	[ -f "$cur_dir/rollout.json" ] || echo '{"completed": null, "note": "the run stopped before the change"}' >"$cur_dir/rollout.json"
@@ -348,6 +627,8 @@ measure_one() {
 	cur_dir=$EVIDENCE/$cur_id
 	base_url=""
 	mkdir -p "$cur_dir/manifest"
+	cp "$tooling" "$cur_dir/tooling.json"
+	drain_target=""
 	in_run=1
 	run_dirs+=("$cur_dir")
 	log "run $n/$runs: $cur_id"
@@ -372,6 +653,8 @@ json.dump({"resolved_at": now, "how": "skopeo inspect --format {{.Digest}} docke
            "rush_hour": {"kind": kind, "ref": ref, "image_id": iid or None}},
           open(out, "w"), indent=2)
 PY
+	local before_digest=$v1_digest after_digest=$v2_digest
+	[ "$img_before" = "$IMG_V2" ] && before_digest=$v2_digest after_digest=$v1_digest
 	write_params "$n"
 	[ -n "$v1_digest" ] && [ -n "$v2_digest" ] ||
 		abort_run "無法從 registry 解析 koupa 映像檔 digest（$(head -c 200 "$err" | tr '\n' ' ')）"
@@ -379,18 +662,26 @@ PY
 		abort_run "找不到本機 rush-hour 映像檔 $RUSH_HOUR_IMAGE"
 	rm -f "$err"
 
-	# 1. render, image v1, apply.
+	# 1. render, image as the mode starts (v1; rollback: v2), apply.
 	if ! "$KUBECTL" kustomize "$overlay_dir" >"$cur_dir/manifest/rendered.yaml" 2>>"$cur_dir/measure.log"; then
 		abort_run "kubectl kustomize $overlay_dir 失敗"
 	fi
-	sed "s#ghcr.io/braveantony/koupa:v[0-9][0-9]*#$IMG_V1#" "$cur_dir/manifest/rendered.yaml" >"$cur_dir/manifest/applied.yaml"
+	sed "s#ghcr.io/braveantony/koupa:v[0-9][0-9]*#$img_before#" "$cur_dir/manifest/rendered.yaml" >"$cur_dir/manifest/applied.yaml"
 	rm -f "$cur_dir/manifest/rendered.yaml"
+	if [ "$mode" = calibrate ]; then
+		calib_prestop=$(python3 -I -c '
+import sys, yaml
+d = [x for x in yaml.safe_load_all(open(sys.argv[1])) if x and x.get("kind") == "Deployment"][0]
+c = [c for c in d["spec"]["template"]["spec"]["containers"] if c["name"] == "koupa"][0]
+print(c["lifecycle"]["preStop"]["sleep"]["seconds"])' "$cur_dir/manifest/applied.yaml" 2>/dev/null)
+		[[ $calib_prestop =~ ^[0-9]+$ ]] || abort_run "k8s/calibrate 沒有 preStop sleep 秒數"
+	fi
 	if ! "$KUBECTL" apply -f - <"$cur_dir/manifest/applied.yaml" >>"$cur_dir/measure.log" 2>&1; then
 		abort_run "kubectl apply 失敗（見 measure.log）"
 	fi
 
 	# 2. rollout, old Pods gone, preflight.
-	log "waiting for the rollout to v1 ($mode settings)"
+	log "waiting for the rollout to ${img_before##*:} ($overlay settings)"
 	if ! bg_wait "$KUBECTL" -n "$NS" rollout status deploy/koupa --timeout="${APPLY_ROLLOUT_TIMEOUT_S}s" >>"$cur_dir/measure.log" 2>&1; then
 		abort_run "套用 $mode 後 rollout 在 ${APPLY_ROLLOUT_TIMEOUT_S} 秒內沒有完成"
 	fi
@@ -407,11 +698,26 @@ PY
 		fi
 		sleep 1
 	done
-	if ! "$stage/scripts/preflight.sh" "$mode" --image "$IMG_V1" --digest "$v1_digest" >"$cur_dir/preflight.txt" 2>&1; then
+	if ! "$stage/scripts/preflight.sh" "$overlay" --image "$img_before" --digest "$before_digest" >"$cur_dir/preflight.txt" 2>&1; then
 		sed 's/^/  /' "$cur_dir/preflight.txt" >&2
 		abort_run "量測前核對不符：$(grep '^FAIL' "$cur_dir/preflight.txt" | sed 's/^FAIL \([a-z-]*\):.*/\1/' | paste -sd, -)"
 	fi
 	log "preflight: all 7 checks passed"
+
+	# drain (A15): one koupa Pod per worker before the run (rebalance if
+	# not), then a target worker that passes the checks, or stop.
+	if [ "$change" = drain ]; then
+		if ! rebalance "$cur_dir/distribution-before.json"; then
+			abort_run "drain 前 koupa Pod 不是每個 worker 剛好一個，重新平衡 $rebalance_attempts 次後仍不符合（$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["workers"])' "$cur_dir/distribution-before.json" 2>/dev/null)）"
+		fi
+		[ "$rebalance_attempts" = 0 ] || wait_available 3 || true
+		if ! drain_target=$("$stage/scripts/drain-target.sh" "$cur_dir/drain-target.json" 2>"$cur_dir/drain-target.err"); then
+			drain_target=""
+			sed 's/^/  /' "$cur_dir/drain-target.err" >&2
+			abort_run "drain：沒有符合 A15 條件的 worker（$(grep -v 'no worker satisfies' "$cur_dir/drain-target.err" | sed 's/^drain-target: //' | paste -sd'；' -)），停止"
+		fi
+		log "drain target: $drain_target ($(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["koupa_pods_affected"])' "$cur_dir/drain-target.json") koupa Pod(s) affected)"
+	fi
 
 	# 3. collectors, Gateway IP.
 	if ! "$COLLECT" start "$cur_dir" >>"$cur_dir/measure.log" 2>&1; then
@@ -424,6 +730,16 @@ PY
 	[ -n "$ip" ] || abort_run "Gateway koupa 的 status 沒有 IP"
 	base_url=http://$ip
 	write_params "$n"
+
+	# calibrate: probes (A11 step 2) from before sending until the old Pods
+	# are gone; stopped explicitly (the duration is only a bound).
+	if [ "$mode" = calibrate ]; then
+		log "starting rush-hour probe (50/s, new connection per request)"
+		rush_hour --exec --name "rush-hour-$cur_id-probe" "$cur_dir" probe --base "$base_url" --run "$cur_id" \
+			--duration "$((duration + 600))s" --out "$cur_dir" >"$cur_dir/probe.stdout" 2>"$cur_dir/probe.stderr" &
+		probe_pid=$!
+		sleep 1
+	fi
 
 	# 4. rush-hour; wait for SENDING_STARTED.
 	local args=(run --base "$base_url" --run "$cur_id" --duration "${duration}s" --rate "$rate" --boards 3
@@ -456,56 +772,104 @@ PY
 		# 5. the change.
 		local change_ns=$((t0 + CHANGE_AT_S * 1000000000))
 		local deadline_ns=$((t0 + (duration - ROLLOUT_MARGIN_S) * 1000000000))
-		if [ "$mode" = control ]; then
+		if [ "$change" = none ]; then
 			local gen
 			gen=$("$KUBECTL" -n "$NS" get deploy koupa -o jsonpath='{.metadata.generation}' 2>/dev/null)
 			printf '{"mode": "control", "change": null, "completed": null, "generation_at_start": "%s", "sending_started_at": "%s"}\n' \
 				"$gen" "$(rfc "$t0")" >"$cur_dir/rollout.json"
 		else
 			sleep_until "$change_ns"
-			local at status done_at=""
+			local at status="" done_at="" desc seen drc=""
+			case $change in
+			image) desc="set image $img_after" ;;
+			scale) desc="scale deploy/koupa --replicas=2" ;;
+			drain) desc="drain $drain_target --ignore-daemonsets" ;;
+			esac
 			at=$(now_ns)
-			log "second $CHANGE_AT_S: set image $IMG_V2"
-			if ! "$KUBECTL" -n "$NS" set image deploy/koupa "koupa=$IMG_V2" >>"$cur_dir/measure.log" 2>&1; then
-				rollout_invalid="第 $CHANGE_AT_S 秒 kubectl set image 失敗"
-			else
-				local seen
-				while :; do
-					status=$(deploy_status)
-					# The time the read came back: "done" counts only when
-					# it was observed before D - 10 s.
-					seen=$(now_ns)
-					[ "$seen" -lt "$deadline_ns" ] || break
-					if [ "$status" = done ]; then
-						done_at=$seen
-						break
-					fi
-					sleep 0.5
-				done
-				if [ -z "$done_at" ]; then
-					rollout_invalid="rollout 在第 $((duration - ROLLOUT_MARGIN_S)) 秒（D − $ROLLOUT_MARGIN_S）前沒有完成（$status）"
-				elif ! pods_digest_check "$v2_digest" "$cur_dir/.v2check.json"; then
-					rollout_invalid="rollout 後的 Pod 映像檔 digest 不是 $IMG_V2 的 $v2_digest（$(python3 -I -c 'import json,sys; print("; ".join(json.load(open(sys.argv[1]))["bad"]))' "$cur_dir/.v2check.json" 2>/dev/null)）"
+			log "second $CHANGE_AT_S: $desc"
+			case $change in
+			image | scale)
+				local cmd=(set image deploy/koupa "koupa=$img_after")
+				if [ "$change" = scale ]; then
+					cmd=(scale deploy/koupa --replicas=2)
+					scaled=1 # before the call: an interruption right after it still restores
 				fi
-			fi
+				if ! "$KUBECTL" -n "$NS" "${cmd[@]}" >>"$cur_dir/measure.log" 2>&1; then
+					rollout_invalid="第 $CHANGE_AT_S 秒 kubectl ${cmd[0]} 失敗"
+				else
+					while :; do
+						status=$(deploy_status)
+						# The time the read came back: "done" counts only when
+						# it was observed before D - 10 s.
+						seen=$(now_ns)
+						[ "$seen" -lt "$deadline_ns" ] || break
+						if [ "$status" = done ]; then
+							done_at=$seen
+							break
+						fi
+						sleep 0.5
+					done
+					if [ -z "$done_at" ]; then
+						rollout_invalid="rollout 在第 $((duration - ROLLOUT_MARGIN_S)) 秒（D − $ROLLOUT_MARGIN_S）前沒有完成（$status）"
+					elif [ "$change" = image ] && ! pods_digest_check "$after_digest" "$cur_dir/.v2check.json"; then
+						rollout_invalid="rollout 後的 Pod 映像檔 digest 不是 $img_after 的 $after_digest（$(python3 -I -c 'import json,sys; print("; ".join(json.load(open(sys.argv[1]))["bad"]))' "$cur_dir/.v2check.json" 2>/dev/null)）"
+					fi
+				fi
+				;;
+			drain)
+				# Complete when kubectl drain returns (every Pod evicted and
+				# gone) before D - 10 s. A replacement Pod may stay Pending
+				# while the worker is cordoned (topology spread).
+				drained=$drain_target # before the call: the trap uncordons
+				local left=$(((deadline_ns - at) / 1000000000))
+				[ "$left" -ge 1 ] || left=1
+				"$KUBECTL" drain "$drain_target" --ignore-daemonsets --timeout="${left}s" >"$cur_dir/drain.log" 2>&1 &
+				drain_pid=$!
+				while kill -0 "$drain_pid" 2>/dev/null && [ "$(now_ns)" -lt "$deadline_ns" ]; do sleep 0.2; done
+				if kill -0 "$drain_pid" 2>/dev/null; then
+					stop_drain_cmd
+					status="kubectl drain still running"
+					rollout_invalid="drain 在第 $((duration - ROLLOUT_MARGIN_S)) 秒（D − $ROLLOUT_MARGIN_S）前沒有完成"
+				else
+					wait "$drain_pid"
+					drc=$?
+					drain_pid=""
+					seen=$(now_ns)
+					status=$(deploy_status)
+					cat "$cur_dir/drain.log" >>"$cur_dir/measure.log"
+					if [ "$drc" -ne 0 ]; then
+						# A15: a Pod that needs --delete-emptydir-data (or any
+						# other refusal) stops the measurement.
+						abort_run "kubectl drain $drain_target 失敗（結束狀態 $drc）：$(grep -v '^node/' "$cur_dir/drain.log" | head -3 | tr '\n' ' ')"
+					elif [ "$seen" -lt "$deadline_ns" ]; then
+						done_at=$seen
+					else
+						rollout_invalid="drain 在第 $((duration - ROLLOUT_MARGIN_S)) 秒（D − $ROLLOUT_MARGIN_S）前沒有完成"
+					fi
+				fi
+				;;
+			esac
 			python3 -I - "$cur_dir/rollout.json" "$cur_dir/.v2check.json" <<PY
 import json, sys
-json.dump({"mode": "$mode", "change": "set image $IMG_V2",
+json.dump({"mode": "$mode", "change": "$desc",
     "sending_started_at": "$(rfc "$t0")", "change_at": "$(rfc "$at")",
     "change_offset_s": round(($at - $t0) / 1e9, 3), "deadline_at": "$(rfc "$deadline_ns")",
     "completed": bool("$done_at"),
     "completed_at": "$( [ -n "$done_at" ] && rfc "$done_at")" or None,
     "completed_offset_s": round((${done_at:-0} - $t0) / 1e9, 3) if "$done_at" else None,
     "status_at_deadline": None if "$done_at" else "${status:-}",
+    "deployment_at_completion": "${status:-}" if "$done_at" else None,
+    "drain_exit": int("$drc") if "$drc" else None,
     "invalid_reason": """$rollout_invalid""" or None,
-    "v2_digest_check": json.load(open(sys.argv[2])) if __import__("os").path.exists(sys.argv[2]) else None},
+    "${img_after##*:}_digest_check" if "$img_after" else "digest_check":
+        json.load(open(sys.argv[2])) if __import__("os").path.exists(sys.argv[2]) else None},
     open(sys.argv[1], "w"), indent=2, ensure_ascii=False)
 PY
 			rm -f "$cur_dir/.v2check.json"
 			if [ -n "$rollout_invalid" ]; then
 				warn "$rollout_invalid"
 			else
-				log "rollout complete at second $(awk -v d="$((done_at - t0))" 'BEGIN{printf "%.1f", d/1e9}')"
+				log "$desc complete at second $(awk -v d="$((done_at - t0))" 'BEGIN{printf "%.1f", d/1e9}')"
 			fi
 		fi
 	fi
@@ -519,9 +883,20 @@ PY
 	# A8: a step that failed stops the invocation, whatever rush-hour wrote.
 	[ -n "$t0" ] || abort_run "rush-hour 沒有印出 SENDING_STARTED（結束狀態 $rc，見 rush-hour.stderr）"
 	[ "$rc" -eq 0 ] || abort_run "rush-hour 結束狀態 $rc（見 rush-hour.stderr）"
+	if [ "$mode" = calibrate ]; then
+		# Probe until every terminated Pod is gone (its preStop has ended,
+		# so its U, if any, is behind us), at most OLD_PODS_TIMEOUT_S.
+		local until_ns=$(($(now_ns) + OLD_PODS_TIMEOUT_S * 1000000000))
+		until old_pods_gone || [ "$(now_ns)" -ge "$until_ns" ]; do sleep 1; done
+		stop_probe
+		[ -s "$cur_dir/probes.jsonl" ] || abort_run "rush-hour probe 沒有寫出 probes.jsonl（見 probe.stderr）"
+	fi
 
-	# 7. collectors, evidence.
+	# 7. collectors, cluster restored (drain, scale-down), evidence.
 	stop_collect || abort_run "時間線收集停止失敗（見 measure.log）"
+	if ! restore_cluster 1; then
+		echo "cluster not restored after the run: $restore_failed" >>"$cur_dir/measure.log"
+	fi
 	if [ ! -f "$cur_dir/scorecard.json" ]; then
 		abort_run "rush-hour 沒有寫出成績單（結束狀態 $rc，見 rush-hour.stderr）"
 	elif [ -n "$rollout_invalid" ]; then
@@ -531,6 +906,12 @@ PY
 		scorecard_py "$cur_dir" is-invalid ||
 			scorecard_py "$cur_dir" invalid "證據包不完整（見 evidence-index.txt）"
 	fi
+	if [ "$mode" = calibrate ]; then
+		if ! "$HOST_RH" calibrate --prestop "${calib_prestop}s" --json "$cur_dir/calibrate.json" "$cur_dir" \
+			>"$cur_dir/calibrate.txt" 2>>"$cur_dir/measure.log"; then
+			warn "rush-hour calibrate failed for $cur_id (see measure.log)"
+		fi
+	fi
 	in_run=0
 	if scorecard_py "$cur_dir" is-invalid; then
 		log "run $n/$runs finished: invalid (evidence: $cur_dir)"
@@ -539,17 +920,126 @@ PY
 	fi
 }
 
+# ---------------------------------------------------------------- all
+# run_all: rounds of control, step-0 .. step-4, one run each, by running
+# this script per mode. A step that fails (exit 1) or a control that does
+# not hold (exit 3, without --diagnostic) stops the sequence; the step-0
+# gate is judged here over all its runs.
+run_all() {
+	local list=$EVIDENCE/.all-$started.runs r m rc any=0 stop_rc=""
+	: >"$list"
+	export MEASURE_IN_ALL=1 MEASURE_RUN_LIST=$list MEASURE_TOOLING_FILE=$tooling
+	log "all: $runs round(s) of ${ALL_SEQUENCE[*]}"
+	for r in $(seq 1 "$runs"); do
+		for m in "${ALL_SEQUENCE[@]}"; do
+			log "all: round $r: measure.sh $m --runs 1 ${all_opts[*]}"
+			"$0" "$m" --runs 1 "${all_opts[@]}" &
+			all_child=$!
+			rc=0
+			wait "$all_child" || rc=$?
+			all_child=""
+			case $rc in
+			0) ;;
+			2) any=1 ;;
+			*) stop_rc=$rc; warn "all: round $r $m ended with $rc: stopping the sequence"; break 2 ;;
+			esac
+		done
+	done
+	local d step0=() seen=""
+	mapfile -t run_dirs <"$list"
+	for d in "${run_dirs[@]}"; do
+		case $(basename "$d") in step-0-*) step0+=("$d") ;; esac
+	done
+	if [ -z "$stop_rc" ] && [ "${#step0[@]}" -gt 0 ]; then
+		for d in "${step0[@]}"; do
+			scorecard_py "$d" problem >/dev/null && seen=1
+		done
+		if [ -z "$seen" ]; then
+			warn "對照組不成立：步驟 0 的 ${#step0[@]} 次都沒觀察到預定的問題（送出沒有成功回應、漏號、重複訂單）"
+			[ "$diagnostic" = 1 ] || stop_rc=3
+		fi
+	fi
+	local summary=$EVIDENCE/summary-all-$started.txt
+	{
+		for m in "${ALL_SEQUENCE[@]}"; do
+			local md=()
+			for d in "${run_dirs[@]}"; do case $(basename "$d") in "$m"-2*) md+=("$d") ;; esac; done
+			[ "${#md[@]}" -gt 0 ] || continue
+			echo "==== $m（${#md[@]} 次）"
+			cur_id=summary-all-$started
+			rush_hour "$EVIDENCE" summarize "${md[@]}" 2>&1
+		done
+	} >"$summary"
+	rm -f "$list"
+	echo "================ all 彙整（$summary）"
+	cat "$summary"
+	[ -z "$stop_rc" ] || exit "$stop_rc"
+	[ "$any" = 1 ] && exit 2
+	exit 0
+}
+
+# ---------------------------------------------------------------- calibrate
+# calib_aggregate DIR...: the samples of the valid calibrate runs so far, in
+# evidence/calibrate-<started>/ (samples.txt, candidate.json with the
+# step-1 value = ceil(candidate) + STEP1_BUFFER_S). Prints the valid count.
+calib_aggregate() {
+	local out=$EVIDENCE/calibrate-$started
+	mkdir -p "$out"
+	"$HOST_RH" calibrate --prestop "${calib_prestop}s" --json "$out/.report.json" "$@" >"$out/samples.txt" 2>"$out/calibrate.err" || {
+		warn "rush-hour calibrate failed (see $out/calibrate.err)"
+		echo 0
+		return
+	}
+	[ -s "$out/calibrate.err" ] || rm -f "$out/calibrate.err"
+	python3 -I - "$out/.report.json" "$out/candidate.json" "$STEP1_BUFFER_S" "$CALIB_MIN_VALID" "$@" <<'PY'
+import json, math, os, sys
+src, dst, buf, need, dirs = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), sys.argv[5:]
+r = json.load(open(src))
+r["runs"] = [os.path.basename(d) for d in dirs]
+r["run_dirs"] = dirs
+r["min_valid_samples"] = need
+r["buffer_s"] = buf
+r["buffer_note"] = "provisional: %d s until measured more often on this environment (A11 step 6)" % buf
+c = r.get("candidate_s")
+r["step1_prestop_s"] = (math.ceil(c) + buf) if c is not None else None
+r["calibrated"] = c is not None
+json.dump(r, open(dst, "w"), indent=2, ensure_ascii=False)
+os.remove(src)
+print(r.get("valid_samples", 0))
+PY
+}
+
 # ---------------------------------------------------------------- main
 run_dirs=()
 gate_failed="" problem_seen=""
 any_invalid=0
 started=$(date +%Y%m%d-%H%M%S)
+calib_prestop="" calib_dirs=() calib_valid=0
+[ "$mode" = all ] && run_all
 log "$mode: $runs run(s), D=${duration}s, rate $rate/s$([ "$diagnostic" = 1 ] && echo ', --diagnostic')"
 
 for n in $(seq 1 "$runs"); do
 	measure_one "$n"
+	[ -z "${MEASURE_RUN_LIST:-}" ] || echo "$cur_dir" >>"$MEASURE_RUN_LIST"
 	scorecard_py "$cur_dir" is-invalid && any_invalid=1
+	if [ -n "$restore_failed" ]; then
+		print_cards
+		warn "停止：叢集沒有恢復到下一次量測的前置條件：$restore_failed（見 $cur_dir/restore.json）"
+		exit 1
+	fi
 	case $mode in
+	calibrate)
+		if scorecard_py "$cur_dir" is-invalid; then
+			warn "calibrate run $n is invalid: its samples are not used"
+		else
+			calib_dirs+=("$cur_dir")
+		fi
+		if [ "${#calib_dirs[@]}" -gt 0 ]; then
+			calib_valid=$(calib_aggregate "${calib_dirs[@]}")
+			log "calibrate: $calib_valid valid sample(s) after $n run(s) (need $CALIB_MIN_VALID)"
+			[ "$calib_valid" -ge "$CALIB_MIN_VALID" ] && break
+		fi
+		;;
 	control)
 		if why=$(scorecard_py "$cur_dir" control-ok); then
 			log "control run $n: $why"
@@ -567,7 +1057,9 @@ for n in $(seq 1 "$runs"); do
 	esac
 done
 
-if [ "$mode" = step-0 ] && [ -z "$problem_seen" ]; then
+if [ "$mode" = step-0 ] && [ -n "${MEASURE_IN_ALL:-}" ]; then
+	: # judged by the `all` parent over every round
+elif [ "$mode" = step-0 ] && [ -z "$problem_seen" ]; then
 	gate_failed="步驟 0 的 ${#run_dirs[@]} 次都沒觀察到預定的問題（送出沒有成功回應、漏號、重複訂單）"
 	warn "對照組不成立：$gate_failed"
 elif [ "$mode" = step-0 ]; then
@@ -595,9 +1087,26 @@ echo "================ $mode 彙整（$summary）"
 cat "$summary"
 for d in "${run_dirs[@]}"; do echo "  $d"; done
 
+calib_short=0
+if [ "$mode" = calibrate ]; then
+	cdir=$EVIDENCE/calibrate-$started
+	if [ -f "$cdir/candidate.json" ]; then
+		echo "================ calibrate 樣本（$cdir）"
+		cat "$cdir/samples.txt"
+	fi
+	step1=$(python3 -I -c 'import json,sys; v=json.load(open(sys.argv[1])).get("step1_prestop_s"); print("" if v is None else v)' "$cdir/candidate.json" 2>/dev/null)
+	if [ -n "$step1" ]; then
+		log "calibrate: 有效樣本 $calib_valid 個；step 1 的 preStop 候選值 $step1 秒（ceil(候選值) + 緩衝 $STEP1_BUFFER_S 秒，緩衝暫定；上界為模型推估）；$cdir/candidate.json"
+	else
+		warn "calibrate: 有效樣本 $calib_valid 個，不足 $CALIB_MIN_VALID 個：不產生候選值；step 1 改用保守值，標示「preStop 未經校正」"
+		calib_short=1
+	fi
+fi
+
 if [ -n "$gate_failed" ] && [ "$diagnostic" != 1 ]; then
 	warn "停止正式比較：先調查原因（可能在量測工具、環境或 App）；講師可以加上 --diagnostic 繼續收集資料"
 	exit 3
 fi
 [ "$any_invalid" = 1 ] && exit 2
+[ "$calib_short" = 1 ] && exit 2
 exit 0

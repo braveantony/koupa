@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Pre-measurement checks against the LIVE cluster (plan A8 step 2).
 #
-#   scripts/preflight.sh <step-0..step-4|control> [--image IMAGE] [--digest DIGEST]
+#   scripts/preflight.sh <step-0..step-4|control|calibrate> [--image IMAGE] [--digest DIGEST]
 #
+# (rollback, drain and scale-down run with the step-4 settings: measure.sh
+# calls this with step-4; rollback with --image .../koupa:v2.)
 # Run after the step's manifest is applied and the rollout has finished.
 # IMAGE (default ghcr.io/braveantony/koupa:v1) is the image the Pods must run;
 # DIGEST is what its registry tag resolves to now (measure.sh resolves it
@@ -14,7 +16,8 @@
 #   spec           image, env, preStop and terminationGracePeriodSeconds equal
 #                  the rendered overlay (so previous-step-only settings are gone)
 #   timing         GRACEFUL_SHUTDOWN on: preStop + SHUTDOWN_TIMEOUT + 5 < grace
-#                  (A5); otherwise an enabled preStop < grace
+#                  (A5); otherwise an enabled preStop < grace; calibrate
+#                  also: grace > preStop >= 20 (A11 step 1)
 #   test-switches  TEST_HOOKS and TEST_MUTATION are not set (A12, A14)
 #   tx-timeout     every Pod's log shows transaction_timeout = 60s ("1min")
 #                  and its startup line has no test switch on (A6)
@@ -27,7 +30,7 @@ NS=${KOUPA_NS:-koupa}
 KUBECTL=${KUBECTL:-kubectl}
 
 usage() {
-	echo "usage: $0 <step-0..step-4|control> [--image IMAGE] [--digest DIGEST]" >&2
+	echo "usage: $0 <step-0..step-4|control|calibrate> [--image IMAGE] [--digest DIGEST]" >&2
 	exit 2
 }
 
@@ -45,6 +48,7 @@ done
 case $step in
 step-0 | control) dir=$stage/k8s/base ;;
 step-[1-4]) dir=$stage/k8s/steps/$step ;;
+calibrate) dir=$stage/k8s/calibrate ;;
 *) usage ;;
 esac
 
@@ -204,6 +208,9 @@ if gs == ("value", "1"):
     st = seconds(st_raw)
     report("timing", st is not None and pre + st + 5 < grace,
            "A5: preStop %s + SHUTDOWN_TIMEOUT %s + 5 < grace %s" % (pre, st_raw, grace))
+elif step == "calibrate":
+    report("timing", pre >= 20 and pre < grace,
+           "A11 calibrate: preStop %s >= 20 and < grace %s" % (pre, grace))
 elif pre:
     report("timing", pre < grace, "preStop %s < grace %s" % (pre, grace))
 else:

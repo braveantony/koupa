@@ -44,6 +44,10 @@ setup_fakes() {
 	export COLLECT_TIMELINE=$FAKE/bin/collect-timeline
 	export RUSH_HOUR_BIN=$FAKE/bin/rush-hour
 	export PATH=$FAKE/bin:$PATH
+	# The host-side rush-hour measure.sh builds at start: a fake go copies
+	# the fake rush-hour to a scratch path (never the real 01/bin).
+	export MEASURE_GO=$FAKE/bin/go
+	export MEASURE_HOST_RUSH_HOUR=$T/hostbin/rush-hour
 	: >"$FAKE/calls.log"
 	echo 172.22.0.201 >"$FAKE/gateway-ip"
 
@@ -91,6 +95,42 @@ json.dump(p, open(path, "w"))' "$FAKE/pods.json" "$img" "$digest"
 	rm -f "$FAKE/set-done"
 	exit 0 ;;
 rollout) exit 0 ;;
+drain)
+	# drain NODE --ignore-daemonsets [--dry-run=server] [--timeout=..]
+	node=$2
+	case " $* " in
+	*" --dry-run=server "*)
+		if [ -f "$FAKE/drain-dryrun-fail-$node" ]; then
+			echo "error: unable to drain node \"$node\": $(cat "$FAKE/drain-dryrun-fail-$node")" >&2
+			exit 1
+		fi
+		echo "node/$node cordoned (server dry run)"
+		exit 0 ;;
+	esac
+	python3 -I "$FAKE/nodes.py" cordon "$node"
+	[ -f "$FAKE/drain-sleep" ] && { sleep "$(cat "$FAKE/drain-sleep")" & wait $!; }
+	# $FAKE/drain-moves: the evicted koupa Pod lands on another worker.
+	[ -f "$FAKE/drain-moves" ] && python3 -I "$FAKE/nodes.py" evict "$node"
+	echo "node/$node drained"
+	exit "$(cat "$FAKE/drain-rc" 2>/dev/null || echo 0)" ;;
+uncordon) python3 -I "$FAKE/nodes.py" uncordon "$2"; echo "node/$2 uncordoned"; exit 0 ;;
+scale)
+	# scale deploy/koupa --replicas=N
+	n=${3#--replicas=}
+	python3 -I - "$FAKE/deploy.json" "$n" <<'PY'
+import json, sys
+path, n = sys.argv[1], int(sys.argv[2])
+d = json.load(open(path))
+d["spec"]["replicas"] = n
+d["status"].update({"replicas": n, "updatedReplicas": n, "readyReplicas": n, "availableReplicas": n})
+json.dump(d, open(path, "w"))
+PY
+	exit 0 ;;
+delete)
+	# delete pod NAME [--wait=false]: rescheduled onto the emptiest worker
+	# ($FAKE/delete-noop: back onto the same node).
+	[ -f "$FAKE/delete-noop" ] || python3 -I "$FAKE/nodes.py" resched "$3"
+	exit 0 ;;
 version) echo "Client Version: fake"; echo "Server Version: fake"; exit 0 ;;
 config) echo fake-context; exit 0 ;;
 set)
@@ -146,6 +186,8 @@ get)
 		esac
 		exit 0 ;;
 	*" rs "* | *" replicasets "* | *" replicaset "*) cat "$FAKE/rs.json"; exit 0 ;;
+	*" nodes "* | *" node "*) cat "$FAKE/nodes.json"; exit 0 ;;
+	*" pods"*" -A "* | *" pods"*" --all-namespaces "*) python3 -I "$FAKE/nodes.py" allpods; exit 0 ;;
 	*" pods "*) cat "$FAKE/pods.json"; exit 0 ;;
 	*" ds "* | *" daemonset "*) echo "quay.io/cilium/cilium:fake"; exit 0 ;;
 	*) echo '{"apiVersion":"v1","kind":"List","items":[]}'; exit 0 ;;
@@ -240,6 +282,7 @@ EOF
 #!/usr/bin/env bash
 # Fake collect-timeline.sh start|stop DIR
 echo "collect-timeline $*" >>"$FAKE/calls.log"
+echo "RUSH_HOUR=${RUSH_HOUR:-}" >>"$FAKE/collect-env"
 dir=$2
 mkdir -p "$dir/app"
 case $1 in
@@ -289,11 +332,106 @@ run)
 	cat "$out/scorecard.txt"
 	exit "$(cat "$FAKE/rh-rc" 2>/dev/null || echo 0)" ;;
 summarize) echo "彙整表（fake）" ;;
+probe)
+	# probe --base U --run ID --duration D --out DIR: runs until TERM.
+	out=""
+	while [ $# -gt 0 ]; do case $1 in --out) out=$2; shift ;; esac; shift; done
+	echo $$ >"$FAKE/probe-pid"
+	trap 'echo "{\"kind\":\"probe\",\"pod_uid\":\"uid-0\"}" >>"$out/probes.jsonl"; echo "probe stopped" >>"$FAKE/calls.log"; exit 0' INT TERM
+	: >"$out/probes.jsonl"
+	sleep 300 &
+	wait $! ;;
+calibrate)
+	# calibrate [--prestop S] --json FILE DIR...: $FAKE/calib-valid-per-run
+	# valid samples per DIR (default 2), candidate 3.2 s when >= 5.
+	json="" pre=20s dirs=()
+	while [ $# -gt 0 ]; do
+		case $1 in --json) json=$2; shift ;; --prestop) pre=$2; shift ;; *) dirs+=("$1") ;; esac
+		shift
+	done
+	python3 -I - "$json" "$pre" "$(cat "$FAKE/calib-valid-per-run" 2>/dev/null || echo 2)" "${dirs[@]}" <<'PY'
+import json, os, sys
+out, pre, per, dirs = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4:]
+samples = []
+for d in dirs:
+    for i in range(3):
+        ok = i < per
+        samples.append({"run": os.path.basename(d), "pod_name": "koupa-abc-%d" % i, "pod_uid": "uid-%d" % i,
+                        "lower": "2026-01-01T00:00:01Z", "upper": "2026-01-01T00:00:03Z" if ok else None,
+                        "upper_kind": "model" if ok else "none", "p": 0.33, "k": 18, "n": 160,
+                        "u_minus_deletion_s": 3.2 if ok else None, "valid": ok,
+                        "invalid_reason": "" if ok else "no_upper_bound"})
+valid = sum(s["valid"] for s in samples)
+rep = {"prestop_s": float(pre.rstrip("s")), "upper_bound_method": "model", "samples": samples,
+       "valid_samples": valid, "candidate_s": 3.2 if valid >= 5 else None, "probes_without_pod_uid": 0}
+json.dump(rep, open(out, "w"))
+print("fake calibrate table: %d valid" % valid)
+print(("candidate: 3.200 s" if valid >= 5 else "no candidate: %d" % valid))
+PY
+	;;
 coverage)
 	[ -f "$FAKE/coverage-fail" ] && { echo "fake coverage: cannot read $1" >&2; exit 1; } ;;
 timeline) ;;
 esac
 exit 0
+EOF
+	# Fake go build -o OUT ./rush-hour: copies the fake rush-hour;
+	# $FAKE/go-fail makes the build fail.
+	cat >"$FAKE/bin/go" <<'EOF'
+#!/usr/bin/env bash
+echo "go $*" >>"$FAKE/calls.log"
+[ -f "$FAKE/go-fail" ] && { echo "fake go: build failed: syntax error" >&2; exit 1; }
+out=""
+while [ $# -gt 0 ]; do case $1 in -o) out=$2; shift ;; esac; shift; done
+mkdir -p "$(dirname "$out")"
+cp "$FAKE/bin/rush-hour" "$out"
+EOF
+
+	# Nodes and Pods across the cluster: nodes.json (3 workers, 1 control
+	# plane), the koupa Pods of pods.json plus $FAKE/other-pods.json.
+	cat >"$FAKE/nodes.py" <<'EOF'
+import json, os, sys
+fake = os.environ["FAKE"]
+def load(n, default):
+    try:
+        return json.load(open(os.path.join(fake, n)))
+    except (OSError, ValueError):
+        return default
+def save(n, v):
+    json.dump(v, open(os.path.join(fake, n), "w"))
+nodes, pods = load("nodes.json", {"items": []}), load("pods.json", {"items": []})
+workers = [n["metadata"]["name"] for n in nodes["items"]
+           if "node-role.kubernetes.io/control-plane" not in n["metadata"].get("labels", {})]
+def per_node():
+    c = {w: 0 for w in workers}
+    for p in pods["items"]:
+        c[p["spec"].get("nodeName")] = c.get(p["spec"].get("nodeName"), 0) + 1
+    return c
+def unsched(w):
+    return any(n["metadata"]["name"] == w and n["spec"].get("unschedulable") for n in nodes["items"])
+cmd = sys.argv[1]
+if cmd in ("cordon", "uncordon"):
+    for n in nodes["items"]:
+        if n["metadata"]["name"] == sys.argv[2]:
+            n["spec"]["unschedulable"] = cmd == "cordon"
+    save("nodes.json", nodes)
+elif cmd == "evict":
+    for p in pods["items"]:
+        if p["spec"].get("nodeName") == sys.argv[2]:
+            c = per_node()
+            p["spec"]["nodeName"] = min((w for w in workers if w != sys.argv[2] and not unsched(w)), key=lambda w: c[w])
+    save("pods.json", pods)
+elif cmd == "resched":
+    for p in pods["items"]:
+        if p["metadata"]["name"] == sys.argv[2]:
+            p["spec"]["nodeName"] = None
+            c = per_node()
+            p["spec"]["nodeName"] = min((w for w in workers if not unsched(w)), key=lambda w: c[w])
+            p["metadata"]["name"] += "x"
+    save("pods.json", pods)
+elif cmd == "allpods":
+    other = load("other-pods.json", {"items": []})
+    print(json.dumps({"kind": "List", "items": pods["items"] + other["items"]}))
 EOF
 	chmod +x "$FAKE"/bin/*
 	scorecard_clean
@@ -333,7 +471,7 @@ make_live() {
 	esac
 	"$REAL_KUBECTL" kustomize "$dir" >"$FAKE/rendered.yaml" || return 1
 	python3 -I - "$FAKE" "$edit" <<'PY'
-import json, sys, yaml
+import json, os, sys, yaml
 fake, edit = sys.argv[1], sys.argv[2]
 docs = [d for d in yaml.safe_load_all(open(fake + "/rendered.yaml")) if d]
 dep = [d for d in docs if d["kind"] == "Deployment"][0]
@@ -369,7 +507,7 @@ for i in range(3):
         "metadata": {"name": "koupa-abc-%d" % i, "namespace": "koupa", "uid": "uid-%d" % i,
                      "labels": {"app.kubernetes.io/name": "koupa", "pod-template-hash": "abc"},
                      "ownerReferences": [{"kind": "ReplicaSet", "name": "koupa-abc", "controller": True}]},
-        "spec": json.loads(json.dumps(pod)),
+        "spec": dict(json.loads(json.dumps(pod)), nodeName="tkha-worker-%d" % (i + 1)),
         "status": {"phase": "Running",
                    "conditions": [{"type": "Ready", "status": "True"}],
                    "containerStatuses": [{"name": "koupa", "ready": True, "image": c["image"],
@@ -384,6 +522,20 @@ for i in range(3):
         f.write(json.dumps({"ts": "2026-01-01T00:00:01Z", "event": "tx_timeout_check", "pod_uid": "uid-%d" % i,
             "ok": True, "got": "1min"}) + "\n")
 json.dump(dep, open(fake + "/deploy.json", "w"))
+node = lambda n, cp=False: {"apiVersion": "v1", "kind": "Node", "metadata": {"name": n,
+    "labels": {"node-role.kubernetes.io/control-plane": ""} if cp else {}}, "spec": {}}
+json.dump({"kind": "List", "items": [node("tkha-control-plane-1", True)] +
+           [node("tkha-worker-%d" % i) for i in (1, 2, 3)]}, open(fake + "/nodes.json", "w"))
+db = {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "koupa-db-1", "namespace": "koupa",
+      "labels": {"cnpg.io/cluster": "koupa-db"}, "ownerReferences": [{"kind": "Cluster", "name": "koupa-db", "controller": True}]},
+      "spec": {"nodeName": "tkha-worker-1", "volumes": [{"name": "scratch-data", "emptyDir": {}}]},
+      "status": {"phase": "Running"}}
+cil = lambda w: {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "cilium-" + w[-1], "namespace": "kube-system",
+      "ownerReferences": [{"kind": "DaemonSet", "name": "cilium", "controller": True}]},
+      "spec": {"nodeName": w, "volumes": [{"name": "tmp", "emptyDir": {}}]}, "status": {"phase": "Running"}}
+if not os.path.exists(fake + "/other-pods.json.keep"):
+    json.dump({"kind": "List", "items": [db] + [cil("tkha-worker-%d" % i) for i in (1, 2, 3)]},
+              open(fake + "/other-pods.json", "w"))
 json.dump({"kind": "List", "items": [rs, old]}, open(fake + "/rs.json", "w"))
 json.dump({"kind": "List", "items": pods}, open(fake + "/pods.json", "w"))
 PY
