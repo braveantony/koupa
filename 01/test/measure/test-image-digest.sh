@@ -60,10 +60,11 @@ check "images.json has the rush-hour image ID" grep -q 'fa4e1d0*1' "$run/images.
 
 # Registry moved on: a Pod runs another digest -> no measurement.
 echo "sha256:$(printf '%064d' 7)" >"$FAKE/digest-v1"
+touch "$FAKE/apply-stale" # the nodes keep running the old image under the tag
 "$STAGE/measure.sh" control --runs 1 --duration 30 >"$T/out" 2>&1
 rc=$?
 check "digest mismatch: exit 1 (rc=$rc)" [ "$rc" -eq 1 ]
 check "says image-digest" grep -q '量測前核對不符：image-digest' "$T/out"
-rm -f "$FAKE/digest-v1"
+rm -f "$FAKE/digest-v1" "$FAKE/apply-stale"
 export RUSH_HOUR_BIN=$FAKE/bin/rush-hour
 finish

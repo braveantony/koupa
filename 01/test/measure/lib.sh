@@ -75,6 +75,20 @@ d = json.load(open(sys.argv[1]))
 d["spec"]["template"]["spec"]["containers"][0]["image"] = sys.argv[2]
 d["status"]["updatedReplicas"] = 3
 json.dump(d, open(sys.argv[1], "w"))' "$FAKE/deploy.json" "$img"
+	# ... and its Pods run that image's digest again.
+	if [ -f "$FAKE/pods.json" ] && [ -n "$img" ] && [ ! -f "$FAKE/apply-stale" ]; then
+		digest=$(FAKE_QUIET=1 "$FAKE/bin/skopeo" inspect --format '{{.Digest}}' "docker://$img")
+		python3 -I -c '
+import json, sys
+path, img, digest = sys.argv[1:]
+p = json.load(open(path))
+for pod in p["items"]:
+    pod["spec"]["containers"][0]["image"] = img
+    st = pod["status"]["containerStatuses"][0]
+    st["image"], st["imageID"] = img, img.split(":")[0] + "@" + digest
+json.dump(p, open(path, "w"))' "$FAKE/pods.json" "$img" "$digest"
+	fi
+	rm -f "$FAKE/set-done"
 	exit 0 ;;
 rollout) exit 0 ;;
 version) echo "Client Version: fake"; echo "Server Version: fake"; exit 0 ;;
@@ -94,6 +108,20 @@ else:
     d["status"]["observedGeneration"] = d["metadata"]["generation"]
 json.dump(d, open(path, "w"))
 PY
+	digest=$(FAKE_QUIET=1 "$FAKE/bin/skopeo" inspect --format '{{.Digest}}' "docker://$img")
+	[ -f "$FAKE/v2-stale" ] && digest="sha256:$(printf '%064d' 9)"
+	python3 -I - "$FAKE/pods.json" "$img" "$digest" <<'PY'
+import json, sys
+path, img, digest = sys.argv[1:]
+p = json.load(open(path))
+for pod in p["items"]:
+    pod["spec"]["containers"][0]["image"] = img
+    st = pod["status"]["containerStatuses"][0]
+    st["image"] = img
+    st["imageID"] = img.split(":")[0] + "@" + digest
+json.dump(p, open(path, "w"))
+PY
+	touch "$FAKE/set-done"
 	exit 0 ;;
 logs)
 	pod=$2
@@ -108,7 +136,11 @@ get)
 	*" gateway "*) cat "$FAKE/gateway-ip"; exit 0 ;;
 	*" deploy koupa "* | *" deployment koupa "* | *" deploy/koupa "*)
 		case " $* " in
-		*" -o json "*) cat "$FAKE/deploy.json" ;;
+		*" -o json "*)
+			# $FAKE/get-sleep: after set image, each read of the Deployment
+			# takes that long (a slow API server near the deadline).
+			[ -f "$FAKE/set-done" ] && [ -f "$FAKE/get-sleep" ] && sleep "$(cat "$FAKE/get-sleep")"
+			cat "$FAKE/deploy.json" ;;
 		*" -o yaml "*) cat "$FAKE/deploy.json" ;;
 		*) python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); s=d["status"]; print(d["metadata"]["generation"], s.get("observedGeneration",0), d["spec"]["replicas"], s.get("replicas",0), s.get("updatedReplicas",0), s.get("availableReplicas",0))' "$FAKE/deploy.json" ;;
 		esac
@@ -151,7 +183,7 @@ EOF
 	# $FAKE/skopeo-fail makes it fail.
 	cat >"$FAKE/bin/skopeo" <<'EOF'
 #!/usr/bin/env bash
-echo "skopeo $*" >>"$FAKE/calls.log"
+[ -n "${FAKE_QUIET:-}" ] || echo "skopeo $*" >>"$FAKE/calls.log"
 [ -f "$FAKE/skopeo-fail" ] && { echo "fake skopeo: registry unreachable" >&2; exit 1; }
 ref=${!#}
 tag=${ref##*:}
@@ -164,8 +196,40 @@ EOF
 
 	cat >"$FAKE/bin/curl" <<'EOF'
 #!/usr/bin/env bash
+# Fake curl [-sS] [--max-time N] [-o FILE] [-w FMT] URL: /api/audit
+# answers per mode; $FAKE/curl-fail fails like an unreachable host,
+# $FAKE/curl-500 answers HTTP 500.
 echo "curl $*" >>"$FAKE/calls.log"
-echo '{"fake":true}'
+out=/dev/stdout w="" url=""
+while [ $# -gt 0 ]; do
+	case $1 in
+	-o) out=$2; shift ;;
+	-w) w=$2; shift ;;
+	--max-time) shift ;;
+	-*) ;;
+	*) url=$1 ;;
+	esac
+	shift
+done
+if [ -f "$FAKE/curl-fail" ]; then
+	echo "curl: (7) Failed to connect" >&2
+	[ -n "$w" ] && printf '000'
+	exit 7
+fi
+code=200
+if [ -f "$FAKE/curl-500" ]; then
+	code=500
+	echo '{"error":"database unavailable"}' >"$out"
+else
+	case $url in
+	*mode=cursor*) echo '{"cursor":5}' >"$out" ;;
+	*mode=orders*) echo '{"orders":{}}' >"$out" ;;
+	*mode=ready*) echo '[]' >"$out" ;;
+	*) echo '{"fake":true}' >"$out" ;;
+	esac
+fi
+[ -n "$w" ] && printf '%s' "$code"
+exit 0
 EOF
 
 	cat >"$FAKE/bin/collect-timeline" <<'EOF'
@@ -177,6 +241,7 @@ mkdir -p "$dir/app"
 case $1 in
 start) echo '{"started_at":"2026-01-01T00:00:00Z"}' >"$dir/collect.json"; : >"$dir/ingress.log" ;;
 stop)
+	[ -f "$FAKE/collect-stop-fail" ] && { echo "fake collect-timeline: stop failed" >&2; exit 1; }
 	: >"$dir/missing.jsonl"
 	echo "fake timeline" >"$dir/timeline.txt"
 	: >"$dir/timeline.jsonl"
@@ -209,7 +274,7 @@ run)
 	back=$(cat "$FAKE/rh-backdate" 2>/dev/null || echo 0)
 	echo $$ >"$FAKE/rh-pid"
 	trap 'echo "rush-hour got a signal" >>"$FAKE/calls.log"; exit 130' INT TERM
-	echo "SENDING_STARTED $(( $(date +%s%N) - back * 1000000000 ))"
+	[ -f "$FAKE/rh-no-start" ] || echo "SENDING_STARTED $(( $(date +%s%N) - back * 1000000000 ))"
 	sleep "$(cat "$FAKE/rh-sleep" 2>/dev/null || echo 1)" &
 	wait $!
 	mkdir -p "$out"
@@ -220,7 +285,9 @@ run)
 	cat "$out/scorecard.txt"
 	exit "$(cat "$FAKE/rh-rc" 2>/dev/null || echo 0)" ;;
 summarize) echo "彙整表（fake）" ;;
-coverage | timeline) ;;
+coverage)
+	[ -f "$FAKE/coverage-fail" ] && { echo "fake coverage: cannot read $1" >&2; exit 1; } ;;
+timeline) ;;
 esac
 exit 0
 EOF

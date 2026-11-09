@@ -20,10 +20,8 @@ scorecard 's["items"]["first_try_failed"]["confirmed"] = 1'
 check "one failure: exit 3" [ $? -eq 3 ]
 
 scorecard 's["invalid"] = True; s["invalid_reason"] = "x"; s["invalid_reasons"] = ["x"]'
-echo 2 >"$FAKE/rh-rc"
 "$STAGE/measure.sh" control --runs 1 --duration 30 >"$T/out" 2>&1
 check "invalid: exit 3" [ $? -eq 3 ]
-rm -f "$FAKE/rh-rc"
 
 # No order was ever marked ready (cursor C = 0): "0 missed" proves nothing.
 scorecard 's["facts"]["audit"]["cursor"] = 0'

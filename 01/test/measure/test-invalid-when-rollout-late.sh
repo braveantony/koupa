@@ -6,7 +6,7 @@ setup_fakes
 
 make_live step-1
 touch "$FAKE/rollout-never"
-echo 19 >"$FAKE/rh-backdate" # D=30: the change is due now, D-10 in ~1 s
+echo 15 >"$FAKE/rh-backdate" # D=30: the change is due now, D-10 in ~5 s
 "$STAGE/measure.sh" step-1 --runs 1 --duration 30 >"$T/out" 2>&1
 rc=$?
 check "exit status 2 (rc=$rc)" [ "$rc" -eq 2 ]

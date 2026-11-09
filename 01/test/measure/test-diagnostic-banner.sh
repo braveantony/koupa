@@ -3,7 +3,7 @@
 # --diagnostic it goes on and every scorecard starts with the banner.
 . "$(dirname "$0")/lib.sh"
 setup_fakes
-echo 19 >"$FAKE/rh-backdate"
+echo 15 >"$FAKE/rh-backdate"
 banner='診斷模式：對照組不成立，不可用於比較'
 
 make_live step-0

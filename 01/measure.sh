@@ -42,7 +42,6 @@ KUBECTL=${KUBECTL:-kubectl}
 EVIDENCE=${MEASURE_EVIDENCE_DIR:-$stage/evidence}
 COLLECT=${COLLECT_TIMELINE:-$stage/scripts/collect-timeline.sh}
 RUSH_HOUR_IMAGE=${RUSH_HOUR_IMAGE:-ghcr.io/braveantony/rush-hour:0.1.0}
-RH_LOCAL=${RUSH_HOUR_BIN:-$stage/bin/rush-hour}
 IMG_V1=ghcr.io/braveantony/koupa:v1
 IMG_V2=ghcr.io/braveantony/koupa:v2
 BANNER='診斷模式：對照組不成立，不可用於比較'
@@ -133,119 +132,30 @@ if [ -n "$leftover" ]; then
 	exit 1
 fi
 
-# rush_hour [--exec] MOUNT_DIR ARGS...: run rush-hour with MOUNT_DIR visible
-# at the same path. --exec replaces the (background) subshell, so $! is the
-# rush-hour (or podman) process itself and a signal to it reaches it.
+# rush_hour [--exec] [--name NAME] MOUNT_DIR ARGS...: run rush-hour (the
+# identified artifact: RUSH_HOUR_BIN, or the image by its recorded ID) with
+# MOUNT_DIR visible at the same path. --exec replaces the (background)
+# subshell, so $! is the rush-hour (or podman) process itself and a signal
+# to it reaches it. NAME is the container name (default rush-hour-<run>).
 rush_hour() {
-	local ex=""
+	local ex="" name="rush-hour-$cur_id"
 	[ "$1" = --exec ] && { ex=exec; shift; }
+	[ "$1" = --name ] && { name=$2; shift 2; }
 	local mount=$1
 	shift
 	if [ "$rh_kind" = bin ]; then
 		$ex "$RUSH_HOUR_BIN" "$@"
 	else
-		$ex podman run --rm --name "rush-hour-$cur_id" --network host --userns=keep-id --user "$(id -u):$(id -g)" \
+		$ex podman run --rm --name "$name" --network host --userns=keep-id --user "$(id -u):$(id -g)" \
 			-v "$mount:$mount:Z" "${rh_image_id:-$RUSH_HOUR_IMAGE}" "$@"
 	fi
 }
 
 # ---------------------------------------------------------------- scorecards
 # scorecard_py DIR ACTION [ARG]: the scorecard edits and A13 checks.
-scorecard_py() {
-	python3 -I - "$@" <<'PY'
-import json, os, sys
-d, action = sys.argv[1], sys.argv[2]
-arg = sys.argv[3] if len(sys.argv) > 3 else ""
-jp, tp = os.path.join(d, "scorecard.json"), os.path.join(d, "scorecard.txt")
+scorecard_py() { python3 -I "$stage/scripts/lib/scorecard.py" "$@"; }
 
-def load():
-    return json.load(open(jp))
-
-def save(s, text):
-    json.dump(s, open(jp + ".tmp", "w"), indent=2, ensure_ascii=False)
-    os.replace(jp + ".tmp", jp)
-    open(tp + ".tmp", "w").write(text)
-    os.replace(tp + ".tmp", tp)
-
-def items(s):
-    it = s.get("items") or {}
-    main = [("訂單", it.get("orders")), ("第一次送出沒有成功回應", it.get("first_try_failed")),
-            ("重試後仍沒有成功回應", it.get("failed_after_retry")),
-            ("重複訂單", it.get("duplicate_client_refs")), ("多出的訂單", it.get("duplicate_extra_orders"))]
-    for name, v in sorted((it.get("missing") or {}).items()):
-        main.append(("漏號 " + name, v))
-    return main
-
-if action == "invalid-new":
-    # No scorecard from rush-hour: write one that only says invalid.
-    s = {"run": os.path.basename(d), "invalid": True, "invalid_reason": arg,
-         "invalid_reasons": [arg], "has_unknown": False, "items": None,
-         "invalid_by": "measure.sh"}
-    save(s, "本次量測無效：%s\nRush Hour 成績單　量測編號 %s\n\n這次量測沒有完成，不列出主要成績，也不可用於比較。\n" % (arg, s["run"]))
-elif action == "invalid":
-    # rush-hour wrote a scorecard, but measure.sh found the run invalid.
-    s = load()
-    if os.path.exists(tp) and not os.path.exists(tp.replace(".txt", ".rush-hour.txt")):
-        os.replace(tp, tp.replace(".txt", ".rush-hour.txt"))
-    reasons = [arg] + list(s.get("invalid_reasons") or [])
-    s.update({"invalid": True, "invalid_reasons": reasons, "invalid_reason": "；".join(reasons),
-              "invalid_by": "measure.sh"})
-    save(s, "本次量測無效：%s\nRush Hour 成績單　量測編號 %s\n\n這次量測不符合量測條件，不列出主要成績，也不可用於比較。\n"
-         "（Rush Hour 原本的成績單保留在 scorecard.rush-hour.txt，只供診斷。）\n" % (s["invalid_reason"], s.get("run")))
-elif action == "banner":
-    s = load()
-    text = open(tp).read() if os.path.exists(tp) else ""
-    if not text.startswith(arg + "\n"):
-        text = arg + "\n" + text
-    s["diagnostic"] = True
-    s["diagnostic_banner"] = arg
-    save(s, text)
-elif action == "control-ok":
-    # A13: valid, no unknown, orders sent, every failure item exactly 0.
-    try:
-        s = load()
-    except (OSError, ValueError) as e:
-        print("沒有可讀的 scorecard.json（%s）" % e); sys.exit(1)
-    why = []
-    if s.get("invalid"):
-        why.append("本次量測無效（%s）" % s.get("invalid_reason"))
-    else:
-        if s.get("has_unknown"):
-            why.append("有未知項目")
-        for name, v in items(s):
-            v = v or {}
-            if v.get("unknown", 0) > 0:
-                why.append("%s 另有 %d 項未知" % (name, v["unknown"]))
-            if name != "訂單" and v.get("confirmed", 0) > 0:
-                why.append("%s 已確認 %d" % (name, v["confirmed"]))
-        if ((s.get("items") or {}).get("orders") or {}).get("confirmed", 0) <= 0:
-            why.append("沒有送出任何訂單")
-        # The board check needs called numbers: with cursor C = 0 nothing
-        # was marked ready and "0 missed" says nothing about the boards.
-        cursor = ((s.get("facts") or {}).get("audit") or {}).get("cursor")
-        if not isinstance(cursor, int) or cursor <= 0:
-            why.append("沒有任何叫號（截止游標 C = %s），漏號 0 不代表看板沒有漏號" % cursor)
-    print("；".join(why) if why else "0 失敗、0 漏號、0 重複，沒有未知")
-    sys.exit(1 if why else 0)
-elif action == "problem":
-    # A13: did this (valid) step-0 run observe a predefined problem?
-    try:
-        s = load()
-    except (OSError, ValueError):
-        sys.exit(1)
-    if s.get("invalid"):
-        sys.exit(1)
-    seen = [("%s 已確認 %d" % (n, (v or {}).get("confirmed", 0))) for n, v in items(s)
-            if n not in ("訂單", "多出的訂單") and (v or {}).get("confirmed", 0) > 0]
-    print("；".join(seen))
-    sys.exit(0 if seen else 1)
-elif action == "is-invalid":
-    try:
-        sys.exit(0 if load().get("invalid") else 1)
-    except (OSError, ValueError):
-        sys.exit(0)
-PY
-}
+. "$stage/scripts/lib/kube.sh"
 
 # ---------------------------------------------------------------- one run
 cur_id="" cur_dir="" rh_pid="" cov_pid="" collecting=0 rh_image_id=""
@@ -265,61 +175,8 @@ json.dump({
 PY
 }
 
-# deploy_status: "done" when the rollout is complete (kubectl rollout
-# status rules), else a short description.
-deploy_status() {
-	"$KUBECTL" -n "$NS" get deploy koupa -o json 2>/dev/null | python3 -I -c '
-import json, sys
-try:
-    d = json.load(sys.stdin)
-except ValueError:
-    print("Deployment unreadable"); sys.exit()
-s, want = d.get("status", {}), d["spec"].get("replicas", 1)
-gen, obs = d["metadata"].get("generation", 0), s.get("observedGeneration", 0)
-up, rep, av = s.get("updatedReplicas", 0), s.get("replicas", 0), s.get("availableReplicas", 0)
-if obs >= gen and up == want and rep == up and av == up:
-    print("done")
-else:
-    print("generation %s/%s updated %s replicas %s available %s of %s" % (obs, gen, up, rep, av, want))
-'
-}
-
-# old_pods_gone: only Pods of the current ReplicaSet are left.
-old_pods_gone() {
-	local hash
-	hash=$("$KUBECTL" -n "$NS" get rs -l app.kubernetes.io/name=koupa -o json 2>/dev/null | python3 -I -c '
-import json, sys
-rev = sys.argv[1]
-for r in json.load(sys.stdin).get("items", []):
-    if r["metadata"].get("annotations", {}).get("deployment.kubernetes.io/revision") == rev:
-        print(r["metadata"].get("labels", {}).get("pod-template-hash", ""))
-' "$("$KUBECTL" -n "$NS" get deploy koupa -o json 2>/dev/null | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["metadata"].get("annotations",{}).get("deployment.kubernetes.io/revision",""))' 2>/dev/null)" 2>/dev/null)
-	[ -n "$hash" ] || return 1
-	"$KUBECTL" -n "$NS" get pods -l app.kubernetes.io/name=koupa -o json 2>/dev/null | python3 -I -c '
-import json, sys
-h = sys.argv[1]
-items = json.load(sys.stdin).get("items", [])
-sys.exit(0 if items and all(p["metadata"].get("labels", {}).get("pod-template-hash") == h and not p["metadata"].get("deletionTimestamp") for p in items) else 1)
-' "$hash"
-}
-
 # stop_rush_hour: end rush-hour now. With podman the container is removed
 # (podman rm -f), whether or not the podman client is still attached.
-# app_started: every koupa Pod's log has its tx_timeout_check line, the
-# app's own startup verdict (there is no readinessProbe, design 4.9, so a
-# Pod is Ready before the app has opened its database pool).
-app_started() {
-	local pods pod
-	pods=$("$KUBECTL" -n "$NS" get pods -l app.kubernetes.io/name=koupa -o json 2>/dev/null |
-		python3 -I -c 'import json,sys; print(" ".join(p["metadata"]["name"] for p in json.load(sys.stdin)["items"]))' 2>/dev/null) || return 1
-	[ -n "$pods" ] || return 1
-	for pod in $pods; do
-		# Not a pipe: grep -q stops early, kubectl logs then dies of SIGPIPE
-		# and pipefail would turn a found line into a failure.
-		grep -q '"event": *"tx_timeout_check"' < <("$KUBECTL" -n "$NS" logs "$pod" -c koupa 2>/dev/null) || return 1
-	done
-}
-
 stop_rush_hour() {
 	if [ "$rh_kind" = image ] && [ -n "$cur_id" ]; then
 		podman rm -f -t 5 "rush-hour-$cur_id" >/dev/null 2>&1
@@ -343,12 +200,23 @@ stop_coverage() {
 	kill "$cov_pid" 2>/dev/null
 	wait "$cov_pid" 2>/dev/null
 	cov_pid=""
+	[ "$rh_kind" = image ] && podman rm -f -t 2 "rush-hour-$cur_id-cov" >/dev/null 2>&1
+	local n
+	n=$(grep -c 'rush-hour coverage failed' "$cur_dir/coverage.err" 2>/dev/null)
+	if [ "${n:-0}" -gt 0 ]; then
+		warn "rush-hour coverage failed $n time(s) during the run (see $cur_dir/coverage.err)"
+		echo "rush-hour coverage failed $n time(s), see coverage.err" >>"$cur_dir/measure.log"
+	fi
+	return 0
 }
 
 stop_collect() {
 	[ "$collecting" = 1 ] || return 0
 	collecting=0
-	"$COLLECT" stop "$cur_dir" >>"$cur_dir/measure.log" 2>&1 || warn "collect-timeline.sh stop failed (see $cur_dir/measure.log)"
+	if ! "$COLLECT" stop "$cur_dir" >>"$cur_dir/measure.log" 2>&1; then
+		warn "collect-timeline.sh stop failed (see $cur_dir/measure.log)"
+		return 1
+	fi
 }
 
 # record_left SIGNAL: write interrupted.json, the cluster state this run
@@ -432,10 +300,12 @@ trap on_exit EXIT
 # abort_run REASON: a step failed or timed out: stop, mark the run invalid,
 # keep its evidence, end the invocation with 1 (plan A8 last paragraph).
 abort_run() {
-	warn "本次量測無效：$1"
+	local why=$1
+	warn "本次量測無效：$why"
 	stop_rush_hour
 	stop_coverage
-	stop_collect
+	stop_collect || why="$why；時間線收集停止失敗"
+	set -- "$why"
 	[ -f "$cur_dir/rollout.json" ] || echo '{"completed": null, "note": "the run stopped before the change"}' >"$cur_dir/rollout.json"
 	if [ -f "$cur_dir/scorecard.json" ]; then
 		scorecard_py "$cur_dir" invalid "$1"
@@ -443,10 +313,31 @@ abort_run() {
 		scorecard_py "$cur_dir" invalid-new "$1"
 	fi
 	"$stage/scripts/evidence.sh" "$cur_dir" >>"$cur_dir/measure.log" 2>&1
-	cat "$cur_dir/scorecard.txt"
-	echo "evidence: $cur_dir"
 	in_run=0
+	# The invocation stops here: the comparison it belongs to is broken, so
+	# with --diagnostic every scorecard of it gets the banner (A13).
+	[ "$diagnostic" = 1 ] && apply_banner
+	print_cards
 	exit 1
+}
+
+# apply_banner: the diagnostic banner on line 1 of every scorecard so far.
+apply_banner() {
+	local d
+	for d in "${run_dirs[@]}"; do scorecard_py "$d" banner "$BANNER"; done
+	warn "$BANNER（每張成績單第一行都已標示）"
+}
+
+# print_cards: every scorecard of this invocation, as saved (banner and
+# invalid marks already applied).
+print_cards() {
+	local d
+	for d in "${run_dirs[@]}"; do
+		echo
+		cat "$d/scorecard.txt"
+		echo "evidence: $d"
+	done
+	echo
 }
 
 # measure_one N: one complete run (A8 steps 1-7). Sets run_dirs.
@@ -555,7 +446,11 @@ PY
 		# App log meta for Pods whose log is complete (terminated Pods), so the
 		# wind-down can settle their attempts; collect-timeline.sh stop
 		# rewrites every meta at the end.
-		(while sleep 2; do "$RH_LOCAL" coverage "$cur_dir" >/dev/null 2>&1; done) &
+		# Same artifact as the run (image mode: the recorded image ID).
+		(while sleep 2; do
+			rush_hour --name "rush-hour-$cur_id-cov" "$cur_dir" coverage "$cur_dir" >/dev/null 2>>"$cur_dir/coverage.err" ||
+				echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) rush-hour coverage failed (exit $?)" >>"$cur_dir/coverage.err"
+		done) &
 		cov_pid=$!
 
 		# 5. the change.
@@ -574,20 +469,26 @@ PY
 			if ! "$KUBECTL" -n "$NS" set image deploy/koupa "koupa=$IMG_V2" >>"$cur_dir/measure.log" 2>&1; then
 				rollout_invalid="第 $CHANGE_AT_S 秒 kubectl set image 失敗"
 			else
+				local seen
 				while :; do
 					status=$(deploy_status)
+					# The time the read came back: "done" counts only when
+					# it was observed before D - 10 s.
+					seen=$(now_ns)
+					[ "$seen" -lt "$deadline_ns" ] || break
 					if [ "$status" = done ]; then
-						done_at=$(now_ns)
+						done_at=$seen
 						break
 					fi
-					[ "$(now_ns)" -lt "$deadline_ns" ] || break
 					sleep 0.5
 				done
 				if [ -z "$done_at" ]; then
 					rollout_invalid="rollout 在第 $((duration - ROLLOUT_MARGIN_S)) 秒（D − $ROLLOUT_MARGIN_S）前沒有完成（$status）"
+				elif ! pods_digest_check "$v2_digest" "$cur_dir/.v2check.json"; then
+					rollout_invalid="rollout 後的 Pod 映像檔 digest 不是 $IMG_V2 的 $v2_digest（$(python3 -I -c 'import json,sys; print("; ".join(json.load(open(sys.argv[1]))["bad"]))' "$cur_dir/.v2check.json" 2>/dev/null)）"
 				fi
 			fi
-			python3 -I - "$cur_dir/rollout.json" <<PY
+			python3 -I - "$cur_dir/rollout.json" "$cur_dir/.v2check.json" <<PY
 import json, sys
 json.dump({"mode": "$mode", "change": "set image $IMG_V2",
     "sending_started_at": "$(rfc "$t0")", "change_at": "$(rfc "$at")",
@@ -596,8 +497,11 @@ json.dump({"mode": "$mode", "change": "set image $IMG_V2",
     "completed_at": "$( [ -n "$done_at" ] && rfc "$done_at")" or None,
     "completed_offset_s": round((${done_at:-0} - $t0) / 1e9, 3) if "$done_at" else None,
     "status_at_deadline": None if "$done_at" else "${status:-}",
-    "invalid_reason": "$rollout_invalid" or None}, open(sys.argv[1], "w"), indent=2, ensure_ascii=False)
+    "invalid_reason": """$rollout_invalid""" or None,
+    "v2_digest_check": json.load(open(sys.argv[2])) if __import__("os").path.exists(sys.argv[2]) else None},
+    open(sys.argv[1], "w"), indent=2, ensure_ascii=False)
 PY
+			rm -f "$cur_dir/.v2check.json"
 			if [ -n "$rollout_invalid" ]; then
 				warn "$rollout_invalid"
 			else
@@ -612,12 +516,14 @@ PY
 	rh_pid=""
 	stop_coverage
 	log "rush-hour exited ($rc)"
+	# A8: a step that failed stops the invocation, whatever rush-hour wrote.
+	[ -n "$t0" ] || abort_run "rush-hour 沒有印出 SENDING_STARTED（結束狀態 $rc，見 rush-hour.stderr）"
+	[ "$rc" -eq 0 ] || abort_run "rush-hour 結束狀態 $rc（見 rush-hour.stderr）"
 
 	# 7. collectors, evidence.
-	stop_collect
-	[ -f "$cur_dir/rollout.json" ] || echo '{"completed": null, "note": "sending never started"}' >"$cur_dir/rollout.json"
+	stop_collect || abort_run "時間線收集停止失敗（見 measure.log）"
 	if [ ! -f "$cur_dir/scorecard.json" ]; then
-		scorecard_py "$cur_dir" invalid-new "rush-hour 沒有寫出成績單（結束狀態 $rc，見 rush-hour.stderr）"
+		abort_run "rush-hour 沒有寫出成績單（結束狀態 $rc，見 rush-hour.stderr）"
 	elif [ -n "$rollout_invalid" ]; then
 		scorecard_py "$cur_dir" invalid "$rollout_invalid"
 	fi
@@ -626,10 +532,11 @@ PY
 			scorecard_py "$cur_dir" invalid "證據包不完整（見 evidence-index.txt）"
 	fi
 	in_run=0
-	echo
-	cat "$cur_dir/scorecard.txt"
-	echo "evidence: $cur_dir"
-	echo
+	if scorecard_py "$cur_dir" is-invalid; then
+		log "run $n/$runs finished: invalid (evidence: $cur_dir)"
+	else
+		log "run $n/$runs finished (evidence: $cur_dir)"
+	fi
 }
 
 # ---------------------------------------------------------------- main
@@ -673,10 +580,9 @@ if [ -n "$gate_failed" ] && [ "$diagnostic" = 1 ]; then
 elif [ "$diagnostic" = 1 ] && [[ $mode == step-[1-4] ]]; then
 	banner=1
 fi
-if [ "$banner" = 1 ]; then
-	for d in "${run_dirs[@]}"; do scorecard_py "$d" banner "$BANNER"; done
-	warn "$BANNER（每張成績單第一行都已標示）"
-fi
+# The gate and the banner are decided; only now are the scorecards shown.
+[ "$banner" = 1 ] && apply_banner
+print_cards
 
 summary=$EVIDENCE/summary-$mode-$started.txt
 {
