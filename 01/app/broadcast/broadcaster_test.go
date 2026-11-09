@@ -81,6 +81,18 @@ func start(t *testing.T, b *Broadcaster) {
 	}
 }
 
+// register registers ch on a started broadcaster.
+func register(t *testing.T, b *Broadcaster, ch chan<- ReadyEvent) (uint64, int64) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
+	defer cancel()
+	id, p, err := b.Register(ctx, ch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id, p
+}
+
 func recv(t *testing.T, ch <-chan ReadyEvent) ReadyEvent {
 	t.Helper()
 	select {
@@ -161,8 +173,8 @@ func TestDispatchInSeqOrder(t *testing.T) {
 
 	const n = 20
 	chA, chB := make(chan ReadyEvent, n), make(chan ReadyEvent, n)
-	_, pa := b.Register(chA)
-	_, pb := b.Register(chB)
+	_, pa := register(t, b, chA)
+	_, pb := register(t, b, chB)
 	if pa != 0 || pb != 0 {
 		t.Fatalf("progress = %d, %d, want 0", pa, pb)
 	}
@@ -208,7 +220,7 @@ func TestReconnectListenDispatchesMissed(t *testing.T) {
 	t.Cleanup(func() { once.Do(func() { close(release) }) }) // runs before Run is cancelled
 
 	ch := make(chan ReadyEvent, 10)
-	b.Register(ch)
+	register(t, b, ch)
 	pid := <-pids
 
 	admin, err := pgx.Connect(context.Background(), os.Getenv("KOUPA_TEST_DSN"))
@@ -274,7 +286,7 @@ func TestMissedNotifyCaughtByPoll(t *testing.T) {
 	}
 	start(t, b)
 	ch := make(chan ReadyEvent, 10)
-	b.Register(ch)
+	register(t, b, ch)
 	// Let the loop reach steady state (one poll cycle done).
 	waitFor(t, func() bool { return tr.count(kindPoll) >= 1 })
 
@@ -290,7 +302,7 @@ func TestMissedNotifyCaughtByPoll(t *testing.T) {
 	if c.kind != kindPoll {
 		t.Fatalf("dispatched by %+v, want poll", c)
 	}
-	t.Logf("commit=%s trigger=+%s query_done=+%s dispatch=+%s received=+%s",
+	t.Logf("commit=%s trigger=+%s query_done=+%s dispatch_start=+%s received=+%s",
 		committed.Format(time.RFC3339Nano), c.triggerAt.Sub(committed), c.queryDoneAt.Sub(committed),
 		c.dispatchAt.Sub(committed), received.Sub(committed))
 	if c.triggerAt.Before(before) || c.queryDoneAt.Before(c.triggerAt) || c.dispatchAt.Before(c.queryDoneAt) || received.Before(c.dispatchAt) {
@@ -317,7 +329,7 @@ func TestOverflowMarksSubscriber(t *testing.T) {
 	start(t, b)
 
 	slow := make(chan ReadyEvent, 1) // never read
-	id, _ := b.Register(slow)
+	id, _ := register(t, b, slow)
 	ov := b.Overflowed(id)
 	for i := 0; i < 3; i++ {
 		markOne(t, pool)
@@ -330,7 +342,7 @@ func TestOverflowMarksSubscriber(t *testing.T) {
 
 	// The broadcaster is not blocked: a new subscriber gets the next call.
 	fast := make(chan ReadyEvent, 10)
-	_, p := b.Register(fast)
+	_, p := register(t, b, fast)
 	r := markOne(t, pool)
 	for want := p + 1; want <= r.ReadySeq; want++ {
 		if ev := recv(t, fast); ev.ReadySeq != want {
@@ -359,7 +371,7 @@ func TestBroadcasterStartsAtCurrentMax(t *testing.T) {
 	b.trace = tr.add
 	start(t, b)
 	ch := make(chan ReadyEvent, 10)
-	if _, p := b.Register(ch); p != 5 {
+	if _, p := register(t, b, ch); p != 5 {
 		t.Fatalf("progress = %d, want 5", p)
 	}
 	r := markOne(t, pool)
@@ -387,11 +399,11 @@ func TestDropFuncSkipsEvent(t *testing.T) {
 	b := New(pool, dsn, 50*time.Millisecond, quietLog(), drop)
 	start(t, b)
 	victim, other := make(chan ReadyEvent, 10), make(chan ReadyEvent, 10)
-	id, _ := b.Register(victim)
+	id, _ := register(t, b, victim)
 	mu.Lock()
 	dropID = id
 	mu.Unlock()
-	b.Register(other)
+	register(t, b, other)
 	for i := 0; i < 3; i++ {
 		markOne(t, pool)
 	}
@@ -404,5 +416,81 @@ func TestDropFuncSkipsEvent(t *testing.T) {
 		if ev := recv(t, other); ev.ReadySeq != want {
 			t.Fatalf("other got %+v, want %d", ev, want)
 		}
+	}
+}
+
+func TestRegisterWaitsForReady(t *testing.T) {
+	pool, dsn := setup(t)
+	for i := 0; i < 3; i++ {
+		markOne(t, pool)
+	}
+	b := New(pool, dsn, 50*time.Millisecond, quietLog(), nil)
+	release := make(chan struct{})
+	b.connectHook = func(attempt int) {
+		if attempt == 0 {
+			<-release
+		}
+	}
+
+	// Before Run: a Register whose ctx ends returns an error, registers nothing.
+	short, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, _, err := b.Register(short, make(chan ReadyEvent, 1)); err == nil {
+		t.Fatal("Register before Ready returned no error")
+	}
+
+	type res struct {
+		id   uint64
+		prog int64
+		err  error
+	}
+	ch := make(chan ReadyEvent, 10)
+	got := make(chan res, 1)
+	go func() {
+		id, p, err := b.Register(context.Background(), ch)
+		got <- res{id: id, prog: p, err: err}
+	}()
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- b.Run(ctx) }()
+	t.Cleanup(func() {
+		stop()
+		select {
+		case <-done:
+		case <-time.After(waitTimeout):
+			t.Error("Run did not return")
+		}
+	})
+	// LISTEN is held back: Register must still be blocked.
+	select {
+	case r := <-got:
+		t.Fatalf("Register returned before Ready: %+v", r)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	var r res
+	select {
+	case r = <-got:
+	case <-time.After(waitTimeout):
+		t.Fatal("Register still blocked after Ready")
+	}
+	if r.err != nil || r.prog != 3 {
+		t.Fatalf("Register = %+v, want progress 3", r)
+	}
+	select {
+	case <-b.Ready():
+	default:
+		t.Fatal("Register returned but Ready not closed")
+	}
+	m := markOne(t, pool)
+	if ev := recv(t, ch); ev.ReadySeq != m.ReadySeq || m.ReadySeq != 4 {
+		t.Fatalf("got %+v, want seq 4", ev)
+	}
+	b.Unregister(r.id)
+	b.mu.Lock()
+	left := len(b.subs)
+	b.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("subs left: %d", left)
 	}
 }

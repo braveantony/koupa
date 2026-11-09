@@ -45,7 +45,7 @@ type cycle struct {
 	kind        string
 	triggerAt   time.Time
 	queryDoneAt time.Time // first page
-	dispatchAt  time.Time // last page
+	dispatchAt  time.Time // start of the last page's dispatch, before any send
 	seqs        []int64
 }
 
@@ -100,15 +100,23 @@ func New(pool *pgxpool.Pool, listenDSN string, poll time.Duration, log *slog.Log
 // then-current MAX(ready_seq).
 func (b *Broadcaster) Ready() <-chan struct{} { return b.ready }
 
-// Register adds ch and returns its id and the progress at that instant:
-// every event with ready_seq > progress will be offered to ch, nothing at
-// or below it. Sends never block; see Overflowed.
-func (b *Broadcaster) Register(ch chan<- ReadyEvent) (subID uint64, progress int64) {
+// Register waits until the broadcaster is Ready, then adds ch and returns
+// its id and the progress at that instant: every event with ready_seq >
+// progress will be offered to ch, nothing at or below it. Waiting matters:
+// before initialization progress is not yet meaningful, and the jump to
+// MAX(ready_seq) dispatches nothing. If ctx ends first it returns ctx's
+// error and registers nothing. Sends never block; see Overflowed.
+func (b *Broadcaster) Register(ctx context.Context, ch chan<- ReadyEvent) (subID uint64, progress int64, err error) {
+	select {
+	case <-b.ready:
+	case <-ctx.Done():
+		return 0, 0, ctx.Err()
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.nextID++
 	b.subs[b.nextID] = &subscriber{ch: ch, overflow: make(chan struct{})}
-	return b.nextID, b.progress
+	return b.nextID, b.progress, nil
 }
 
 // Unregister removes a subscriber. Unknown ids are ignored.
@@ -203,11 +211,13 @@ func (b *Broadcaster) catchUp(ctx context.Context, kind string, triggerAt time.T
 			}
 			break
 		}
-		b.dispatch(evs)
-		c.dispatchAt = time.Now()
-		for _, ev := range evs {
-			c.seqs = append(c.seqs, ev.ReadySeq)
+		if b.trace != nil {
+			c.dispatchAt = time.Now()
+			for _, ev := range evs {
+				c.seqs = append(c.seqs, ev.ReadySeq)
+			}
 		}
+		b.dispatch(evs)
 		if len(evs) < b.pageSize {
 			break
 		}
