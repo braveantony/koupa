@@ -47,7 +47,7 @@ func TestEveryEventCarriesPodUID(t *testing.T) {
 	log := New(&buf, "uid-9", "p", "v2")
 	for _, ev := range []string{EvStartup, EvTxTimeoutCheck, EvRequestReceived, EvRequestEnd, EvSigterm,
 		EvExit, EvCommitUnknown, EvWriteStart, EvWriteEnd, EvWriteBlocked, EvMutationDropReady,
-		EvMutationDuplicateOrder, EvHookPaused, EvShutdownTimeout, EvProgressAheadOfH} {
+		EvMutationDuplicateOrder, EvHookPaused, EvShutdownTimeout, EvProgressAheadOfH, EvKeyCleanup} {
 		buf.Reset()
 		log.Info(ev)
 		var m map[string]any

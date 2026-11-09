@@ -1,8 +1,11 @@
 package store
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"net"
 	"net/url"
 	"os"
@@ -15,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"koupa/app/applog"
 	"koupa/internal/testdb"
 	"koupa/testproxy"
 )
@@ -373,7 +377,7 @@ func TestKeyCleanedBetweenConflictAndRead(t *testing.T) {
 	}
 }
 
-// The re-read keeps missing: give up after maxPlaceAttempts.
+// The re-read keeps missing: give up after 1 + 3 retries (A6: 最多 3 次).
 func TestKeyCleanedRetriesAreBounded(t *testing.T) {
 	pool := testdb.New(t)
 	var reads atomic.Int32
@@ -384,11 +388,11 @@ func TestKeyCleanedRetriesAreBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, tx, err := place(t, pool, "loop", oneTea, idemOpts())
-	if !errors.Is(err, errKeyVanished) || tx.Outcome != TxRolledBack {
-		t.Fatalf("got %+v %v, want errKeyVanished after rollback", tx, err)
+	if !errors.Is(err, ErrKeyVanished) || tx.Outcome != TxRolledBack {
+		t.Fatalf("got %+v %v, want ErrKeyVanished after rollback", tx, err)
 	}
-	if n := reads.Load(); n != maxPlaceAttempts {
-		t.Fatalf("attempts = %d, want %d", n, maxPlaceAttempts)
+	if n := reads.Load(); n != 4 {
+		t.Fatalf("attempts = %d, want 4 (first try + 3 retries)", n)
 	}
 }
 
@@ -608,4 +612,117 @@ func TestCommitUnknownThenRetryOneOrder(t *testing.T) {
 			}
 		})
 	}
+}
+
+// lockedBuffer is a goroutine-safe log sink.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// events returns the decoded JSON log lines with the given message.
+func (b *lockedBuffer) events(t *testing.T, msg string) []map[string]any {
+	t.Helper()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var out []map[string]any
+	for _, line := range bytes.Split(b.buf.Bytes(), []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal(line, &m); err != nil {
+			t.Fatalf("bad log line %q: %v", line, err)
+		}
+		if m["msg"] == msg {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// RunKeyCleanup runs CleanupKeys every interval, logs each run, keeps going
+// after an error, and returns when ctx is done.
+func TestRunKeyCleanup(t *testing.T) {
+	pool := testdb.New(t)
+	c := ctx(t)
+	if _, _, err := place(t, pool, "aged", oneTea, idemOpts()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(c, `UPDATE idempotency_keys SET created_at = now() - interval '26 hours'`); err != nil {
+		t.Fatal(err)
+	}
+	admin, err := pgx.Connect(c, os.Getenv("KOUPA_TEST_DSN"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close(c)
+	acfg := admin.Config().Copy()
+	acfg.Database = pool.Config().ConnConfig.Database
+	dbAdmin, err := pgx.ConnectConfig(c, acfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dbAdmin.Close(c)
+	// Make the cleanup fail first: the table is temporarily missing.
+	if _, err := dbAdmin.Exec(c, `ALTER TABLE idempotency_keys RENAME TO idempotency_keys_away`); err != nil {
+		t.Fatal(err)
+	}
+
+	logs := &lockedBuffer{}
+	log := slog.New(slog.NewJSONHandler(logs, nil))
+	lctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		RunKeyCleanup(lctx, pool, 50*time.Millisecond, log)
+	}()
+
+	waitFor := func(what string, ok func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(10 * time.Second); !ok(); time.Sleep(20 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting for %s; logs:\n%s", what, logs.String())
+			}
+		}
+	}
+	waitFor("an error run", func() bool {
+		for _, m := range logs.events(t, applog.EvKeyCleanup) {
+			if m["level"] == "ERROR" && m["err"] != nil {
+				return true
+			}
+		}
+		return false
+	})
+	if _, err := dbAdmin.Exec(c, `ALTER TABLE idempotency_keys_away RENAME TO idempotency_keys`); err != nil {
+		t.Fatal(err)
+	}
+	waitFor("the aged key to be deleted", func() bool { return countKeys(t, pool) == 0 })
+	waitFor("a run logging deleted=1", func() bool {
+		for _, m := range logs.events(t, applog.EvKeyCleanup) {
+			if m["level"] == "INFO" && m["deleted"] == float64(1) {
+				return true
+			}
+		}
+		return false
+	})
+	if n := countOrders(t, pool, "aged"); n != 1 {
+		t.Fatalf("orders = %d; cleanup must only delete keys", n)
+	}
+
+	stop()
+	recv(t, done, "RunKeyCleanup to return after cancel")
 }

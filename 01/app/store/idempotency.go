@@ -4,25 +4,30 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"koupa/app/applog"
 )
 
 // ErrConflict means the client_ref was already used for a different
 // request body (HTTP 409).
 var ErrConflict = errors.New("client_ref reused with a different request")
 
-// errKeyVanished means ON CONFLICT reported an existing key but the next
+// ErrKeyVanished means ON CONFLICT reported an existing key but the next
 // statement could not read it: the cleanup deleted it in between. The
-// attempt is rolled back and PlaceOrder starts again from step 1.
-var errKeyVanished = errors.New("idempotency key vanished after conflict")
+// attempt is rolled back and PlaceOrder starts again from step 1; it is
+// returned only when every attempt hit it (HTTP 503, retryable).
+var ErrKeyVanished = errors.New("idempotency key vanished after conflict")
 
-// maxPlaceAttempts bounds the step-3 retries when the key vanishes.
-const maxPlaceAttempts = 3
+// maxPlaceAttempts bounds PlaceOrder when the key vanishes: the first try
+// plus at most 3 retries (plan A6 step 3).
+const maxPlaceAttempts = 1 + 3
 
-// CleanupInterval is how often the app runs CleanupKeys.
+// CleanupInterval is how often the app runs CleanupKeys (via RunKeyCleanup).
 const CleanupInterval = time.Hour
 
 // PlaceOptions configures PlaceOrder.
@@ -129,7 +134,7 @@ func PlaceOrder(ctx context.Context, pool *pgxpool.Pool, req OrderRequest, opts 
 				return err
 			}
 		})
-		if !errors.Is(err, errKeyVanished) {
+		if !errors.Is(err, ErrKeyVanished) {
 			break
 		}
 	}
@@ -153,7 +158,7 @@ func readKey(ctx context.Context, tx pgx.Tx, clientRef, hash string) (Order, err
 	)
 	err := tx.QueryRow(ctx, keyReadSQL, clientRef).Scan(&gotHash, &orderID, &number, &total)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Order{}, errKeyVanished
+		return Order{}, ErrKeyVanished
 	}
 	if err != nil {
 		return Order{}, err
@@ -202,4 +207,30 @@ func CleanupKeys(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
 		return 0, err
 	}
 	return tag.RowsAffected(), nil
+}
+
+// RunKeyCleanup calls CleanupKeys every interval until ctx is done. Each run
+// is logged (key_cleanup with the deleted count, or the error at ERROR
+// level); an error does not stop the loop.
+func RunKeyCleanup(ctx context.Context, pool *pgxpool.Pool, interval time.Duration, log *slog.Logger) {
+	tick := time.NewTicker(interval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		rctx, cancel := context.WithTimeout(ctx, dbTimeout)
+		n, err := CleanupKeys(rctx, pool)
+		cancel()
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			log.Error(applog.EvKeyCleanup, "err", err.Error())
+			continue
+		}
+		log.Info(applog.EvKeyCleanup, "deleted", n)
+	}
 }

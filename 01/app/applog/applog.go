@@ -25,6 +25,7 @@ const (
 	EvHookPaused             = "hook_paused"
 	EvShutdownTimeout        = "shutdown_timeout"
 	EvProgressAheadOfH       = "progress_ahead_of_h"
+	EvKeyCleanup             = "key_cleanup"
 )
 
 // New returns a JSON logger writing to w. Use the event constant as the
