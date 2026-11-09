@@ -88,6 +88,7 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /{$}", s.page("order.html"))
 	mux.HandleFunc("GET /kitchen", s.page("kitchen.html"))
 	mux.HandleFunc("GET /board", s.page("board.html"))
+	mux.HandleFunc("GET /app.js", s.page("app.js"))
 
 	mux.HandleFunc("GET /api/menu", s.handleMenu)
 	mux.HandleFunc("POST /orders", s.handlePlaceOrder)

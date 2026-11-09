@@ -17,6 +17,7 @@ import (
 	"koupa/app/hooks"
 	"koupa/app/server"
 	"koupa/app/store"
+	"koupa/app/web"
 )
 
 // startupTimeout bounds the initial database connection.
@@ -97,6 +98,7 @@ func main() {
 		Log:         log,
 		FinalLog:    finalLog,
 		Hooks:       hooks.Noop{},
+		Pages:       web.Pages(),
 		Signals:     sigs,
 	})
 	if err != nil {
