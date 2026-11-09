@@ -252,7 +252,7 @@ docker-content-digest: sha256:03a1c6a62b27e8ad31cae5c085131b5ac706b09403d6fcb6c5
 |---|---|---|
 | Envoy 端點／設定更新紀錄（calibrate 的直接證據上界 U） | 待確認，傾向做不到 | 需要 Envoy 對 EDS 更新的紀錄（debug log 或 agent 後端列表快照）。沒有的話，A11 已規定退回「模型推估」，並標成估計 |
 | 干擾因素 | 要記錄 | outlier detection 預設開（3.1 末段） |
-| Hubble | 降級做法 | 第 4 節；在每個 agent Pod 內執行，輔助用途 |
+| Hubble | 做不到（主機上）；降級做法待確認 | 第 4 節；在每個 agent Pod 內執行 `hubble observe` 是否可行待確認（執行檔存在與否未驗證），即使可行也只是輔助用途 |
 | API server audit log（交叉核對刪除請求時間） | 待確認 | tk8s 有 `manifests/audit-policy.yaml`；實際有無啟用與 log 位置，叢集不存在無法查證 |
 
 ### 表 C：A14 「和入口的紀錄對帳」三方
@@ -271,7 +271,7 @@ docker-content-digest: sha256:03a1c6a62b27e8ad31cae5c085131b5ac706b09403d6fcb6c5
 
 1. A11「入口預設會不會重試」：改為「預設不會；HTTPRoute 不寫 `retry` 就是關閉（依 Cilium v1.20.4 原始碼，待用 config dump 確認）」。
 2. A11「上游嘗試次數要分清楚三種情況」：改為「HTTP access log 的 `%UPSTREAM_REQUEST_ATTEMPT_COUNT%` 在沒設定時也印 0（Envoy 1.39.5 原始碼 `value_or(0)`），所以只區分『印出數字』與『整行缺漏』」。
-3. A11 流量那一列：Hubble 改成在 agent Pod 內執行。
+3. A11 流量那一列：主機上沒有 `hubble`，Hubble 這一列標成「待確認」；若確認 agent Pod 內有 `hubble` 執行檔，再改成在 agent Pod 內執行，否則這一列視為取不到。
 4. 4.3 的長連線逾時：預設 route timeout 15 秒是最可能的原因，待 config dump 確認。
 
 ## 7. 待確認清單（有叢集之後）
