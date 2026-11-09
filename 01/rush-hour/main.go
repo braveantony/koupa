@@ -4,6 +4,10 @@
 //	              [--ingress-log FILE] [--app-logs DIR] [--tx-timeout 60s] [--verbose] [--no-ingress]
 //	rush-hour probe --base URL --run ID --duration 30s --out DIR [--rate 50]
 //	rush-hour summarize DIR...
+//	rush-hour timeline DIR          (DIR/timeline.jsonl + timeline.txt)
+//	rush-hour coverage DIR          (DIR/app/<uid>.meta.json, used by collect-timeline.sh stop)
+//	rush-hour stamp [--json]        (stdin -> stdout, collector stamp per line)
+//	rush-hour follow-log --pod NAME --uid UID --dir DIR [--namespace koupa]
 //
 // Exit status: 0 normal; 2 the measurement is invalid (or could not run).
 package main
@@ -19,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"koupa/rush-hour/timeline"
 	"koupa/rush-hour/winddown"
 )
 
@@ -29,7 +34,11 @@ func main() {
 const usage = `usage:
   rush-hour run --base URL --run ID --out DIR [flags]
   rush-hour probe --base URL --run ID --duration D --out DIR [--rate 50]
-  rush-hour summarize DIR...`
+  rush-hour summarize DIR...
+  rush-hour timeline DIR
+  rush-hour coverage DIR
+  rush-hour stamp [--json]
+  rush-hour follow-log --pod NAME --uid UID --dir DIR [--namespace koupa]`
 
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -55,6 +64,45 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprint(stdout, out)
 		return 0
+	case "timeline":
+		if len(args) != 2 {
+			fmt.Fprintln(stderr, usage)
+			return 2
+		}
+		evs, err := timeline.Build(args[1])
+		if err == nil {
+			err = timeline.Write(args[1], evs)
+		}
+		if err != nil {
+			fmt.Fprintln(stderr, "rush-hour timeline:", err)
+			return 2
+		}
+		return 0
+	case "coverage":
+		if len(args) != 2 {
+			fmt.Fprintln(stderr, usage)
+			return 2
+		}
+		if err := timeline.Finalize(args[1]); err != nil {
+			fmt.Fprintln(stderr, "rush-hour coverage:", err)
+			return 2
+		}
+		return 0
+	case "stamp":
+		fs := flag.NewFlagSet("stamp", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		js := fs.Bool("json", false, "input is a stream of JSON values; write each compacted on one line")
+		if err := fs.Parse(args[1:]); err != nil {
+			return 2
+		}
+		now := func() time.Time { return time.Now().UTC() }
+		if err := timeline.Stamp(os.Stdin, stdout, *js, now); err != nil {
+			fmt.Fprintln(stderr, "rush-hour stamp:", err)
+			return 1
+		}
+		return 0
+	case "follow-log":
+		return cmdFollowLog(ctx, args[1:], stderr)
 	}
 	fmt.Fprintln(stderr, usage)
 	return 2
@@ -130,6 +178,29 @@ func cmdProbe(ctx context.Context, args []string, stderr io.Writer) int {
 	if err := winddown.Probe(ctx, c); err != nil {
 		fmt.Fprintln(stderr, "rush-hour probe: 本次量測無效：", err)
 		return 2
+	}
+	return 0
+}
+
+func cmdFollowLog(ctx context.Context, args []string, stderr io.Writer) int {
+	fs := flag.NewFlagSet("follow-log", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var f timeline.Follower
+	fs.StringVar(&f.Namespace, "namespace", "koupa", "namespace")
+	fs.StringVar(&f.Pod, "pod", "", "Pod name")
+	fs.StringVar(&f.UID, "uid", "", "Pod UID (file name)")
+	fs.StringVar(&f.Dir, "dir", "", "app log directory")
+	fs.StringVar(&f.Kubectl, "kubectl", "kubectl", "kubectl binary")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if f.Pod == "" || f.UID == "" || f.Dir == "" {
+		fmt.Fprintln(stderr, "rush-hour follow-log: --pod, --uid and --dir are required")
+		return 2
+	}
+	if err := f.Run(ctx); err != nil {
+		fmt.Fprintln(stderr, "rush-hour follow-log:", err)
+		return 1
 	}
 	return 0
 }

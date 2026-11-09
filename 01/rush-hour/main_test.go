@@ -16,6 +16,10 @@ func TestRunRejectsBadFlags(t *testing.T) {
 		{"run", "--base", "http://x", "--run", "r1", "--out", "d", "--no-ingress", "--ingress-log", "f"},
 		{"probe", "--base", "http://x", "--run", "r1", "--out", "d"},
 		{"summarize"},
+		{"timeline"},
+		{"timeline", "/nonexistent-dir"},
+		{"coverage"},
+		{"follow-log", "--pod", "p"},
 	} {
 		var out, errb bytes.Buffer
 		if code := run(args, &out, &errb); code != 2 {
