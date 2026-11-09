@@ -131,3 +131,21 @@ func TestWriterFlushesEachRecord(t *testing.T) {
 		t.Fatalf("flushed %d err %v", f.flushed, w.Err())
 	}
 }
+
+func TestBoardWriterGuarantees(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewBoardWriter(&buf)
+	if err := w.Write(BoardEvent{Run: "r", Board: "b", Kind: BoardConnect}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "ready_seq") || strings.Contains(buf.String(), "shutdown_seen") {
+		t.Fatalf("absent serialized: %s", buf.String())
+	}
+	if NewBoardWriter(failW{}).Write(BoardEvent{}) == nil {
+		t.Fatal("want error")
+	}
+	bw := NewBoardWriter(shortW{})
+	if err := bw.Write(BoardEvent{}); !errors.Is(err, io.ErrShortWrite) || !errors.Is(bw.Err(), io.ErrShortWrite) {
+		t.Fatalf("short write: %v / %v", err, bw.Err())
+	}
+}
