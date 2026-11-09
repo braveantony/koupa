@@ -26,6 +26,10 @@ const (
 	EvShutdownTimeout        = "shutdown_timeout"
 	EvProgressAheadOfH       = "progress_ahead_of_h"
 	EvKeyCleanup             = "key_cleanup"
+	EvListenActive           = "listen_active"
+	EvListenLost             = "listen_lost"
+	EvBroadcastQueryFailed   = "broadcast_query_failed"
+	EvSubscriberOverflow     = "subscriber_overflow"
 )
 
 // New returns a JSON logger writing to w. Use the event constant as the

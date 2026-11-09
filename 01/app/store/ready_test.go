@@ -382,3 +382,35 @@ func BenchmarkReadyUnderLoad(b *testing.B) {
 	}
 	b.ReportMetric(float64(maxWaiters), "max_lock_waiters")
 }
+
+func TestReadyAfterAndMax(t *testing.T) {
+	pool := testdb.New(t)
+	c := ctx(t)
+	if m, err := MaxReadySeq(c, pool); err != nil || m != 0 {
+		t.Fatalf("empty max = %d %v", m, err)
+	}
+	var want []ReadyEvent
+	for i := 0; i < 5; i++ {
+		o := makeOrder(t, pool)
+		r, _, err := markReady(pool, o.ID, "a", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want = append(want, ReadyEvent{ReadySeq: r.ReadySeq, OrderID: o.ID, Number: o.Number})
+	}
+	makeOrder(t, pool) // not ready: must not appear
+	if m, err := MaxReadySeq(c, pool); err != nil || m != 5 {
+		t.Fatalf("max = %d %v", m, err)
+	}
+	got, err := ReadyAfter(c, pool, 1, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0] != want[1] || got[1] != want[2] || got[2] != want[3] {
+		t.Fatalf("ReadyAfter(1,3) = %+v, want %+v", got, want[1:4])
+	}
+	got, err = ReadyAfter(c, pool, 5, 10)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("ReadyAfter(5) = %+v %v", got, err)
+	}
+}

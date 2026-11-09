@@ -95,3 +95,40 @@ func MarkReady(ctx context.Context, pool *pgxpool.Pool, orderID int64, attemptID
 	}
 	return res, tr, nil
 }
+
+// ReadyEvent is one call-number as the broadcaster dispatches it.
+type ReadyEvent struct {
+	ReadySeq int64
+	OrderID  int64
+	Number   string
+}
+
+// MaxReadySeq returns the largest ready_seq, or 0 when nothing is ready.
+func MaxReadySeq(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
+	var m int64
+	err := pool.QueryRow(ctx, `SELECT COALESCE(MAX(ready_seq), 0) FROM orders`).Scan(&m)
+	return m, err
+}
+
+// ReadyAfter returns up to limit ready orders with ready_seq > after, in
+// ascending ready_seq order.
+func ReadyAfter(ctx context.Context, pool *pgxpool.Pool, after int64, limit int) ([]ReadyEvent, error) {
+	rows, err := pool.Query(ctx,
+		`SELECT ready_seq, id, number FROM orders
+		 WHERE ready_seq > $1 ORDER BY ready_seq LIMIT $2`, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ReadyEvent
+	for rows.Next() {
+		var ev ReadyEvent
+		var num int64
+		if err := rows.Scan(&ev.ReadySeq, &ev.OrderID, &num); err != nil {
+			return nil, err
+		}
+		ev.Number = FormatNumber(num)
+		out = append(out, ev)
+	}
+	return out, rows.Err()
+}
