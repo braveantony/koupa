@@ -138,23 +138,48 @@ func CreateOrderTx(ctx context.Context, tx pgx.Tx, req OrderRequest, checkSoldOu
 	return o, nil
 }
 
-// ListPending returns orders still preparing, oldest first.
-func ListPending(ctx context.Context, pool *pgxpool.Pool, limit int) ([]Order, error) {
-	rows, err := pool.Query(ctx,
-		`SELECT id, number, total FROM orders WHERE status = 'preparing' ORDER BY id LIMIT $1`, limit)
+// PendingItem is one line of a pending order, as the kitchen needs it.
+type PendingItem struct {
+	Name     string
+	Quantity int
+}
+
+// PendingOrder is an order still preparing, with its items.
+type PendingOrder struct {
+	Order
+	Items []PendingItem
+}
+
+// ListPending returns orders still preparing, oldest first, each with its
+// items. One query: the limited order set is joined to its items.
+func ListPending(ctx context.Context, pool *pgxpool.Pool, limit int) ([]PendingOrder, error) {
+	rows, err := pool.Query(ctx, `
+SELECT o.id, o.number, o.total, m.name, i.quantity
+FROM (SELECT id, number, total FROM orders WHERE status = 'preparing' ORDER BY id LIMIT $1) o
+LEFT JOIN order_items i ON i.order_id = o.id
+LEFT JOIN menu_items m ON m.id = i.menu_item_id
+ORDER BY o.id, m.id`, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []Order
+	var out []PendingOrder
 	for rows.Next() {
 		var o Order
 		var num int64
-		if err := rows.Scan(&o.ID, &num, &o.Total); err != nil {
+		var name *string
+		var qty *int
+		if err := rows.Scan(&o.ID, &num, &o.Total, &name, &qty); err != nil {
 			return nil, err
 		}
-		o.Number = FormatNumber(num)
-		out = append(out, o)
+		if len(out) == 0 || out[len(out)-1].ID != o.ID {
+			o.Number = FormatNumber(num)
+			out = append(out, PendingOrder{Order: o})
+		}
+		if name != nil && qty != nil {
+			last := &out[len(out)-1]
+			last.Items = append(last.Items, PendingItem{Name: *name, Quantity: *qty})
+		}
 	}
 	return out, rows.Err()
 }

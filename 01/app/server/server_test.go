@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync/atomic"
@@ -400,9 +399,16 @@ func TestPendingOrders(t *testing.T) {
 	if len(pending) != 2 || pending[0] != a || pending[1] != b {
 		t.Errorf("pending = %+v, want %+v %+v", pending, a, b)
 	}
-	raw, _ := json.Marshal(pending)
-	if len(raw) == 0 {
-		t.Fatal("empty")
+	var full []struct {
+		Number string `json:"number"`
+		Items  []struct {
+			Name     string `json:"name"`
+			Quantity int    `json:"quantity"`
+		} `json:"items"`
+	}
+	e.do(t, "GET", "/api/orders?status=pending", "", "", &full)
+	if len(full) != 2 || len(full[1].Items) != 1 || full[1].Items[0].Name != "容器冬瓜茶" || full[1].Items[0].Quantity != 2 {
+		t.Errorf("pending items = %+v", full)
 	}
 }
 

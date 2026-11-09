@@ -40,6 +40,11 @@ func TestCreateOrderComputesTotal(t *testing.T) {
 	if err != nil || len(pending) != 1 || pending[0].ID != o.ID {
 		t.Fatalf("pending %+v err %v", pending, err)
 	}
+	want := []PendingItem{{"滾動珍珠奶茶", 1}, {"Pod 沫紅茶", 2}}
+	if len(pending[0].Items) != 2 || pending[0].Items[0] != want[0] || pending[0].Items[1] != want[1] ||
+		pending[0].Number != o.Number || pending[0].Total != 175 {
+		t.Fatalf("pending items %+v", pending[0])
+	}
 }
 
 func TestCreateOrderInvalid(t *testing.T) {

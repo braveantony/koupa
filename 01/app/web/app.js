@@ -71,6 +71,14 @@ function initOrder() {
       return { status: 0, data: {} };
     }
   }
+  // Known API errors in Traditional Chinese; the raw text is for logs only.
+  function describeError(res) {
+    const raw = String(res.data.error || '');
+    if (/sold out/i.test(raw)) return '有品項已售完，請重新選擇';
+    if (res.status === 409) return '這筆訂單編號已被不同內容使用，請重新下單';
+    if (res.status === 422) return '訂單內容有誤，請檢查品項與數量';
+    return '請稍後再試（錯誤 ' + res.status + '）';
+  }
   async function submit() {
     const result = $('result');
     result.className = '';
@@ -100,12 +108,12 @@ function initOrder() {
     } else if (res.status === 409 || res.status === 422) {
       pending = null; // the order itself was rejected; a new one gets a new ref
       result.className = 'err';
-      result.textContent = '無法送出：' + (res.data.error || res.status);
+      result.textContent = '無法送出：' + describeError(res);
       loadMenu().catch(() => {});
     } else {
       // Still unknown: keep `pending` so pressing again reuses the same client_ref.
       result.className = 'err';
-      result.textContent = '連線失敗，請再按一次送出（不會重複下單）';
+      result.textContent = '連線失敗，請再按一次送出';
     }
   }
   $('submit').addEventListener('click', submit);
@@ -126,6 +134,10 @@ function initKitchen() {
         li.dataset.orderId = o.order_id;
         li.dataset.number = o.number;
         li.appendChild(document.createTextNode('號碼牌 ' + o.number + '　' + o.total + ' 元　'));
+        const items = document.createElement('span');
+        items.className = 'items';
+        items.textContent = (o.items || []).map((it) => it.name + ' x' + it.quantity).join('、') + '　';
+        li.appendChild(items);
         const b = document.createElement('button');
         b.textContent = '完成';
         b.addEventListener('click', async () => {

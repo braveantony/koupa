@@ -23,6 +23,17 @@ type orderJSON struct {
 	Total   int64  `json:"total"`
 }
 
+type pendingItemJSON struct {
+	Name     string `json:"name"`
+	Quantity int    `json:"quantity"`
+}
+
+// pendingJSON is an order plus what to make for it.
+type pendingJSON struct {
+	orderJSON
+	Items []pendingItemJSON `json:"items"`
+}
+
 type menuJSON struct {
 	ID        int64  `json:"id"`
 	Name      string `json:"name"`
@@ -148,9 +159,13 @@ func (s *Server) handlePending(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "database unavailable")
 		return
 	}
-	out := make([]orderJSON, 0, len(orders))
+	out := make([]pendingJSON, 0, len(orders))
 	for _, o := range orders {
-		out = append(out, orderJSON{OrderID: o.ID, Number: o.Number, Total: o.Total})
+		p := pendingJSON{orderJSON: orderJSON{OrderID: o.ID, Number: o.Number, Total: o.Total}, Items: []pendingItemJSON{}}
+		for _, it := range o.Items {
+			p.Items = append(p.Items, pendingItemJSON{Name: it.Name, Quantity: it.Quantity})
+		}
+		out = append(out, p)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
