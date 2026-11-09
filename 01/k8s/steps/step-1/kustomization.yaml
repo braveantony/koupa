@@ -1,10 +1,14 @@
 # Step 1: delay SIGTERM with a preStop sleep so endpoint removal can reach
-# the gateway first. 7 s = ceil(candidate 1.445 s) + 5 s buffer: the
+# the gateway first. 7 s = ceil(candidate 1.504 s) + 5 s buffer: the
 # candidate for this environment (tkha), from `measure.sh calibrate` on
-# 2026-11-09, 6 valid samples over 3 runs, upper bounds are model estimates
-# (A11 step 4; no direct endpoint-update evidence), evidence in
-# evidence/calibrate-20261109-181427/candidate.json. The 5 s buffer is
-# PROVISIONAL until calibrated more often. Grace stays at the default 30 s.
+# 2026-11-09 22:06 (evidence/calibrate-20261109-220635/candidate.json),
+# 6 valid samples over 3 runs, L from the per-attempt ingress access log,
+# upper bounds are model estimates (A11 step 4; no direct endpoint-update
+# evidence). The earlier calibration (18:14, 1.445 s) re-evaluated with the
+# ingress L gives the same 6 valid samples; across both, the last ingress
+# selection of any request to a terminating Pod was at most 1.457 s after
+# the delete request (18 Pods). The 5 s buffer is PROVISIONAL. Grace stays
+# at the default 30 s.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:

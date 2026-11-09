@@ -1,6 +1,7 @@
 # Step 2: graceful shutdown. Timing rule (plan A5):
 #   preStop 7 (step 1) + SHUTDOWN_TIMEOUT 15 + 5 < terminationGracePeriodSeconds
-# grace stays 40 (set when step 1 had the 15 s placeholder): 27 < 40 holds.
+# grace stays 40 (set when step 1 had the 15 s placeholder): 27 < 40 holds
+# (step 1 re-calibrated on 2026-11-09 22:06: still 7 s).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
