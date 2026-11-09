@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"koupa/internal/testdb"
+	"koupa/internal/wire"
 )
 
 func ctx(t *testing.T) context.Context {
@@ -105,6 +106,9 @@ func TestMenuSeeded(t *testing.T) {
 		}
 		got = append(got, s)
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
 	want := []string{"滾動珍珠奶茶", "Pod 沫紅茶", "微服務綠茶", "容器冬瓜茶"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
@@ -113,5 +117,22 @@ func TestMenuSeeded(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("got %v, want %v", got, want)
 		}
+	}
+}
+
+func TestReadyAttemptStoresAttemptID(t *testing.T) {
+	pool := testdb.New(t)
+	c := ctx(t)
+	want := wire.NewAttemptID("r1", 7, 1)
+	var id int64
+	if err := pool.QueryRow(c, `INSERT INTO orders (number, total, ready_attempt) VALUES (1, 55, $1) RETURNING id`, want).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	if err := pool.QueryRow(c, `SELECT ready_attempt FROM orders WHERE id = $1`, id).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("ready_attempt = %q, want %q", got, want)
 	}
 }

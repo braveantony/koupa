@@ -19,7 +19,7 @@ CREATE TABLE orders (
     created_at    timestamptz NOT NULL DEFAULT now(),
     ready_seq     bigint,
     ready_at      timestamptz,
-    ready_attempt integer,
+    ready_attempt text,
     client_ref    text
 );
 
