@@ -330,8 +330,8 @@ type AppLogs struct {
 //
 // Coverage (A11, until Task 20 refines it): a Pod's log is covered when it
 // has a startup line, every non-blank line is JSON that parsed (a prefix
-// before the first '{' is allowed), the meta file (if any) names the same
-// Pod, and either its final marker
+// before the first '{' is allowed), a meta file, if present, is readable
+// and names the same Pod, and either its final marker
 // is present (exit when graceful_shutdown, otherwise sigterm) or the meta
 // file says complete. For covered Pods the contradiction check runs:
 // request_end without request_received, or more than one of either line,
@@ -448,7 +448,9 @@ func ReadAppLogs(dir string) *AppLogs {
 		} else if p.Graceful != nil {
 			marker = p.SigtermAt != nil
 		}
-		p.Covered = p.Startup && p.Bad == 0 && (marker || (p.Meta != nil && p.Meta.Complete))
+		// A meta file that is present but unusable (unreadable, broken, or
+		// naming another Pod) makes this Pod's evidence unreliable.
+		p.Covered = p.MetaErr == "" && p.Startup && p.Bad == 0 && (marker || (p.Meta != nil && p.Meta.Complete))
 	}
 	// Contradiction check, for attempts on covered Pods.
 	for a, ends := range out.Ends {

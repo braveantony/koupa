@@ -326,6 +326,8 @@ func Evaluate(f Facts, ev Evidence) Scorecard {
 			// Cancelled before its first record: it may still have
 			// reached the App and created an order.
 			sc.Items.Orders.Unknown++
+			sc.Items.FirstTryFailed.Unknown++ // outcome never observed
+			sc.Items.FailedAfterRetry.Unknown++
 			unsettledRefs[ref] = true
 			sc.Diag.Unsettled = append(sc.Diag.Unsettled, UnsettledAttempt{Kind: record.KindOrder, ClientRef: ref, Reason: reasonNoRecord})
 		}

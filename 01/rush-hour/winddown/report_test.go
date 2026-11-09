@@ -350,7 +350,8 @@ func TestInFlightWithoutRecordIsUnsettled(t *testing.T) {
 	at := f.EvaluatedAt
 	f.ClientCancelAt = &at
 	sc := Evaluate(f, ev)
-	if sc.Items.Orders != (Item{3, 1}) || sc.Items.DuplicateRefs != (Item{1, 1}) || sc.Items.DuplicateExtra != (Item{1, 1}) {
+	if sc.Items.Orders != (Item{3, 1}) || sc.Items.DuplicateRefs != (Item{1, 1}) || sc.Items.DuplicateExtra != (Item{1, 1}) ||
+		sc.Items.FirstTryFailed != (Item{1, 1}) || sc.Items.FailedAfterRetry != (Item{0, 1}) {
 		t.Errorf("items %+v", sc.Items)
 	}
 }

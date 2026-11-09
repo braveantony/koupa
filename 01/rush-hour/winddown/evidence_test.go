@@ -107,11 +107,21 @@ func TestAppLogCoverage(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "pm.meta.json"), []byte(`{"pod_uid":"other","complete":true}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// final marker present, but the meta names another Pod / is broken:
+	// the evidence for this Pod is unreliable.
+	writeLog(t, dir, "px", startup("px", false), sigterm("px"))
+	if err := os.WriteFile(filepath.Join(dir, "px.meta.json"), []byte(`{"pod_uid":"other","complete":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeLog(t, dir, "py", startup("py", false), sigterm("py"))
+	if err := os.WriteFile(filepath.Join(dir, "py.meta.json"), []byte(`{"pod_uid":`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	app := ReadAppLogs(dir)
 	if !app.Available {
 		t.Fatal(app.Err)
 	}
-	want := map[string]bool{"p0": true, "pg": false, "pe": true, "pr": true, "pn": false, "pb": false, "pc": true, "pd": false, "pm": false}
+	want := map[string]bool{"p0": true, "pg": false, "pe": true, "pr": true, "pn": false, "pb": false, "pc": true, "pd": false, "pm": false, "px": false, "py": false}
 	for uid, w := range want {
 		p := app.Pods[uid]
 		if p == nil {
