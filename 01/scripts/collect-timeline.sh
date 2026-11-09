@@ -11,7 +11,8 @@
 #   pods.jsonl            kubectl get pods -w -o json --output-watch-events
 #   endpointslices.jsonl  same for EndpointSlices of Service koupa
 #   events.jsonl          same for events
-#   hubble.jsonl          hubble observe --namespace koupa -o json, in every cilium agent
+#   hubble.jsonl          hubble observe --namespace koupa --since START --until STOP -o json,
+#                         every cilium agent, read once at stop (ring buffer: ~4095 flows/agent)
 #   ingress.log           access-log lines of every cilium-envoy Pod (filtered on "attempt")
 #   envoy-stats-start.txt / envoy-stats-end.txt
 #                         cilium-dbg envoy admin metrics, koupa clusters, every agent;
@@ -58,18 +59,6 @@ missing() {
 
 stopping() { [ -e "$dir/.stopping" ]; }
 
-# marker: names this run's processes inside the cilium agents.
-marker() { echo "koupa-collect-$(printf %s "$dir" | cksum | cut -d' ' -f1)"; }
-
-# reap_remote: end any hubble observe of this run still inside an agent.
-reap_remote() {
-	local pod m
-	m=$(marker)
-	for pod in $("$KUBECTL" -n kube-system get pods -l k8s-app=cilium -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
-		"$KUBECTL" -n kube-system exec "$pod" -c cilium-agent -- pkill -f -- "--pod $m " >/dev/null 2>&1 || true
-	done
-}
-
 # with_lock CMD...: run CMD holding DIR/.lock (registration vs stop).
 with_lock() {
 	(
@@ -101,6 +90,7 @@ registered() { grep -c . "$dir/collectors.pid" 2>/dev/null || true; }
 wait_registered() {
 	local i
 	for i in $(seq 100); do
+		stopping && return 0
 		[ "$(registered)" -ge "$1" ] && return 0
 		sleep 0.1
 	done
@@ -120,7 +110,6 @@ abort() {
 		sleep 0.1
 	done
 	alive && kill_groups KILL
-	reap_remote
 	echo "collect-timeline: $1 failed or was interrupted; collectors stopped. Run '$0 stop $dir' to finalize." >&2
 	exit 1
 }
@@ -143,29 +132,30 @@ _watch() {
 	done
 }
 
-# _hubble DIR AGENT_POD
-_hubble() {
-	local pod=$1
-	while :; do
-		set +e
-		# kubectl exec does not end the remote command when the client dies:
-		# hubble runs beside a `cat` on the exec's stdin, which sees EOF once
-		# the stream closes and stops it. --not --pod <marker> filters nothing
-		# but names this run's processes for the cleanup in stop.
-		local sp
-		exec 3< <(exec sleep infinity)
-		sp=$!
-		"$KUBECTL" -n kube-system exec -i "$pod" -c cilium-agent -- sh -c \
-			"hubble observe -f --not --pod $(marker) --namespace $NS -o json & p=\$!; cat >/dev/null; kill \$p" \
-			<&3 2>>"$dir/hubble.err" | "$RH" stamp --json >>"$dir/hubble.jsonl"
-		local rc=${PIPESTATUS[0]}
-		exec 3<&-
-		kill "$sp" 2>/dev/null || true
-		set -e
-		stopping && exit 0
-		missing "hubble" "agent $pod 的 hubble observe 中斷（rc=$rc），重新連線"
-		sleep 1
+# hubble_snapshot SINCE UNTIL: the flows of the run from every agent's ring
+# buffer, read once at stop (no long-lived exec: `kubectl exec ... -f`
+# leaves defunct hubble processes in the agents). The buffer holds only the
+# last ~4095 flows per agent, so older flows can be gone: if an agent's
+# first flow is well after SINCE, that is recorded as possibly missing.
+hubble_snapshot() {
+	local since=$1 until=$2 pod out first ok=0
+	: >"$dir/hubble.jsonl"
+	for pod in $("$KUBECTL" -n kube-system get pods -l k8s-app=cilium -o jsonpath='{.items[*].metadata.name}'); do
+		if out=$("$KUBECTL" -n kube-system exec "$pod" -c cilium-agent -- \
+			hubble observe --namespace "$NS" --since "$since" --until "$until" -o json 2>>"$dir/hubble.err"); then
+			ok=$((ok + 1))
+			[ -n "$out" ] || continue
+			"$RH" stamp --json <<<"$out" >>"$dir/hubble.jsonl"
+			first=$(head -1 <<<"$out" | sed -n 's/^{"flow":{"time":"\([^"]*\)".*/\1/p')
+			if [ -n "$first" ] && [ "$(date -u -d "$first" +%s)" -gt $(($(date -u -d "$since" +%s) + 2)) ] &&
+				[ "$(grep -c . <<<"$out")" -ge 4000 ]; then
+				missing hubble "$pod 的環形緩衝區只保留到 $first 之後（$(grep -c . <<<"$out") 筆），之前的流量可能缺少"
+			fi
+		else
+			missing hubble "$pod：hubble observe 失敗（見 hubble.err）"
+		fi
 	done
+	[ "$ok" -gt 0 ] || missing hubble "沒有任何 agent 取得 Hubble 流量"
 }
 
 # _ingress DIR ENVOY_POD SINCE
@@ -300,12 +290,6 @@ start() {
 	want=5
 
 	local pod n=0
-	for pod in $("$KUBECTL" -n kube-system get pods -l k8s-app=cilium -o jsonpath='{.items[*].metadata.name}'); do
-		spawn "hubble:$pod" _hubble "$dir" "$pod"
-		n=$((n + 1)) want=$((want + 1))
-	done
-	[ "$n" -gt 0 ] || missing hubble "找不到 cilium agent Pod"
-	n=0
 	for pod in $("$KUBECTL" -n kube-system get pods -l k8s-app=cilium-envoy -o jsonpath='{.items[*].metadata.name}'); do
 		spawn "ingress:$pod" _ingress "$dir" "$pod" "$since"
 		n=$((n + 1)) want=$((want + 1))
@@ -314,6 +298,10 @@ start() {
 	stats envoy-stats-start.txt
 	wait_registered "$want"
 	trap - ERR INT TERM
+	if stopping; then
+		echo "collect-timeline: a stop arrived while starting; nothing is collecting" >&2
+		exit 1
+	fi
 	echo "collect-timeline: started $(registered) collectors in $dir (App log followers are added as Pods appear)"
 }
 
@@ -340,12 +328,14 @@ stop() {
 		echo "collect-timeline: no such directory $dir" >&2
 		exit 1
 	}
-	if [ -s "$dir/collectors.pid" ]; then
+	# Always first, whatever the PID file says: from here on no collector
+	# can register (a start still spawning children is stopped too).
+	set_stopping
+	if [ -e "$dir/collectors.pid" ]; then
 		set -E
 		trap 'abort stop' ERR INT TERM
-		# No collector can register from here on; discovery must be gone
-		# before the state at stop is taken and the followers are ended.
-		set_stopping
+		# Discovery must be gone before the state at stop is taken and the
+		# followers are ended.
 		local pg name i
 		while read -r pg name; do
 			if [ "$name" = applogs ]; then
@@ -360,15 +350,17 @@ stop() {
 		"$KUBECTL" -n "$NS" get pods -o json >"$dir/pods-at-stop.json" 2>>"$dir/collectors.err" ||
 			{ rm -f "$dir/pods-at-stop.json"; missing pods "停止時取不到 Pod 狀態（pods-at-stop.json）"; }
 		stats envoy-stats-end.txt
-		audit "$(sed -n 's/.*"started_at":"\([^"]*\)".*/\1/p' "$dir/collect.json" 2>/dev/null)"
+		local started
+		started=$(sed -n 's/.*"started_at":"\([^"]*\)".*/\1/p' "$dir/collect.json" 2>/dev/null)
+		hubble_snapshot "$started" "$(now_rfc)"
+		audit "$started"
 		kill_groups TERM
 		for i in $(seq 50); do
 			alive || break
 			sleep 0.1
 		done
 		alive && kill_groups KILL
-		reap_remote
-		printf '%s\n' "$(sed 's/}$//' "$dir/collect.json"),\"stopped_at\":\"$(now_rfc)\"}" >"$dir/collect.json.tmp" &&
+			printf '%s\n' "$(sed 's/}$//' "$dir/collect.json"),\"stopped_at\":\"$(now_rfc)\"}" >"$dir/collect.json.tmp" &&
 			mv "$dir/collect.json.tmp" "$dir/collect.json"
 		mv "$dir/collectors.pid" "$dir/collectors.pid.stopped"
 		rm -f "$dir"/app/.started.*
@@ -395,7 +387,7 @@ _child)
 	shift 2
 	with_lock _register "$$" "$name" || exit 0
 	case $sub in
-	_watch | _hubble | _ingress | _host | _applogs | _follow) "$sub" "$@" ;;
+	_watch | _ingress | _host | _applogs | _follow) "$sub" "$@" ;;
 	*) exit 2 ;;
 	esac
 	;;

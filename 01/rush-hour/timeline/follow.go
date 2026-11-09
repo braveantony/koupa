@@ -92,9 +92,12 @@ type Follower struct {
 	Now       func() time.Time
 	MaxLine   int // longest accepted line (default 16 MiB)
 
+	afterRead func() // test hook: runs after every follow read
+
 	out     io.Writer
 	st      FollowState
 	fatal   error
+	killed  bool     // the last read ended because ctx was cancelled
 	pending int      // index in st.Gaps of the interruption awaiting its refill, or -1
 	tail    []string // received lines of the last second
 	total   int
@@ -127,7 +130,9 @@ func (f *Follower) emit(l string, fromStart bool) error {
 }
 
 func (f *Follower) kubectl(ctx context.Context, args ...string) *exec.Cmd {
-	return exec.CommandContext(ctx, f.Kubectl, append([]string{"-n", f.Namespace}, args...)...)
+	cmd := exec.CommandContext(ctx, f.Kubectl, append([]string{"-n", f.Namespace}, args...)...)
+	cmd.SysProcAttr = childAttr()
+	return cmd
 }
 
 // read runs one kubectl logs; follow=false for the final drain check. With
@@ -208,6 +213,10 @@ func (f *Follower) read(ctx context.Context, follow bool) (werr error, stderrS s
 		_ = cmd.Process.Kill() // the rest of the stream is lost
 	}
 	werr = cmd.Wait()
+	// Ended by our own cancellation (killed by a signal after ctx was done),
+	// as opposed to a stream that ended or failed by itself.
+	f.killed = ctx.Err() != nil && scanErr == nil && emitErr == nil &&
+		(cmd.ProcessState == nil || !cmd.ProcessState.Exited())
 	switch {
 	case scanErr != nil:
 		werr = fmt.Errorf("reading kubectl output: %w", scanErr)
@@ -290,12 +299,10 @@ func (f *Follower) Run(ctx context.Context) error {
 	f.pending = -1
 	for {
 		werr, stderr, _ := f.read(ctx, true)
-		f.st.Segments++
-		if ctx.Err() != nil {
-			// The stop: a pending interruption stays unverified (it is
-			// already recorded); a healthy stream needs nothing.
-			return stop("stopped")
+		if f.afterRead != nil {
+			f.afterRead()
 		}
+		f.st.Segments++
 		reason := "kubectl logs 結束"
 		if werr != nil {
 			reason = fmt.Sprintf("kubectl logs: %v: %s", werr, stderr)
@@ -303,11 +310,30 @@ func (f *Follower) Run(ctx context.Context) error {
 		}
 		f.save()
 		if f.fatal != nil {
-			// Lines were lost on our side (unreadable output or the log
-			// file could not be written): no refill can prove the log whole.
-			f.st.Gaps = append(f.st.Gaps, Gap{After: f.lastTS(), Reason: f.fatal.Error() + "（收集停止，log 不完整）"})
-			f.pending = -1
-			return stop("error")
+			return f.fatalStop(stop)
+		}
+		if ctx.Err() != nil {
+			if f.killed {
+				// The stop ended a healthy stream (a pending interruption
+				// stays unverified; it is already recorded).
+				return stop("stopped")
+			}
+			// The stream ended by itself just as the stop came: an error is
+			// an interruption that can no longer be refilled; a clean EOF
+			// is fine only if the container had exited.
+			if werr == nil {
+				qctx, qcancel := context.WithTimeout(context.Background(), 5*time.Second)
+				st := f.podState(qctx)
+				qcancel()
+				switch st {
+				case "terminated":
+					return stop("container_exited")
+				case "gone":
+					return stop("pod_gone")
+				}
+			}
+			f.interrupt(reason + "（收集同時停止，沒有補讀）")
+			return stop("stopped")
 		}
 		if f.total == 0 && f.pending < 0 {
 			// Nothing read yet (container not started): retry from the start.
@@ -342,6 +368,10 @@ func (f *Follower) Run(ctx context.Context) error {
 			default:
 				f.st.DrainCheck = "補讀逐行核對相符，沒有漏收"
 			}
+			if f.fatal != nil {
+				f.st.DrainCheck = "補讀失敗：" + f.fatal.Error()
+				return f.fatalStop(stop)
+			}
 			return stop("container_exited")
 		case "gone":
 			if werr != nil {
@@ -357,6 +387,14 @@ func (f *Follower) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// fatalStop: lines were lost on our side (unreadable kubectl output or the
+// log file could not be written); no refill can prove the log whole.
+func (f *Follower) fatalStop(stop func(string) error) error {
+	f.st.Gaps = append(f.st.Gaps, Gap{After: f.lastTS(), Reason: f.fatal.Error() + "（收集停止，log 不完整）"})
+	f.pending = -1
+	return stop("error")
 }
 
 func (f *Follower) lastTS() time.Time {

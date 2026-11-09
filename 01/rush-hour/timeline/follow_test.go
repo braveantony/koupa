@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -308,5 +309,77 @@ func TestFollowerScannerErrorIsIncomplete(t *testing.T) {
 	m.SigtermAt = m.StartupAt // pretend the end marker is there: the gap alone must fail it
 	if r := Coverage(m); r.Complete {
 		t.Errorf("truncated stream counted as complete: %+v", r)
+	}
+}
+
+func TestFollowerErrorAtCancelIsGap(t *testing.T) {
+	// The stream fails on its own exactly when the stop arrives
+	// (deterministic: the hook cancels right after the failed read).
+	kc, app := fakeSeq(t, `1) echo '`+lStartup+`'; echo '`+lA+`'; exit 1;;`)
+	guard, gcancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer gcancel()
+	ctx, cancel := context.WithCancel(guard)
+	defer cancel()
+	f := Follower{Kubectl: kc, Namespace: "koupa", Pod: "koupa-a", UID: "u1", Dir: app, Poll: time.Millisecond, afterRead: cancel}
+	if err := f.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := LoadPodLogMeta(filepath.Dir(app), "u1", nil, map[string]*podObj{"u1": runningPod()}, true)
+	if r := Coverage(m); r.Complete || len(m.Gaps) != 1 {
+		t.Errorf("error at cancel not recorded: gaps=%+v coverage=%+v", m.Gaps, r)
+	}
+}
+
+func TestFollowerCleanEndAtCancelAfterExit(t *testing.T) {
+	// Clean EOF because the container exited, with the stop arriving at
+	// the same moment: no interruption.
+	kc, app := fakeSeq(t, `1) echo '`+lStartup+`'; echo '2026-11-09T06:50:02.000Z {"ts":"2026-11-09T06:50:02Z","event":"sigterm","pod_uid":"u1"}'; touch "$d/exited"; exit 0;;`)
+	guard, gcancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer gcancel()
+	ctx, cancel := context.WithCancel(guard)
+	defer cancel()
+	f := Follower{Kubectl: kc, Namespace: "koupa", Pod: "koupa-a", UID: "u1", Dir: app, Poll: time.Millisecond, afterRead: cancel}
+	if err := f.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := LoadPodLogMeta(filepath.Dir(app), "u1", nil, map[string]*podObj{}, true)
+	if r := Coverage(m); !r.Complete {
+		t.Errorf("clean end at stop: gaps=%+v coverage=%+v", m.Gaps, r)
+	}
+}
+
+func TestFollowerFatalDrainIsIncomplete(t *testing.T) {
+	// The stream ends cleanly at container exit, but the drain read cannot
+	// be read (line over the limit): not proven complete.
+	long := strings.Repeat("x", 4096)
+	kc, app := fakeSeq(t, `1) echo '`+lStartup+`'; echo '2026-11-09T06:50:02.000Z {"ts":"2026-11-09T06:50:02Z","event":"sigterm","pod_uid":"u1"}'; touch "$d/exited"; exit 0;;
+2) echo '2026-11-09T06:50:02.000Z {"ts":"2026-11-09T06:50:02Z","event":"sigterm","pod_uid":"u1"}'; echo '2026-11-09T06:50:02.500Z {"event":"`+long+`"}'; exit 0;;`)
+	f := Follower{Kubectl: kc, Namespace: "koupa", Pod: "koupa-a", UID: "u1", Dir: app, Poll: time.Millisecond, MaxLine: 1024}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := f.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := LoadPodLogMeta(filepath.Dir(app), "u1", nil, map[string]*podObj{}, true)
+	if r := Coverage(m); r.Complete {
+		t.Errorf("fatal drain error counted as complete: gaps=%+v", m.Gaps)
+	}
+}
+
+func TestFollowerKubectlOwnProcessGroup(t *testing.T) {
+	// collect-timeline.sh stop signals the follower's process group; kubectl
+	// must not get that signal directly (it would exit 1 by itself and look
+	// like a stream error). It is ended through the follower's context.
+	kc, app := fakeSeq(t, `1) ps -o pgid= -p $$ | tr -d ' ' >"$d/pgid"; echo '`+lStartup+`'; exec sleep 30;;`)
+	st := runFollower(t, kc, app, func() bool {
+		_, err := os.Stat(filepath.Join(filepath.Dir(app), "pgid"))
+		return err == nil
+	})
+	b, _ := os.ReadFile(filepath.Join(filepath.Dir(app), "pgid"))
+	if strings.TrimSpace(string(b)) == fmt.Sprint(syscall.Getpgrp()) {
+		t.Errorf("kubectl runs in the follower's process group %s", b)
+	}
+	if len(st.Gaps) != 0 || st.Ended != "stopped" {
+		t.Errorf("stop of a healthy stream: %+v", st)
 	}
 }
