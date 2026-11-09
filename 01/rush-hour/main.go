@@ -4,6 +4,7 @@
 //	              [--ingress-log FILE] [--app-logs DIR] [--tx-timeout 60s] [--verbose] [--no-ingress]
 //	rush-hour probe --base URL --run ID --duration 30s --out DIR [--rate 50]
 //	rush-hour summarize DIR...
+//	rush-hour calibrate [--prestop 20s] [--json FILE] DIR...  (preStop calibration samples, A11)
 //	rush-hour timeline DIR          (DIR/timeline.jsonl + timeline.txt)
 //	rush-hour coverage DIR          (DIR/app/<uid>.meta.json, used by collect-timeline.sh stop)
 //	rush-hour stamp [--json]        (stdin -> stdout, collector stamp per line)
@@ -35,6 +36,7 @@ const usage = `usage:
   rush-hour run --base URL --run ID --out DIR [flags]
   rush-hour probe --base URL --run ID --duration D --out DIR [--rate 50]
   rush-hour summarize DIR...
+  rush-hour calibrate [--prestop 20s] [--json FILE] DIR...
   rush-hour timeline DIR
   rush-hour coverage DIR
   rush-hour stamp [--json]
@@ -64,6 +66,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprint(stdout, out)
 		return 0
+	case "calibrate":
+		return cmdCalibrate(args[1:], stdout, stderr)
 	case "timeline":
 		if len(args) != 2 {
 			fmt.Fprintln(stderr, usage)
