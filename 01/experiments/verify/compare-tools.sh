@@ -154,16 +154,33 @@ compare() {
 import collections, glob, json, os, statistics, sys
 root = sys.argv[1]
 rows = []
+def numeric(x):
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+def item(it, key):
+    v = it.get(key)
+    return v.get("confirmed") if isinstance(v, dict) else None
+def item_unknown(it, key):
+    v = it.get(key)
+    return v.get("unknown") if isinstance(v, dict) else None
+REQUIRED_FIELDS = ("orders", "first", "after")
+def require_fields(r):
+    """A run is valid only when every required result field is present
+    and numeric."""
+    bad = [k for k in REQUIRED_FIELDS if not numeric(r.get(k))]
+    if bad and r["valid"]:
+        r["valid"] = False
+        r["invalid_reason"] = "結果欄位缺少或不是數字：%s" % ", ".join(bad)
+    return r
 for f in sorted(glob.glob(os.path.join(root, "rush-hour", "step-*", "scorecard.json"))):
     s = json.load(open(f))
     d = os.path.dirname(f)
     step = "step-" + os.path.basename(d).split("-")[1]
-    it = s.get("items", {})
-    rows.append({"tool": "rush-hour", "step": step, "run": os.path.basename(d), "valid": not s.get("invalid"),
-                 "invalid_reason": s.get("invalid_reason") or None, "orders": it.get("orders", {}).get("confirmed"),
-                 "first": it.get("first_try_failed", {}).get("confirmed"), "first_unknown": it.get("first_try_failed", {}).get("unknown"),
-                 "after": it.get("failed_after_retry", {}).get("confirmed"), "after_unknown": it.get("failed_after_retry", {}).get("unknown"),
-                 "mtime": os.path.getmtime(f)})
+    it = s.get("items") or {}
+    rows.append(require_fields({"tool": "rush-hour", "step": step, "run": os.path.basename(d), "valid": not s.get("invalid"),
+                 "invalid_reason": s.get("invalid_reason") or None, "orders": item(it, "orders"),
+                 "first": item(it, "first_try_failed"), "first_unknown": item_unknown(it, "first_try_failed"),
+                 "after": item(it, "failed_after_retry"), "after_unknown": item_unknown(it, "failed_after_retry"),
+                 "mtime": os.path.getmtime(f)}))
 for f in sorted(glob.glob(os.path.join(root, "k6", "*", "k6-run.json"))):
     k = json.load(open(f))
     r = k.get("result") or {}
@@ -172,10 +189,10 @@ for f in sorted(glob.glob(os.path.join(root, "k6", "*", "k6-run.json"))):
         valid, why = False, "; ".join(x for x in (why, "k6 exited %s" % k.get("k6_exit")) if x)
     if not r:
         valid, why = False, "; ".join(x for x in (why, "no k6 result") if x)
-    rows.append({"tool": "k6", "step": k["step"], "run": k["run"], "valid": valid, "invalid_reason": why,
+    rows.append(require_fields({"tool": "k6", "step": k["step"], "run": k["run"], "valid": valid, "invalid_reason": why,
                  "orders": r.get("orders"), "first": r.get("first_try_failed"), "first_unknown": 0,
                  "after": r.get("failed_after_retry"), "after_unknown": 0, "mtime": os.path.getmtime(f),
-                 "rollout_completed_offset_s": k.get("rollout_completed_offset_s")})
+                 "rollout_completed_offset_s": k.get("rollout_completed_offset_s")}))
 def kinds(path, tool):
     """First attempts without a complete 2xx, by what the client saw:
     5xx (the ingress answered, e.g. 503 UF / UC) or no response
@@ -221,7 +238,7 @@ for tool in ("rush-hour", "k6"):
         v = [r for r in rows if r["tool"] == tool and r["step"] == step and r["valid"]]
         s = {"n": len(v)}
         for key in ("first", "after"):
-            xs = [r[key] for r in v if r[key] is not None]
+            xs = [r[key] for r in v]  # every valid run has numeric fields
             s[key] = {"median": statistics.median(xs) if xs else None, "min": min(xs) if xs else None, "max": max(xs) if xs else None, "values": xs}
         summary[(tool, step)] = s
 P("%-10s %-7s %3s  %-26s %-26s" % ("工具", "步驟", "次數", "第一次送出沒有成功回應", "重試後仍沒有成功回應"))
