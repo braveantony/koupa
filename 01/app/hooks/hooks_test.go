@@ -356,3 +356,27 @@ func TestPauseLoggedBeforeRelease(t *testing.T) {
 		}
 	}
 }
+
+// A pause cancelled after publication but before its own cancel branch has
+// removed it is skipped (and removed) by wait.
+func TestWaitSkipsCancelledUnremovedPause(t *testing.T) {
+	log, buf := newLog()
+	r := New(true, log)
+	h := r.Handler()
+	post(t, h, "/hooks/request.mid/arm")
+	hold := make(chan struct{})
+	entered := make(chan struct{})
+	cancelHook = func() { close(entered); <-hold }
+	t.Cleanup(func() { cancelHook = nil })
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { r.Pause(ctx, "request.mid", "zombie"); close(done) }()
+	waitPaused(t, buf, 1)
+	cancel()
+	<-entered // the cancel branch is held off: the entry is still registered
+	if code, m := wait1(t, h, "50ms"); code != http.StatusRequestTimeout {
+		t.Fatalf("wait reported a cancelled pause: %d %v", code, m)
+	}
+	close(hold)
+	<-done
+}

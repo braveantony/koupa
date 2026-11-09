@@ -27,6 +27,7 @@ const defaultWait = 30 * time.Second
 // pause is one request held at a point.
 type pause struct {
 	attempt  string
+	ctx      context.Context
 	rel      chan struct{} // closed by release
 	reported bool          // already returned by a wait
 }
@@ -92,7 +93,7 @@ func (r *Registry) Pause(ctx context.Context, name, attemptID string) {
 		r.mu.Unlock()
 		return
 	}
-	ps := &pause{attempt: attemptID, rel: make(chan struct{})}
+	ps := &pause{attempt: attemptID, ctx: ctx, rel: make(chan struct{})}
 	p.pauses = append(p.pauses, ps)
 	p.notify()
 	// Logged under the lock so release (which also holds it) logs after.
@@ -102,6 +103,9 @@ func (r *Registry) Pause(ctx context.Context, name, attemptID string) {
 	select {
 	case <-ps.rel:
 	case <-ctx.Done():
+		if cancelHook != nil {
+			cancelHook()
+		}
 		r.mu.Lock()
 		for i, q := range p.pauses {
 			if q == ps {
@@ -113,6 +117,9 @@ func (r *Registry) Pause(ctx context.Context, name, attemptID string) {
 		r.mu.Unlock()
 	}
 }
+
+// cancelHook is a test seam run before a cancelled pause removes itself.
+var cancelHook func()
 
 func (r *Registry) arm(name string) bool {
 	r.mu.Lock()
@@ -189,6 +196,14 @@ func (r *Registry) handleWait(w http.ResponseWriter, q *http.Request) {
 	defer timer.Stop()
 	for {
 		r.mu.Lock()
+		// Drop pauses whose request already ended; they are never reported.
+		live := p.pauses[:0]
+		for _, ps := range p.pauses {
+			if ps.ctx.Err() == nil {
+				live = append(live, ps)
+			}
+		}
+		p.pauses = live
 		for _, ps := range p.pauses {
 			if !ps.reported {
 				ps.reported = true
