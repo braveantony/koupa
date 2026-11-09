@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -90,6 +91,9 @@ func TestSoldOutAndOrderSerialize(t *testing.T) {
 	pool := testdb.New(t)
 	held := make(chan struct{})
 	release := make(chan struct{})
+	var once sync.Once
+	releaseOnce := func() { once.Do(func() { close(release) }) }
+	defer releaseOnce() // never leave the order tx blocked on any exit path
 	orderDone := make(chan error, 1)
 	var o Order
 	go func() {
@@ -101,7 +105,13 @@ func TestSoldOutAndOrderSerialize(t *testing.T) {
 		})
 		orderDone <- err
 	}()
-	<-held
+	select {
+	case <-held:
+	case err := <-orderDone:
+		t.Fatalf("order tx ended before holding the lock: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for the order tx to hold FOR SHARE")
+	}
 
 	soldDone := make(chan error, 1)
 	go func() {
@@ -131,7 +141,7 @@ func TestSoldOutAndOrderSerialize(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 
-	close(release)
+	releaseOnce()
 	if err := <-orderDone; err != nil {
 		t.Fatal(err)
 	}
