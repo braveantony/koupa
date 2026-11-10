@@ -710,7 +710,7 @@ PY
 	[ -n "$v1_digest" ] && [ -n "$v2_digest" ] ||
 		abort_run "無法從 registry 解析 koupa 映像檔 digest（$(head -c 200 "$err" | tr '\n' ' ')）"
 	[ "$rh_kind" = bin ] || [ -n "$rh_image_id" ] ||
-		abort_run "找不到本機 rush-hour 映像檔 $RUSH_HOUR_IMAGE"
+		abort_run "找不到本機 rush-hour 映像檔 $RUSH_HOUR_IMAGE（先執行 podman pull $RUSH_HOUR_IMAGE）"
 	rm -f "$err"
 
 	# 1. render, image as the mode starts (v1; rollback: v2), apply.

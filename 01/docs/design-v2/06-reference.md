@@ -29,6 +29,7 @@ YAML 不寫死 IP，`measure.sh` 會自動查 Gateway 的 IP。
 - 架構為 `linux/amd64`；
 - 標籤固定，不使用 `latest`；
 - 課前分別在主機和節點上確認拉得到。
+- 目前 Rush Hour 的版本是 `0.1.0`；各映像檔的 digest 記在[實測紀錄](../measurements/2026-11-10.md#2-映像檔與-digest)。
 
 學生不用安裝 Go，也不用自己建置映像檔。
 

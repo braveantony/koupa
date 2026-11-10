@@ -42,7 +42,7 @@
 | 段落 | 內容 | 機器時間（5 次） |
 |---|---|---|
 | 開場 | 用 README 的圖和情境說明三種問題；學生預測步驟 0 的成績單 | — |
-| 部署 | `./setup.sh`、建置 Rush Hour 映像檔、打開三個頁面 | 未記錄 |
+| 部署 | `./setup.sh`、拉取 Rush Hour 映像檔、打開三個頁面 | 未記錄 |
 | 小實驗 | 沒有心跳等到第 300 秒斷線，再套用心跳跑 420 秒 | 約 12 分鐘（連線本身 300＋420 秒） |
 | 對照組 | `./measure.sh control`：先確認量測工具和環境沒問題 | 約 7.5 分鐘 |
 | 步驟 0 | 看成績單和時間線，找出送出失敗與看板斷線發生的時段；討論為什麼這次無法確認是否有重複訂單 | 約 18 分鐘 |
@@ -200,7 +200,7 @@ control 要全部 0 而且沒有未知，步驟 0 要量到問題。這不取代
 - **一個漏號的離群值**：`preStop` 8 秒重跑的步驟 2 第 5 輪，board-2 漏 109 個（其他約 80），原因沒有另外查。步驟 3 第 2 輪 board-2 漏 41 是 3 個新 Pod 都晚 5 秒 listen、rollout 最慢（第 32.5 秒）的那一次；
 - **號碼牌循環**：2026-11-10 時資料庫留著先前實驗沒完成的訂單，號碼牌循環後廚房清單出現同號的兩張單。已一次清掉 23137 張（刪除前匯出 CSV，見實測紀錄第 11 節）；號碼牌本身照樣循環，沒有改成跳過未完成的號碼；
 - **k6 比較會自己清掉未完成的訂單**：k6 只下單、沒有廚房，每張單都停在「製作中」。`experiments/verify/compare-tools.sh` 每次 k6 量測結束後，在同一個交易裡刪掉這次 k6 量測（`client_ref` 是 `<量測編號>-c<n>`）還在製作中的訂單和相關資料，張數寫在該次的 `cleanup.txt`。清除失敗時這次 k6 量測算無效，整個比較以結束碼 1 結束。要手動清：`experiments/verify/compare-tools.sh cleanup-k6-orders RUNID DIR`。k6 的數字來自 k6 自己的結果，不讀資料庫，清除不會改變比較結果；
-- **Rush Hour 的映像檔只在主機上**：`ghcr.io/braveantony/rush-hour:0.1.0` 沒有推上 registry，`measure.sh` 執行主機上建置的那一份（README 第 1 節）。`rush-hour/` 的程式改了，要重新建置這個映像檔，並依 `Makefile` 的註解調高 `RUSH_HOUR_VERSION`（`measure.sh` 的預設值 `RUSH_HOUR_IMAGE` 也要跟著改）；
+- **Rush Hour 的映像檔**：`ghcr.io/braveantony/rush-hour:0.1.0`（manifest digest `sha256:816c3ae3333e0f2393aef83e1907691ec75dbbd4cbc3cf948494f00a3a8c1b8c`，image ID `51cce18663b1…`，從 commit `1b58e14` 建置）。學生用 `podman pull` 取得；`measure.sh` 用主機上這份映像檔的 image ID 執行，找不到就停止並提示 `podman pull`。`rush-hour/` 的程式改了，要重新建置並推送這個映像檔，並依 `Makefile` 的註解調高 `RUSH_HOUR_VERSION`（`measure.sh` 的預設值 `RUSH_HOUR_IMAGE` 也要跟著改）；
 - rollback／drain／scale-down 是 `preStop` 7 秒時量的，改成 8 秒之後沒有重跑。
 
 ## 11. 第三方重跑驗收

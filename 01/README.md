@@ -86,11 +86,13 @@ kubectl get crd gateways.gateway.networking.k8s.io
 
 **主機上的工具**：`kubectl`（內建 Kustomize）、`podman`、`skopeo`、`python3`（含 PyYAML）、`git`、`curl`。主機要連得到 `ghcr.io`、`docker.io` 和 `github.com`。不需要安裝 Go，因為要編譯的部分都在 podman container 裡跑。
 
-**建置 Rush Hour 的映像檔**（第一次量測前做一次；這個映像檔沒有放在 registry 上，`measure.sh` 用的是主機上的這一份）：
+**拉取 Rush Hour 的映像檔**（第一次量測前做一次；`measure.sh` 用主機上的這一份，不會自己拉取）：
 
 ```bash
-podman build --platform linux/amd64 -f rush-hour/Containerfile -t ghcr.io/braveantony/rush-hour:0.1.0 .
+podman pull ghcr.io/braveantony/rush-hour:0.1.0
 ```
+
+只有修改 Rush Hour 程式的人才需要自己建置（`make images` 會連 App 映像檔一起建置）。
 
 App 的映像檔 `ghcr.io/braveantony/koupa:v1`、`:v2` 是公開的，節點會自己拉取，不用建置。
 
