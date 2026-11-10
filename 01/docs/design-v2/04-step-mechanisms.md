@@ -78,10 +78,14 @@ Pod A 才提交 10
 
 入口可能因為「連線太久沒有資料」而切斷，也可能因為「連線存在的時間太長」而切斷。心跳只對前者有效。
 
-**待實測**：先實際觀察切斷的時間，並查看 Cilium 產生的 Envoy（Cilium Gateway 底層使用的代理程式）設定，確認是哪一種逾時。對應的 Envoy 設定名稱寫在講師手冊。
+**實測結果**（tkha，2026-11-10，Cilium 1.20.4／Envoy 1.39.5；紀錄見 [實測紀錄 2026-11-10](../measurements/2026-11-10.md#4-閒置斷線小實驗)）：
 
-- 如果是閒置逾時：打開 `SSE_HEARTBEAT`，讓 App 定期送出 SSE 註解行（以 `:` 開頭，瀏覽器會忽略）。間隔要小於實際的逾時，再驗證確實不再斷線；
-- 如果是總時間上限：改成調整 HTTPRoute 的逾時設定，小實驗的內容也照實際結果改寫。
+- **預設沒有總時間上限**：Koupa 的 HTTPRoute 沒寫 `timeouts`，Cilium 產生的路由沒有 route timeout（`max_stream_duration: 0s`，Envoy 因此不套用 15 秒的預設值，見 [env-findings 3.2](../env-findings.md#32-逾時)）。
+- **會切斷的是閒置逾時**：Envoy 的 `stream_idle_timeout` 是 300 秒。心跳關閉時，看板收到 `hello` 之後就沒有任何資料，連線在第 300 秒被入口切斷：入口紀錄 `response_flags=SI`、`response_code_details=stream_idle_timeout`、`duration_ms=300001`；curl 結束碼 18（回應不完整）；App 記 `board_closed reason=client_gone`。
+- **打開心跳就不會斷**：套用 `k8s/idle-lab`（`SSE_HEARTBEAT=15s`），同樣沒有叫號，420 秒內收到 28 次心跳，連線沒有被切斷，最後是 curl 自己在第 420 秒結束（入口紀錄 `DC`）。
+- **心跳對總時間上限沒有用**：在 HTTPRoute 暫時加上 `timeouts.request: 60s`、心跳照開，連線仍在第 60 秒被切斷：入口紀錄 `response_flags=UT`、`response_code_details=response_timeout`、`duration_ms=60000`（期間收到 3 次心跳）。
+
+所以 Koupa 的做法是：HTTPRoute 不寫 `timeouts`（不設總時間上限）；需要讓靜默的看板保持連線時，打開 `SSE_HEARTBEAT`，讓 App 定期送出 SSE 註解行（以 `:` 開頭，瀏覽器會忽略），間隔遠小於 300 秒（`k8s/idle-lab` 用 15 秒）。步驟 0～5 不開心跳：量測時每秒都有叫號，連線不會閒置，開了反而多一個變因。小實驗的操作：先在沒有心跳的設定下開一台看板、不下單，等 5 分鐘看它斷線；再套用 `k8s/idle-lab` 重做一次，看它不再斷線。瀏覽器的 `EventSource` 斷線後會自動重連，所以頁面上看起來只是「閃一下」，要看入口紀錄或 App log 才知道發生過。對應的 Envoy 設定名稱（HCM 的 `stream_idle_timeout`、路由的 `timeout`／`max_stream_duration`）寫在講師手冊。
 
 ## 4.4 步驟 0：基準
 
