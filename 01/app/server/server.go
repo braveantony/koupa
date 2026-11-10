@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -35,8 +36,9 @@ type Deps struct {
 	FinalLog *slog.Logger
 	// Hooks is the test pause point; nil means hooks.Noop.
 	Hooks hooks.Point
-	// Pages holds order.html, kitchen.html and board.html (Task 11's
-	// embed FS). nil serves a plain-text placeholder for each page.
+	// Pages holds order.html, kitchen.html, board.html, app.js, app.css and
+	// img/*.webp (the web package's embed FS). nil serves a plain-text
+	// placeholder for each page.
 	Pages fs.FS
 	// DuplicateOrder is the TEST_MUTATION hook passed to PlaceOrder; nil
 	// in normal use.
@@ -91,6 +93,8 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /kitchen", s.page("kitchen.html"))
 	mux.HandleFunc("GET /board", s.page("board.html"))
 	mux.HandleFunc("GET /app.js", s.page("app.js"))
+	mux.HandleFunc("GET /app.css", s.page("app.css"))
+	mux.HandleFunc("GET /img/{file}", s.handleImage)
 
 	mux.HandleFunc("GET /api/menu", s.handleMenu)
 	mux.HandleFunc("POST /orders", s.handlePlaceOrder)
@@ -124,6 +128,28 @@ func (s *Server) page(name string) http.HandlerFunc {
 		}
 		http.ServeFileFS(w, r, s.deps.Pages, name)
 	}
+}
+
+// imageCache lets browsers keep the drink photos for a day; a new photo
+// gets a new file name.
+const imageCache = "public, max-age=86400"
+
+// handleImage serves the drink photos (img/*.webp in Deps.Pages). Only
+// .webp files that exist are served; everything else is 404.
+func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("file")
+	if s.deps.Pages == nil || !strings.HasSuffix(name, ".webp") || !fs.ValidPath(name) {
+		http.NotFound(w, r)
+		return
+	}
+	path := "img/" + name
+	if st, err := fs.Stat(s.deps.Pages, path); err != nil || st.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "image/webp")
+	w.Header().Set("Cache-Control", imageCache)
+	http.ServeFileFS(w, r, s.deps.Pages, path)
 }
 
 func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {

@@ -1,23 +1,33 @@
 <!doctype html>
-<html lang="zh-Hant">
+<html lang="zh-Hant-TW">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#F7F1E8">
 <title>Koupa 酷杯 - 廚房</title>
-<style>body{font-family:system-ui,"Noto Sans TC",sans-serif;max-width:40rem;margin:1rem auto;padding:0 1rem}
-nav a{margin-right:1rem}ul{list-style:none;padding:0}li{padding:.4rem 0;border-bottom:1px solid #ddd}
-li.sold-out{color:#999;background:#f4f4f4}button{padding:.3rem .8rem}.err{color:#b00020}
-#version{float:right;color:#666;font-size:.85rem}#latest{font-size:2rem;margin:1rem 0}</style>
+<link rel="stylesheet" href="/app.css">
 </head>
 <body data-page="kitchen">
-<header><h1>Koupa 酷杯</h1><small>微糖、去冰、零停機</small>
-<nav><a href="/">點餐</a><a href="/kitchen">廚房</a><a href="/board">看板</a></nav></header>
-<h2>廚房</h2>
-<h3>製作中</h3>
-<ul id="orders"></ul>
-<h3 id="menu-title" hidden>品項供應</h3>
-<ul id="menu"></ul>
-<p id="msg" class="err"></p>
+<header class="site">
+  <div class="brand"><a class="brand-name" href="/">Koupa 酷杯</a><span class="slogan">一杯好茶，隨時都在</span></div>
+  <nav aria-label="頁面"><a href="/">點餐</a><a href="/kitchen" aria-current="page">廚房</a><a href="/board">叫號看板</a></nav>
+</header>
+<main class="kitchen">
+  <div class="section-head">
+    <h1>製作中</h1>
+    <span class="pill"><span id="count">0</span> 張</span>
+    <span class="hint">每 2 秒自動更新</span>
+  </div>
+  <p id="msg" class="notice err" role="status"></p>
+  <ul id="orders" class="tickets" aria-label="製作中的訂單"></ul>
+  <p id="no-orders" class="empty" hidden>目前沒有製作中的訂單</p>
+  <section id="supply" class="supply" aria-labelledby="menu-title" hidden>
+    <div class="section-head"><h2 id="menu-title">品項供應</h2></div>
+    <p>賣完的品項按「設為售完」；點餐頁重新載入菜單後，會顯示「今日售完」。</p>
+    <ul id="menu" class="supply-list"></ul>
+  </section>
+</main>
+<footer id="debug" class="debug" hidden><span>?debug=1</span><span id="version"></span><span id="pod"></span></footer>
 <script src="/app.js"></script>
 </body>
 </html>

@@ -63,7 +63,7 @@
 <text x="664" y="1034" font-size="16" fill="#26364a" text-anchor="start">節點標籤：koupa.dev/infra=true</text>
 <rect x="370" y="895" width="255" height="150" rx="12" fill="#f5f7fa" stroke="#9baabd" stroke-width="1.5" stroke-dasharray="7 5"/>
 <text x="384" y="919" font-size="15" fill="#26364a" text-anchor="start">Job · migration</text>
-<text x="384" y="950" font-size="18" fill="#26364a" text-anchor="start" font-weight="700">koupa-migrate-000004</text>
+<text x="384" y="950" font-size="18" fill="#26364a" text-anchor="start" font-weight="700">koupa-migrate-000005</text>
 <text x="384" y="980" font-size="16" fill="#26364a" text-anchor="start">每次部署執行一次</text>
 <text x="384" y="1007" font-size="16" fill="#26364a" text-anchor="start">只套用還沒執行過的變更</text>
 <text x="384" y="1034" font-size="16" fill="#26364a" text-anchor="start">完成就結束</text>

@@ -10,13 +10,15 @@ Koupa 酷杯是一家虛構的手搖飲店。客人在點餐頁下單，拿到�
 
 | 部分 | 做什麼 | 和 App 之間的連線 |
 |---|---|---|
-| 點餐頁 `/` | 選飲料和杯數，送出訂單，拿到號碼牌 | 短連線：`POST /orders` |
+| 點餐頁 `/` | 看飲料照片、用 −／＋ 選杯數，按「確認點餐」，拿到號碼牌 | 短連線：`POST /orders` |
 | 廚房頁 `/kitchen` | 每 2 秒更新「製作中」的訂單，按「完成」出餐 | 短連線：`GET /api/orders`、`POST /orders/{id}/ready` |
-| 叫號看板 `/board` | 整張訂單都完成才叫號，畫面顯示號碼和服務版本 | 長連線：`GET /events`（SSE，伺服器持續把叫號推給瀏覽器） |
+| 叫號看板 `/board` | 左邊列出製作中的號碼；整張訂單都完成才叫號，右邊用大字顯示剛叫到的號碼 | 長連線：`GET /events`（SSE，伺服器持續把叫號推給瀏覽器）；製作中的號碼和廚房頁一樣每 2 秒用 `GET /api/orders` 更新 |
 | koupa App | 收單時發號碼牌、出餐時分配叫號編號，再把叫號推送給看板；容器內聽 8080 埠 | — |
 | PostgreSQL | 存菜單、訂單；用 LISTEN/NOTIFY（PostgreSQL 內建的通知機制）通知每個 App「有新的叫號」 | App 用 SQL 讀寫 |
 
 這裡說的短連線指一次請求：送出、拿到回應就結束；長連線是看板的請求一直開著，叫號一出來就收到。第一階段要處理的，就是升級時這兩種連線各會出什麼問題。
+
+三個頁面平常只顯示店裡用得到的資訊。上課要看是哪個版本、哪個 Pod 回應時，在網址後面加上 `?debug=1`（例如 `/board?debug=1`），畫面底部會多一條資訊列：服務版本、回應 `/api/whoami` 的 Pod 名稱（升級期間不一定是送出這個頁面的那一個）；看板還會顯示 SSE 連線狀態。
 
 App 有兩個版本，分別放在兩個映像檔（用來啟動容器的程式包）裡，功能上的差別只有一項：
 
@@ -27,7 +29,7 @@ App 有兩個版本，分別放在兩個映像檔（用來啟動容器的程式�
 
 售完標示只用到菜單表已經有的 `available` 欄位，不用改資料表結構。量測時做的版本變更就是「v1 升級到 v2」。
 
-菜單有 4 個品項：滾動珍珠奶茶 65 元、Pod 沫紅茶 55 元、微服務綠茶 55 元、容器冬瓜茶 50 元。
+菜單有 4 個品項：波霸奶茶 65 元、晚霞紅茶 55 元、綠茶三劍客 55 元、冬瓜檸檬 50 元。品項名稱由 migration `000005_menu_names` 設定；飲料照片的來源見 [`app/web/img/CREDITS.md`](../app/web/img/CREDITS.md)。
 
 ## 開始之前
 
@@ -108,7 +110,7 @@ App 的資源都放在 namespace `koupa`（叢集裡用來分組資源的空間�
    koupa-66d75c5658-sfnjg       1/1     Running     0          9m23s   10.244.20.204   tkcicd-1-worker-2
    koupa-66d75c5658-w6gb6       1/1     Running     0          9m23s   10.244.19.111   tkcicd-1-worker-1
    koupa-db-1                   1/1     Running     0          9m51s   10.244.19.225   tkcicd-1-worker-1
-   koupa-migrate-000004-gdxtj   0/1     Completed   0          9m30s   10.244.21.239   tkcicd-1-worker-3
+   koupa-migrate-000005-gdxtj   0/1     Completed   0          9m30s   10.244.21.239   tkcicd-1-worker-3
    ```
 
    3 個 `koupa-` Pod 和 `koupa-db-1` 都要是 `Running`；3 個 `koupa-` Pod 分在不同 worker，`koupa-db-1` 在 infra worker。migration Job 的 Pod 如果還看得到，`Completed` 表示它已經成功結束；完成 24 小時後它會自動刪除。
@@ -160,7 +162,7 @@ data: {"version":"v1"}
 
 看到 `hello` 表示 `curl` 建立了和看板相同的事件連線；`version` 是目前連線的 App 版本。`id` 是給看板重連補號用的，細節見[步驟 4](../README.md#步驟-4重連後補號)。
 
-最後用瀏覽器試一次完整流程。把下面網址裡的 `<Gateway IP>` 換成剛才查到的 IP，分別開三個分頁，看板那一頁保持開著：
+最後用瀏覽器試一次完整流程。把下面網址裡的 `<Gateway IP>` 換成剛才查到的 IP，分別開三個分頁，看板那一頁保持開著（想看服務版本和 Pod，就在網址後面加上 `?debug=1`）：
 
 | 頁面 | 網址 |
 |---|---|
@@ -168,7 +170,7 @@ data: {"version":"v1"}
 | 廚房 | `http://<Gateway IP>/kitchen` |
 | 叫號看板 | `http://<Gateway IP>/board` |
 
-在點餐頁選一杯飲料並按「送出」，記下畫面上的號碼牌；到廚房頁找到這張單按「完成」，再回到看板就會看到叫號。
+在點餐頁按飲料旁的 ＋ 選一杯，再按下方的「確認點餐」，記下畫面上的號碼牌；看板左邊的「製作中」會出現這個號碼。到廚房頁找到這張單按「完成」，看板右邊的「請取餐」就會叫到這個號碼。
 
 ## 切換 v1 和 v2
 
@@ -179,7 +181,7 @@ kubectl -n koupa set image deployment/koupa koupa=ghcr.io/braveantony/koupa:v2
 kubectl -n koupa rollout status deployment/koupa
 ```
 
-重新整理廚房頁，每個品項旁邊會多一個「設為售完」按鈕；看板角落顯示「服務版本：v2」。
+重新整理廚房頁，下方會多出「品項供應」區，每個品項旁邊有「設為售完」按鈕；打開 `/board?debug=1`，底部資訊列會顯示「服務版本：v2」。
 
 看完換回 v1。售完狀態存在資料庫裡，換映像檔不會恢復；如果剛才把品項設成售完，先在廚房頁按「恢復供應」再換：
 

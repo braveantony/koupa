@@ -109,7 +109,7 @@ func TestMenuSeeded(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"滾動珍珠奶茶", "Pod 沫紅茶", "微服務綠茶", "容器冬瓜茶"}
+	want := []string{"波霸奶茶", "晚霞紅茶", "綠茶三劍客", "冬瓜檸檬"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}

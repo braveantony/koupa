@@ -4,3 +4,5 @@ evidence/
 /bin/
 node_modules/
 .claude/
+/.kube/
+/.superpowers/
