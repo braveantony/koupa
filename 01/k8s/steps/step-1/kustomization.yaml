@@ -1,15 +1,11 @@
-# Step 1: delay SIGTERM with a preStop sleep so endpoint removal can reach
-# the gateway first. 7 s = ceil(candidate 1.504 s) + 5 s buffer: the
-# candidate for this environment (tkha), from `measure.sh calibrate` on
-# 2026-11-09 22:06 (evidence/calibrate-20261109-220635/), 3 runs; L is the
-# Pod's last unambiguous per-attempt ingress selection by any request
-# (upstream_attempts 1): 7 valid samples (6 when L used probes only),
-# upper bounds are model estimates (A11 step 4; no direct endpoint-update
-# evidence). The earlier calibration (18:14) re-evaluated the same way
-# gives 1.445 s from 6 valid samples; across both, the last ingress
-# selection of any request to a terminating Pod was at most 1.457 s after
-# the delete request (18 Pods). The 5 s buffer is PROVISIONAL. Grace stays
-# at the default 30 s.
+# Step 1: a readinessProbe, so a new Pod gets traffic only once /healthz
+# says it is ready (listening, database answers, LISTEN active). Measured on
+# tkha without it (docs/env-findings.md section 9): about 28 % of new Pods
+# start listening ~5.02 s late (their first DNS lookup is dropped while the
+# Cilium endpoint has no identity yet), yet are Ready at once, so the gateway
+# sends them requests that fail with UF / connection refused.
+# Every 2 s, one failure or success flips Ready, no initial delay: a new Pod
+# becomes Ready at most ~2 s after it can answer.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
@@ -26,7 +22,11 @@ patches:
           spec:
             containers:
               - name: koupa
-                lifecycle:
-                  preStop:
-                    sleep:
-                      seconds: 7
+                readinessProbe:
+                  httpGet:
+                    path: /healthz
+                    port: 8080
+                  periodSeconds: 2
+                  timeoutSeconds: 1
+                  failureThreshold: 1
+                  successThreshold: 1

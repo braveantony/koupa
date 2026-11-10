@@ -1,7 +1,15 @@
-# Step 2: graceful shutdown. Timing rule (plan A5):
-#   preStop 7 (step 1) + SHUTDOWN_TIMEOUT 15 + 5 < terminationGracePeriodSeconds
-# grace stays 40 (set when step 1 had the 15 s placeholder): 27 < 40 holds
-# (step 1 re-calibrated on 2026-11-09 22:06: still 7 s).
+# Step 2: delay SIGTERM with a preStop sleep so endpoint removal can reach
+# the gateway first. 7 s = ceil(candidate 1.504 s) + 5 s buffer: the
+# candidate for this environment (tkha), from `measure.sh calibrate` on
+# 2026-11-09 22:06 (evidence/calibrate-20261109-220635/), 3 runs; L is the
+# Pod's last unambiguous per-attempt ingress selection by any request
+# (upstream_attempts 1): 7 valid samples (6 when L used probes only),
+# upper bounds are model estimates (A11 step 4; no direct endpoint-update
+# evidence). The earlier calibration (18:14) re-evaluated the same way
+# gives 1.445 s from 6 valid samples; across both, the last ingress
+# selection of any request to a terminating Pod was at most 1.457 s after
+# the delete request (18 Pods). The 5 s buffer is PROVISIONAL. Grace stays
+# at the default 30 s.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
@@ -16,11 +24,9 @@ patches:
       spec:
         template:
           spec:
-            terminationGracePeriodSeconds: 40
             containers:
               - name: koupa
-                env:
-                  - name: GRACEFUL_SHUTDOWN
-                    value: "1"
-                  - name: SHUTDOWN_TIMEOUT
-                    value: 15s
+                lifecycle:
+                  preStop:
+                    sleep:
+                      seconds: 7

@@ -1,6 +1,8 @@
 # measure.sh calibrate (plan A11 step 1): step 0 plus a long preStop and
 # enough grace, so a terminating Pod keeps serving while probes measure when
-# the gateway stops picking it.
+# the gateway stops picking it. Deliberately no readinessProbe (step 1):
+# calibration measures how long the gateway keeps sending to an OLD Pod after
+# the delete request (step 2's preStop), so it stays on step 0.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:

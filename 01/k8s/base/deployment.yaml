@@ -45,8 +45,9 @@ spec:
           # ReplicaSet can end up 2-1-0 (seen on tkha).
           matchLabelKeys:
             - pod-template-hash
-      # No readinessProbe on purpose (design 4.9): it is added only if step 0
-      # shows failures from new Pods receiving traffic before they are ready.
+      # No readinessProbe on purpose: step 0 is Ready as soon as the container
+      # starts. Step 1 adds it (design 4.9), because tkha showed failures from
+      # new Pods receiving traffic before they listen (env-findings section 9).
       containers:
         - name: koupa
           image: ghcr.io/braveantony/koupa:v1
