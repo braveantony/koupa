@@ -7,7 +7,7 @@
 # exactly one koupa Pod, giving up after a bounded number of attempts.
 . "$(dirname "$0")/lib.sh"
 setup_fakes
-make_live step-4
+make_live step-5
 DT=$STAGE/scripts/drain-target.sh
 
 # other_pods PY: replace $FAKE/other-pods.json; PY edits list `items`.
@@ -100,7 +100,7 @@ grep -q '本次量測無效' "$T/out" || tail -20 "$T/out" | sed 's/^/    /'
 # 5. A drain whose replacement Pod lands on a worker that already has one:
 #    after uncordon the crowded Pod is deleted and the spread verified.
 rm -f "$FAKE/drain-dryrun-fail-tkha-worker-3"
-make_live step-4
+make_live step-5
 touch "$FAKE/drain-moves"
 echo 15 >"$FAKE/rh-backdate"
 : >"$FAKE/calls.log"
@@ -124,7 +124,7 @@ import json, sys
 sys.exit(0 if not any(n["spec"].get("unschedulable") for n in json.load(open(sys.argv[1]))["items"]) else 1)' "$FAKE/nodes.json"
 
 # 6. Rebalancing that never works: gives up after the attempt limit, exit 1.
-make_live step-4
+make_live step-5
 touch "$FAKE/drain-moves" "$FAKE/delete-noop"
 : >"$FAKE/calls.log"
 rm -rf "$MEASURE_EVIDENCE_DIR"/*

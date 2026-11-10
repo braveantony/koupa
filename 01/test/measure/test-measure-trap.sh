@@ -51,7 +51,7 @@ common_checks() {
 }
 
 # 1. SIGINT after the drain: uncordon, collectors stopped.
-make_live step-4
+make_live step-5
 echo 60 >"$FAKE/rh-sleep"
 echo 15 >"$FAKE/rh-backdate"
 start_measure drain --runs 1 --duration 30
@@ -67,7 +67,7 @@ sys.exit(0 if not any(n["spec"].get("unschedulable") for n in json.load(open(sys
 # 2. SIGINT while kubectl drain is still running: uncordon too.
 rm -rf "$MEASURE_EVIDENCE_DIR"/*
 : >"$FAKE/calls.log"
-make_live step-4
+make_live step-5
 echo 30 >"$FAKE/drain-sleep"
 start_measure drain --runs 1 --duration 30
 wait_for "$FAKE/calls.log" '^kubectl drain tkha-worker-2 --ignore-daemonsets --timeout' 20 || fail "mid-drain: never drained"
@@ -81,7 +81,7 @@ rm -f "$FAKE/drain-sleep"
 # 3. SIGINT after scaling to 2: back to 3 replicas.
 rm -rf "$MEASURE_EVIDENCE_DIR"/*
 : >"$FAKE/calls.log"
-make_live step-4
+make_live step-5
 start_measure scale-down --runs 1 --duration 30
 wait_for "$FAKE/calls.log" '^kubectl .*scale deploy/koupa --replicas=2' 20 || fail "scale-down: never scaled"
 sleep 0.5
@@ -115,14 +115,14 @@ run_mode() { # MODE: one run, sets rc and run
 	run=$(latest_run)
 }
 echo 1 >"$FAKE/rh-sleep"
-make_live step-4
+make_live step-5
 echo 2 >"$FAKE/uncordon-fail"
 run_mode drain
 check "uncordon fails twice: retried, exit 0 (rc=$rc)" [ "$rc" -eq 0 ]
 check "uncordon fails twice: 3 uncordon calls" [ "$(grep -c '^kubectl uncordon' "$FAKE/calls.log")" -eq 3 ]
 check "uncordon fails twice: restore ok" python3 -I -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["ok"] else 1)' "$run/restore.json"
 
-make_live step-4
+make_live step-5
 echo 99 >"$FAKE/uncordon-fail"
 run_mode drain
 check "uncordon never works: exit 1 (rc=$rc)" [ "$rc" -eq 1 ]
@@ -136,7 +136,7 @@ check "uncordon never works: tried again on exit" [ "$(grep -c '^kubectl uncordo
 check "uncordon never works: reported" grep -q 'tkha-worker-2.*uncordon\|uncordon.*tkha-worker-2' "$T/out"
 rm -f "$FAKE/uncordon-fail"
 
-make_live step-4
+make_live step-5
 echo 99 >"$FAKE/scale-fail"
 run_mode scale-down
 check "scale-back never works: exit 1 (rc=$rc)" [ "$rc" -eq 1 ]
@@ -151,7 +151,7 @@ rm -f "$FAKE/scale-fail"
 #    and interrupted.json shows the restoration did not succeed.
 rm -rf "$MEASURE_EVIDENCE_DIR"/*
 : >"$FAKE/calls.log"
-make_live step-4
+make_live step-5
 echo 60 >"$FAKE/rh-sleep"
 echo 99 >"$FAKE/uncordon-fail"
 start_measure drain --runs 1 --duration 30

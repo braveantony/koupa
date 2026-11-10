@@ -24,7 +24,7 @@ const readHeaderTimeout = 10 * time.Second
 // GracefulShutdown=false (step 0, design 4.4): log sigterm and exit at once
 // through Deps.Exit; nothing else runs.
 //
-// GracefulShutdown=true (step 2, plan A5): log sigterm, then call
+// GracefulShutdown=true (step 3, plan A5): log sigterm, then call
 // http.Server.Shutdown immediately with ShutdownTimeout. Shutdown closes the
 // listener first; the function registered with RegisterOnShutdown only
 // closes the shared channel every /events handler watches. If Shutdown

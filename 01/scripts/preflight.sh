@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Pre-measurement checks against the LIVE cluster (plan A8 step 2).
 #
-#   scripts/preflight.sh <step-0..step-4|control|calibrate> [--image IMAGE] [--digest DIGEST]
+#   scripts/preflight.sh <step-0..step-5|control|calibrate> [--image IMAGE] [--digest DIGEST]
 #
-# (rollback, drain and scale-down run with the step-4 settings: measure.sh
-# calls this with step-4; rollback with --image .../koupa:v2.)
+# (rollback, drain and scale-down run with the step-5 settings: measure.sh
+# calls this with step-5; rollback with --image .../koupa:v2.)
 # Run after the step's manifest is applied and the rollout has finished.
 # IMAGE (default ghcr.io/braveantony/koupa:v1) is the image the Pods must run;
 # DIGEST is what its registry tag resolves to now (measure.sh resolves it
@@ -13,8 +13,9 @@
 #   generation     Deployment observedGeneration == generation
 #   replicaset     every koupa Pod belongs to the current ReplicaSet, runs, is
 #                  Ready, and there are spec.replicas of them
-#   spec           image, env, preStop and terminationGracePeriodSeconds equal
-#                  the rendered overlay (so previous-step-only settings are gone)
+#   spec           image, env, preStop, readinessProbe (step 1 on) and
+#                  terminationGracePeriodSeconds equal the rendered overlay
+#                  (so settings of other steps are gone)
 #   timing         GRACEFUL_SHUTDOWN on: preStop + SHUTDOWN_TIMEOUT + 5 < grace
 #                  (A5); otherwise an enabled preStop < grace; calibrate
 #                  also: grace > preStop >= 20 (A11 step 1)
@@ -30,7 +31,7 @@ NS=${KOUPA_NS:-koupa}
 KUBECTL=${KUBECTL:-kubectl}
 
 usage() {
-	echo "usage: $0 <step-0..step-4|control|calibrate> [--image IMAGE] [--digest DIGEST]" >&2
+	echo "usage: $0 <step-0..step-5|control|calibrate> [--image IMAGE] [--digest DIGEST]" >&2
 	exit 2
 }
 
@@ -47,7 +48,7 @@ while [ $# -gt 0 ]; do
 done
 case $step in
 step-0 | control) dir=$stage/k8s/base ;;
-step-[1-4]) dir=$stage/k8s/steps/$step ;;
+step-[1-5]) dir=$stage/k8s/steps/$step ;;
 calibrate) dir=$stage/k8s/calibrate ;;
 *) usage ;;
 esac
@@ -160,9 +161,25 @@ def prestop(c):
     s = ((c.get("lifecycle") or {}).get("preStop") or {}).get("sleep", {}).get("seconds")
     return s
 
+# The API server fills in probe defaults; compare with them filled in.
+PROBE_DEFAULTS = {"timeoutSeconds": 1, "periodSeconds": 10,
+                  "successThreshold": 1, "failureThreshold": 3}
+def readiness(c):
+    p = c.get("readinessProbe")
+    if not p:
+        return None
+    p = {**PROBE_DEFAULTS, **json.loads(json.dumps(p))}
+    if p.get("initialDelaySeconds") == 0:
+        del p["initialDelaySeconds"]
+    hg = p.get("httpGet")
+    if isinstance(hg, dict) and hg.get("scheme") == "HTTP":
+        del hg["scheme"]
+    return p
+
 def settings(podspec):
     c = container(podspec)
     return {"image": c.get("image"), "env": env_map(c), "preStop": prestop(c),
+            "readiness": readiness(c),
             "lifecycle": c.get("lifecycle") or None,
             "grace": podspec.get("terminationGracePeriodSeconds", 30)}
 
@@ -186,6 +203,14 @@ def diff(have, label):
         out.append("%s preStop %s, want %s" % (label, have["preStop"] or have["lifecycle"], want["preStop"]))
     if have["grace"] != want["grace"]:
         out.append("%s terminationGracePeriodSeconds %s, want %s" % (label, have["grace"], want["grace"]))
+    if have["readiness"] != want["readiness"]:
+        if want["readiness"] is None:
+            out.append("%s readinessProbe is set but not in %s (left over from another step?)" % (label, step))
+        elif have["readiness"] is None:
+            out.append("%s readinessProbe missing (want %s)" % (label, json.dumps(want["readiness"], sort_keys=True)))
+        else:
+            out.append("%s readinessProbe %s, want %s" % (label, json.dumps(have["readiness"], sort_keys=True),
+                                                         json.dumps(want["readiness"], sort_keys=True)))
     return out
 
 live = settings(dep["spec"]["template"]["spec"])
@@ -197,7 +222,8 @@ for p in pods:
     if st and st[0].get("image") not in (image, "docker.io/" + image):
         problems.append("Pod %s runs image %s, want %s" % (p["metadata"]["name"], st[0].get("image"), image))
 report("spec", not problems, "; ".join(problems) if problems else
-       "image %s, env %s, preStop %s, grace %s match %s" % (image, ",".join(sorted(want["env"])), want["preStop"], want["grace"], step))
+       "image %s, env %s, preStop %s, readinessProbe %s, grace %s match %s" % (image, ",".join(sorted(want["env"])), want["preStop"],
+           "on" if want["readiness"] else "off", want["grace"], step))
 
 # 4. timing (live values)
 pre = live["preStop"] or 0

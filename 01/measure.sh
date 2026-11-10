@@ -4,9 +4,9 @@
 #   ./measure.sh <mode> [--runs 5] [--duration 60] [--rate 20] [--verbose] [--diagnostic]
 #   ./measure.sh all [--runs 5] [--dry-run] [...]
 #
-# mode: step-0 .. step-4, control, calibrate, rollback, drain, scale-down, all.
+# mode: step-0 .. step-5, control, calibrate, rollback, drain, scale-down, all.
 #
-# One run, every time from step 1 (plan A8):
+# One run, every time from A8 step 1 (plan A8):
 #   1. render the step's overlay, set the image to v1, kubectl apply
 #   2. wait for the rollout and for old Pods to be gone, then
 #      scripts/preflight.sh (seven checks, incl. every Pod's image digest =
@@ -28,8 +28,8 @@
 #               each run `rush-hour calibrate` estimates every terminated Pod
 #               (calib.Estimate). Runs repeat until 5 valid samples or
 #               --runs; samples and candidate in evidence/calibrate-<time>/.
-#   rollback    step-4 settings applied with v2; the change sets v1.
-#   drain       step-4; before the run the Pods must be spread one per worker
+#   rollback    step-5 settings applied with v2; the change sets v1.
+#   drain       step-5; before the run the Pods must be spread one per worker
 #               and scripts/drain-target.sh picks the worker (A15 checks, or
 #               the run stops); the change is `kubectl drain W
 #               --ignore-daemonsets` (never --delete-emptydir-data), complete
@@ -37,9 +37,9 @@
 #               node must be schedulable, 3 available Pods, then rebalance
 #               (delete a Pod on a crowded worker, re-check; at most
 #               MEASURE_REBALANCE_ATTEMPTS=5 times, else stop and report).
-#   scale-down  step-4; the change scales to 2 replicas; afterwards back to 3,
+#   scale-down  step-5; the change scales to 2 replicas; afterwards back to 3,
 #               all available.
-#   all         rounds (--runs, default 5) of control, step-0 .. step-4, one
+#   all         rounds (--runs, default 5) of control, step-0 .. step-5, one
 #               run each (measure.sh MODE --runs 1); --dry-run prints the
 #               sequence only. The step-0 gate is judged over all rounds.
 #
@@ -52,7 +52,7 @@
 # unknown and not invalid; step-0 must observe at least one predefined
 # problem over its runs. Otherwise exit 3, unless --diagnostic: then the
 # runs go on and every scorecard of this invocation starts with
-# 「診斷模式：對照組不成立，不可用於比較」. With --diagnostic on step-1..4 (a
+# 「診斷模式：對照組不成立，不可用於比較」. With --diagnostic on step-1..5 (a
 # comparison continued after a failed control) every scorecard gets it too.
 #
 # Interruption (EXIT, INT, TERM): rush-hour, the probe and the collectors
@@ -89,7 +89,7 @@ APP_START_TIMEOUT_S=${MEASURE_APP_START_TIMEOUT_S:-60}
 RESTORE_TIMEOUT_S=${MEASURE_RESTORE_TIMEOUT_S:-240}
 REBALANCE_ATTEMPTS=${MEASURE_REBALANCE_ATTEMPTS:-5}
 CALIB_MIN_VALID=5 # plan A11 step 6
-STEP1_BUFFER_S=5  # provisional buffer on top of the calibrated candidate
+PRESTOP_BUFFER_S=5 # provisional buffer on top of the calibrated candidate (step 2)
 HOST_RH=${MEASURE_HOST_RUSH_HOUR:-$stage/bin/rush-hour}
 GO=${MEASURE_GO:-$stage/scripts/go}
 
@@ -138,17 +138,17 @@ while [ $# -gt 0 ]; do
 	*) warn "unknown argument: $1"; usage ;;
 	esac
 done
-# overlay: the settings applied (also preflight's step); change: what step 5
+# overlay: the settings applied (also preflight's step); change: what A8 step 5
 # does (image: set image img_after; none; drain; scale).
 img_before=$IMG_V1 img_after=$IMG_V2 change=image overlay=$mode
 case $mode in
 step-0) overlay_dir=$stage/k8s/base ;;
 control) overlay_dir=$stage/k8s/base img_after="" change=none ;;
-step-[1-4]) overlay_dir=$stage/k8s/steps/$mode ;;
+step-[1-5]) overlay_dir=$stage/k8s/steps/$mode ;;
 calibrate) overlay_dir=$stage/k8s/calibrate ;;
-rollback) overlay=step-4 overlay_dir=$stage/k8s/steps/step-4 img_before=$IMG_V2 img_after=$IMG_V1 ;;
-drain) overlay=step-4 overlay_dir=$stage/k8s/steps/step-4 img_after="" change=drain ;;
-scale-down) overlay=step-4 overlay_dir=$stage/k8s/steps/step-4 img_after="" change=scale ;;
+rollback) overlay=step-5 overlay_dir=$stage/k8s/steps/step-5 img_before=$IMG_V2 img_after=$IMG_V1 ;;
+drain) overlay=step-5 overlay_dir=$stage/k8s/steps/step-5 img_after="" change=drain ;;
+scale-down) overlay=step-5 overlay_dir=$stage/k8s/steps/step-5 img_after="" change=scale ;;
 all) overlay="" overlay_dir="" ;;
 *) usage ;;
 esac
@@ -157,7 +157,7 @@ esac
 [[ $duration =~ ^[0-9]+$ ]] && [ "$duration" -ge 30 ] || { warn "--duration must be whole seconds, at least 30 (plan A8)"; exit 64; }
 [[ $rate =~ ^[0-9]+([.][0-9]+)?$ ]] || { warn "--rate must be a positive number"; exit 64; }
 
-ALL_SEQUENCE=(control step-0 step-1 step-2 step-3 step-4)
+ALL_SEQUENCE=(control step-0 step-1 step-2 step-3 step-4 step-5)
 all_opts=(--duration "$duration" --rate "$rate")
 [ "$verbose" = 1 ] && all_opts+=(--verbose)
 [ "$diagnostic" = 1 ] && all_opts+=(--diagnostic)
@@ -984,7 +984,7 @@ PY
 }
 
 # ---------------------------------------------------------------- all
-# run_all: rounds of control, step-0 .. step-4, one run each, by running
+# run_all: rounds of control, step-0 .. step-5, one run each, by running
 # this script per mode. A step that fails (exit 1) or a control that does
 # not hold (exit 3, without --diagnostic) stops the sequence; the step-0
 # gate is judged here over all its runs.
@@ -1044,7 +1044,8 @@ run_all() {
 # ---------------------------------------------------------------- calibrate
 # calib_aggregate DIR...: the samples of the valid calibrate runs so far, in
 # evidence/calibrate-<started>/ (samples.txt, candidate.json with the
-# step-1 value = ceil(candidate) + STEP1_BUFFER_S). Prints the valid count.
+# step-2 preStop value prestop_s = ceil(candidate) + PRESTOP_BUFFER_S).
+# Prints the valid count.
 calib_aggregate() {
 	local out=$EVIDENCE/calibrate-$started
 	mkdir -p "$out"
@@ -1054,7 +1055,7 @@ calib_aggregate() {
 		return
 	}
 	[ -s "$out/calibrate.err" ] || rm -f "$out/calibrate.err"
-	python3 -I - "$out/.report.json" "$out/candidate.json" "$STEP1_BUFFER_S" "$CALIB_MIN_VALID" "$@" <<'PY'
+	python3 -I - "$out/.report.json" "$out/candidate.json" "$PRESTOP_BUFFER_S" "$CALIB_MIN_VALID" "$@" <<'PY'
 import json, math, os, sys
 src, dst, buf, need, dirs = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), sys.argv[5:]
 r = json.load(open(src))
@@ -1064,7 +1065,7 @@ r["min_valid_samples"] = need
 r["buffer_s"] = buf
 r["buffer_note"] = "provisional: %d s until measured more often on this environment (A11 step 6)" % buf
 c = r.get("candidate_s")
-r["step1_prestop_s"] = (math.ceil(c) + buf) if c is not None else None
+r["prestop_s"] = (math.ceil(c) + buf) if c is not None else None
 r["calibrated"] = c is not None
 json.dump(r, open(dst, "w"), indent=2, ensure_ascii=False)
 os.remove(src)
@@ -1132,7 +1133,7 @@ fi
 banner=0
 if [ -n "$gate_failed" ] && [ "$diagnostic" = 1 ]; then
 	banner=1
-elif [ "$diagnostic" = 1 ] && [[ $mode == step-[1-4] ]]; then
+elif [ "$diagnostic" = 1 ] && [[ $mode == step-[1-5] ]]; then
 	banner=1
 fi
 # The gate and the banner are decided; only now are the scorecards shown.
@@ -1157,11 +1158,11 @@ if [ "$mode" = calibrate ]; then
 		echo "================ calibrate 樣本（$cdir）"
 		cat "$cdir/samples.txt"
 	fi
-	step1=$(python3 -I -c 'import json,sys; v=json.load(open(sys.argv[1])).get("step1_prestop_s"); print("" if v is None else v)' "$cdir/candidate.json" 2>/dev/null)
-	if [ -n "$step1" ]; then
-		log "calibrate: 有效樣本 $calib_valid 個；step 1 的 preStop 候選值 $step1 秒（ceil(候選值) + 緩衝 $STEP1_BUFFER_S 秒，緩衝暫定；上界為模型推估）；$cdir/candidate.json"
+	prestop=$(python3 -I -c 'import json,sys; v=json.load(open(sys.argv[1])).get("prestop_s"); print("" if v is None else v)' "$cdir/candidate.json" 2>/dev/null)
+	if [ -n "$prestop" ]; then
+		log "calibrate: 有效樣本 $calib_valid 個；步驟 2 的 preStop 候選值 $prestop 秒（ceil(候選值) + 緩衝 $PRESTOP_BUFFER_S 秒，緩衝暫定；上界為模型推估）；$cdir/candidate.json"
 	else
-		warn "calibrate: 有效樣本 $calib_valid 個，不足 $CALIB_MIN_VALID 個：不產生候選值；step 1 改用保守值，標示「preStop 未經校正」"
+		warn "calibrate: 有效樣本 $calib_valid 個，不足 $CALIB_MIN_VALID 個：不產生候選值；步驟 2 改用保守值，標示「preStop 未經校正」"
 		calib_short=1
 	fi
 fi

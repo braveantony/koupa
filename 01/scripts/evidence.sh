@@ -45,7 +45,7 @@ base=$(param base_url)
 
 case $overlay in
 step-0 | control | base) dir=$stage/k8s/base ;;
-step-[1-4]) dir=$stage/k8s/steps/$overlay ;;
+step-[1-5]) dir=$stage/k8s/steps/$overlay ;;
 *) dir=$stage/k8s/$overlay ;;
 esac
 

@@ -479,7 +479,7 @@ make_live() {
 	local overlay=$1 edit=${2:-} dir
 	case $overlay in
 	step-0 | control | base) dir=$STAGE/k8s/base ;;
-	step-[1-4]) dir=$STAGE/k8s/steps/$overlay ;;
+	step-[1-5]) dir=$STAGE/k8s/steps/$overlay ;;
 	*) dir=$STAGE/k8s/$overlay ;;
 	esac
 	"$REAL_KUBECTL" kustomize "$dir" >"$FAKE/rendered.yaml" || return 1

@@ -122,7 +122,7 @@ func calibrateDirs(dirs []string, preStop time.Duration, cfg calib.Config) (cali
 		Config: cfg, PreStopS: preStop.Seconds(), Upper: calib.UpperModel, DirectNote: directNote,
 		// load.Prober always uses a transport with keep-alives disabled.
 		FreshConn: true, PerAttempt: false,
-		Note: "candidate_s has no buffer; step 1 uses ceil(candidate_s) + buffer",
+		Note: "candidate_s has no buffer; step 2 uses ceil(candidate_s) + buffer",
 		IngressNote: "DIR/ingress.log present: IngressSelectedAt = access-log start_time of the probe " +
 			"(upstream_attempts 1); start_time is truncated to 1 ms, so one earlier than SentAt by " +
 			"less than 1 ms is clamped to SentAt; L also takes the Pod's latest selection by any request " +
@@ -340,7 +340,7 @@ func writeCalibTable(w io.Writer, rep calibReport) {
 		fmt.Fprintf(w, "注意：%d 個探測回應沒有 Pod UID\n", rep.ProbesNoUID)
 	}
 	if rep.CandidateS != nil {
-		fmt.Fprintf(w, "candidate: %.3f s（有效樣本 %d 個；不含緩衝；step 1 取 %d + 緩衝）\n",
+		fmt.Fprintf(w, "candidate: %.3f s（有效樣本 %d 個；不含緩衝；步驟 2 取 %d + 緩衝）\n",
 			*rep.CandidateS, rep.Valid, int(math.Ceil(*rep.CandidateS)))
 	} else {
 		fmt.Fprintf(w, "no candidate: 有效樣本 %d 個（需要至少 5 個）\n", rep.Valid)
