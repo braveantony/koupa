@@ -28,6 +28,10 @@ type Input struct {
 	// DirectUpper is U from endpoint/config update records, nil when unknown.
 	DirectUpper       *time.Time
 	PerAttemptIngress bool
+	// LastSelection is the Pod's latest unambiguous per-attempt ingress
+	// selection by any request (not only probes); used only with
+	// PerAttemptIngress. nil when there is none.
+	LastSelection *time.Time
 	// FreshConnections records that every probe used a new client connection.
 	FreshConnections bool
 }
@@ -78,8 +82,11 @@ type Sample struct {
 	RateP          float64 // pre/post hit-rate two-proportion p-value; valid only if RateComputed
 	RateComputed   bool
 	DirectRejected bool // direct evidence was earlier than an observed hit
-	Valid          bool
-	InvalidReason  string
+	// LowerFromSelection: L came from Input.LastSelection (a non-probe or
+	// later selection), not from a probe.
+	LowerFromSelection bool
+	Valid              bool
+	InvalidReason      string
 }
 
 // Estimate applies A11 steps 3-5 to one Pod.
@@ -127,6 +134,21 @@ func Estimate(in Input, cfg Config) Sample {
 		}
 		if p.RespondedAt.After(hitBound) {
 			hitBound = p.RespondedAt
+		}
+	}
+
+	// A11 step 3: with per-attempt records, L is the last recorded selection
+	// of the Pod by any request.
+	if in.PerAttemptIngress && in.LastSelection != nil {
+		l := *in.LastSelection
+		if l.After(s.Lower) {
+			s.Lower, s.LowerFromSelection = l, true
+		}
+		if l.After(in.DeletionStart) {
+			hitAfterDeletion = true
+		}
+		if l.After(hitBound) {
+			hitBound = l
 		}
 	}
 

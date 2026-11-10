@@ -229,16 +229,24 @@ func TestCalibrateCountsProbesWithoutUIDAndRejectsMissingProbes(t *testing.T) {
 // ingressFixture describes the access log written next to a synthetic run.
 type ingressFixture struct {
 	IPs map[string]string // pod UID -> Pod IP (also written to the meta files)
-	// Extra lines (non-probe traffic): upstream Pod UID and start offset.
-	Extra []struct {
-		UID string
-		At  time.Duration
-	}
+	// Extra lines (non-probe traffic).
+	Extra []extraLine
 	// SkewAttempt: this probe's line gets start_time = sent - 5 ms (a real
 	// clock disagreement, beyond the 1 ms truncation of start_time).
 	SkewAttempt string
 	// DropAttempt: no access-log line for this probe.
 	DropAttempt string
+	// RepeatAttempt: this probe's line is written Repeat times.
+	RepeatAttempt string
+	Repeat        int
+}
+
+// extraLine is a non-probe access-log line: upstream Pod, start offset from
+// calibT0, upstream_attempts (0 means 1).
+type extraLine struct {
+	UID      string
+	At       time.Duration
+	Attempts int
 }
 
 // writeIngressLog reads DIR/probes.jsonl and writes DIR/ingress.log the way
@@ -253,11 +261,11 @@ func writeIngressLog(t *testing.T, dir string, fx ingressFixture) {
 		t.Fatal(err)
 	}
 	var sb strings.Builder
-	line := func(attempt, path, uid string, start time.Time) {
+	line := func(attempt, path, uid string, start time.Time, attempts int) {
 		m := map[string]any{"attempt": attempt, "duration_ms": 1, "method": "GET", "path": path,
 			"response_code_details": "via_upstream", "response_flags": "-",
 			"start_time": start.UTC().Truncate(time.Millisecond).Format("2006-01-02T15:04:05.000Z"),
-			"status":     200, "upstream_attempts": 1, "upstream_host": fx.IPs[uid] + ":8080"}
+			"status":     200, "upstream_attempts": attempts, "upstream_host": fx.IPs[uid] + ":8080"}
 		if attempt == "" {
 			m["attempt"] = nil
 		}
@@ -281,10 +289,20 @@ func writeIngressLog(t *testing.T, dir string, fx ingressFixture) {
 		if a.Attempt == fx.SkewAttempt {
 			sel = a.SentAt.Add(-5 * time.Millisecond)
 		}
-		line(a.Attempt, "/api/whoami", a.PodUID, sel)
+		n := 1
+		if a.Attempt == fx.RepeatAttempt {
+			n = fx.Repeat
+		}
+		for k := 0; k < n; k++ {
+			line(a.Attempt, "/api/whoami", a.PodUID, sel, 1)
+		}
 	}
 	for _, e := range fx.Extra {
-		line("", "/api/orders?status=pending", e.UID, calibT0.Add(e.At))
+		n := e.Attempts
+		if n == 0 {
+			n = 1
+		}
+		line("", "/api/orders?status=pending", e.UID, calibT0.Add(e.At), n)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "ingress.log"), []byte(sb.String()), 0o644); err != nil {
 		t.Fatal(err)
@@ -307,9 +325,12 @@ type calibIngressOut struct {
 	PerAttempt    bool `json:"per_attempt_ingress"`
 	NoIngressLine int  `json:"probes_without_ingress_line"`
 	IngressRuns   int  `json:"runs_with_ingress_log"`
+	Ambiguous     int  `json:"ingress_lines_ambiguous"`
+	DupAttempts   int  `json:"ingress_duplicate_attempts"`
 	Samples       []struct {
 		PodName    string   `json:"pod_name"`
 		Lower      *string  `json:"lower"`
+		Upper      *string  `json:"upper"`
 		LSource    string   `json:"lower_source"`
 		LMinusDel  *float64 `json:"l_minus_deletion_s"`
 		LastAnyDel *float64 `json:"last_ingress_any_minus_deletion_s"`
@@ -359,22 +380,23 @@ func TestCalibrateUsesPerAttemptIngress(t *testing.T) {
 	writeCalibRun(t, dir, 11, []calibPod{
 		{UID: "a", Name: "koupa-a", Gone: 22 * time.Second, Del: dur(20 * time.Second)},
 		{UID: "b", Name: "koupa-b", Gone: 37 * time.Second, Del: dur(35 * time.Second)},
+		{UID: "d", Name: "koupa-d", Gone: 52 * time.Second, Del: dur(50 * time.Second)},
 		{UID: "c", Name: "koupa-c", Gone: time.Hour},
 	})
-	hitA, _ := lastHit(t, dir, "a")
-	fx := ingressFixture{IPs: map[string]string{"a": "10.0.0.1", "b": "10.0.0.2", "c": "10.0.0.3"},
-		DropAttempt: hitA.Attempt}
-	fx.Extra = append(fx.Extra, struct {
-		UID string
-		At  time.Duration
-	}{"a", 23500 * time.Millisecond})
+	hitB, _ := lastHit(t, dir, "b")
+	hitD, seqD := lastHit(t, dir, "d")
+	fx := ingressFixture{IPs: map[string]string{"a": "10.0.0.1", "b": "10.0.0.2", "c": "10.0.0.3", "d": "10.0.0.4"},
+		DropAttempt: hitB.Attempt,
+		Extra: []extraLine{
+			{UID: "a", At: 22050 * time.Millisecond},      // non-probe selection: becomes a's L
+			{UID: "d", At: 54 * time.Second, Attempts: 2}, // retried inside the ingress: ambiguous
+			{UID: "b", At: 36 * time.Second, Attempts: 1}, // earlier than b's last probe: no effect
+		}}
 	writeIngressLog(t, dir, fx)
-	// a's last probe line was dropped: the hit before it gives L when it has
-	// a line, else SentAt; b keeps its last line.
-	hitB, seqB := lastHit(t, dir, "b")
-	wantB := hitB.SentAt.Add(2 * time.Millisecond).Truncate(time.Millisecond)
-	if seqB%2 == 1 {
-		wantB = hitB.SentAt // start_time truncated below SentAt -> clamp
+	// d keeps its last probe line: L from the probe's ingress start_time.
+	wantD := hitD.SentAt.Add(2 * time.Millisecond).Truncate(time.Millisecond)
+	if seqD%2 == 1 {
+		wantD = hitD.SentAt // start_time truncated below SentAt -> clamp
 	}
 
 	jp := filepath.Join(root, "o.json")
@@ -386,37 +408,74 @@ func TestCalibrateUsesPerAttemptIngress(t *testing.T) {
 	if c.NoIngressLine != 1 {
 		t.Errorf("probes_without_ingress_line = %d, want 1", c.NoIngressLine)
 	}
+	if c.Ambiguous != 1 {
+		t.Errorf("ingress_lines_ambiguous = %d, want 1 (the upstream_attempts 2 line)", c.Ambiguous)
+	}
 	got := map[string]int{}
 	for i, s := range c.Samples {
 		got[s.PodName] = i
 	}
-	a, b := c.Samples[got["koupa-a"]], c.Samples[got["koupa-b"]]
-	if !a.Valid || !b.Valid {
+	a, b, d := c.Samples[got["koupa-a"]], c.Samples[got["koupa-b"]], c.Samples[got["koupa-d"]]
+	if !a.Valid || !b.Valid || !d.Valid {
 		t.Fatalf("samples not valid (truncation must not count as inconsistent timing): %+v", c.Samples)
 	}
-	if b.Lower == nil || *b.Lower != wantB.UTC().Format(time.RFC3339Nano) || b.LSource != "ingress" {
-		t.Errorf("b: lower %v source %q, want %s ingress", b.Lower, b.LSource, wantB.UTC().Format(time.RFC3339Nano))
+	rfc := func(x time.Time) string { return x.UTC().Format(time.RFC3339Nano) }
+	wantA := calibT0.Add(22050 * time.Millisecond)
+	if a.Lower == nil || *a.Lower != rfc(wantA) || a.LSource != "ingress-any" {
+		t.Errorf("a: lower %v source %q, want the non-probe selection %s ingress-any", a.Lower, a.LSource, rfc(wantA))
 	}
-	if a.Lower == nil || *a.Lower != hitA.SentAt.UTC().Format(time.RFC3339Nano) || a.LSource != "sent" {
-		t.Errorf("a: lower %v source %q, want SentAt of the probe without a line %s", a.Lower, a.LSource,
-			hitA.SentAt.UTC().Format(time.RFC3339Nano))
+	if a.LMinusDel == nil || abs(*a.LMinusDel-2.05) > 1e-6 || a.LastAnyDel == nil || abs(*a.LastAnyDel-2.05) > 1e-6 {
+		t.Errorf("a: l_minus_deletion_s %v last_any %v, want 2.05", a.LMinusDel, a.LastAnyDel)
 	}
-	if b.LMinusDel == nil || abs(*b.LMinusDel-wantB.Sub(calibT0.Add(35*time.Second)).Seconds()) > 1e-6 {
-		t.Errorf("b: l_minus_deletion_s %v", b.LMinusDel)
+	if a.Upper == nil || !mustTime(t, *a.Upper).After(wantA) {
+		t.Errorf("a: U %v must come after the non-probe L (misses counted after L)", a.Upper)
 	}
-	if a.LastAnyDel == nil || abs(*a.LastAnyDel-3.5) > 1e-6 {
-		t.Errorf("a: last_ingress_any_minus_deletion_s %v, want 3.5 (the non-probe line)", a.LastAnyDel)
+	if b.Lower == nil || *b.Lower != rfc(hitB.SentAt) || b.LSource != "sent" {
+		t.Errorf("b: lower %v source %q, want SentAt of the probe without a line %s", b.Lower, b.LSource, rfc(hitB.SentAt))
 	}
-	if b.LastAnyDel == nil || abs(*b.LastAnyDel-wantB.Sub(calibT0.Add(35*time.Second)).Seconds()) > 0.003 {
-		t.Errorf("b: last_ingress_any_minus_deletion_s %v", b.LastAnyDel)
+	if d.Lower == nil || *d.Lower != rfc(wantD) || d.LSource != "ingress" {
+		t.Errorf("d: lower %v source %q, want %s ingress (the retried line is ignored)", d.Lower, d.LSource, rfc(wantD))
+	}
+	if d.LastAnyDel == nil || *d.LastAnyDel > 3 {
+		t.Errorf("d: last_ingress_any_minus_deletion_s %v must ignore the upstream_attempts 2 line", d.LastAnyDel)
 	}
 	var out, errb bytes.Buffer
 	run([]string{"calibrate", dir}, &out, &errb)
-	for _, want := range []string{"L 取法：逐次入口紀錄", "L-del(s)", "last-any(s)"} {
+	for _, want := range []string{"L 取法：逐次入口紀錄", "L-del(s)", "last-any(s)", "ingress-any"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("table lacks %q:\n%s", want, out.String())
 		}
 	}
+}
+
+// An attempt id logged three times stays unusable (a third line must not
+// re-insert it after the second removed it).
+func TestCalibrateRepeatedAttemptStaysAmbiguous(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "r1")
+	writeCalibRun(t, dir, 4, []calibPod{
+		{UID: "a", Name: "koupa-a", Gone: 22 * time.Second, Del: dur(20 * time.Second)},
+		{UID: "c", Name: "koupa-c", Gone: time.Hour},
+	})
+	hitC, _ := lastHit(t, dir, "c")
+	writeIngressLog(t, dir, ingressFixture{IPs: map[string]string{"a": "10.0.0.1", "c": "10.0.0.3"},
+		RepeatAttempt: hitC.Attempt, Repeat: 3})
+	jp := filepath.Join(root, "o.json")
+	runCalibrate(t, "--json", jp, dir)
+	c := readIngressOut(t, jp)
+	if c.NoIngressLine != 1 || c.DupAttempts != 1 {
+		t.Errorf("probes_without_ingress_line %d (want 1), ingress_duplicate_attempts %d (want 1)",
+			c.NoIngressLine, c.DupAttempts)
+	}
+}
+
+func mustTime(t *testing.T, s string) time.Time {
+	t.Helper()
+	v, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
 }
 
 // start_time earlier than SentAt by more than the truncation is a clock

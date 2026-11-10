@@ -61,14 +61,20 @@ type calibReport struct {
 	IngressRuns int          `json:"runs_with_ingress_log"`
 	// Probes with a response but no usable access-log line (no line, or
 	// upstream_attempts != 1): their L candidate is SentAt.
-	NoIngressLine int           `json:"probes_without_ingress_line"`
-	IngressNote   string        `json:"ingress_note"`
-	Runs          []string      `json:"runs"`
-	ProbesNoUID   int           `json:"probes_without_pod_uid"`
-	Samples       []calibSample `json:"samples"`
-	Valid         int           `json:"valid_samples"`
-	CandidateS    *float64      `json:"candidate_s"`
-	Note          string        `json:"note"`
+	NoIngressLine int `json:"probes_without_ingress_line"`
+	// Access-log lines with an upstream but upstream_attempts != 1 (retried
+	// inside the ingress, or not recorded): the final upstream does not say
+	// which Pod was selected when; excluded from every L.
+	Ambiguous int `json:"ingress_lines_ambiguous"`
+	// Attempt ids logged more than once: unusable for the probe join.
+	DupAttempts int           `json:"ingress_duplicate_attempts"`
+	IngressNote string        `json:"ingress_note"`
+	Runs        []string      `json:"runs"`
+	ProbesNoUID int           `json:"probes_without_pod_uid"`
+	Samples     []calibSample `json:"samples"`
+	Valid       int           `json:"valid_samples"`
+	CandidateS  *float64      `json:"candidate_s"`
+	Note        string        `json:"note"`
 }
 
 const directNote = "no endpoint or configuration update records covering every ingress instance " +
@@ -119,7 +125,10 @@ func calibrateDirs(dirs []string, preStop time.Duration, cfg calib.Config) (cali
 		Note: "candidate_s has no buffer; step 1 uses ceil(candidate_s) + buffer",
 		IngressNote: "DIR/ingress.log present: IngressSelectedAt = access-log start_time of the probe " +
 			"(upstream_attempts 1); start_time is truncated to 1 ms, so one earlier than SentAt by " +
-			"less than 1 ms is clamped to SentAt; per_attempt_ingress is true only if every run has the log",
+			"less than 1 ms is clamped to SentAt; L also takes the Pod's latest selection by any request " +
+			"with upstream_attempts 1 (lower_source ingress-any), and model misses are counted after L; " +
+			"lines with upstream_attempts != 1 are ambiguous and excluded; " +
+			"per_attempt_ingress is true only if every run has the log",
 	}
 	var all []calib.Sample
 	for i, dir := range dirs {
@@ -135,6 +144,8 @@ func calibrateDirs(dirs []string, preStop time.Duration, cfg calib.Config) (cali
 		if ing != nil {
 			rep.IngressRuns++
 			rep.NoIngressLine += ing.join(probes)
+			rep.Ambiguous += ing.ambiguous
+			rep.DupAttempts += ing.dups
 		}
 		rep.PerAttempt = rep.IngressRuns == i+1
 		cprobes := make([]calib.Probe, len(probes))
@@ -171,14 +182,19 @@ func calibrateDirs(dirs []string, preStop time.Duration, cfg calib.Config) (cali
 			in := calib.Input{Probes: cprobes, TargetPodUID: m.PodUID, DeletionStart: del,
 				PreStopEnd: del.Add(preStop), DirectUpper: nil,
 				PerAttemptIngress: ing != nil, FreshConnections: rep.FreshConn}
+			var lastAny *time.Time
+			if ing != nil && m.PodIP != "" {
+				if last, ok := ing.lastByIP[m.PodIP]; ok {
+					lastAny = &last
+				}
+			}
+			in.LastSelection = lastAny
 			s := calib.Estimate(in, cfg)
 			all = append(all, s)
 			cs := toCalibSample(filepath.Base(dir), m.PodUID, m.PodName, in, s)
-			if ing != nil && m.PodIP != "" {
-				if last, ok := ing.lastByIP[m.PodIP]; ok {
-					d := last.Sub(del).Seconds()
-					cs.LastIngressAny = &d
-				}
+			if lastAny != nil {
+				d := lastAny.Sub(del).Seconds()
+				cs.LastIngressAny = &d
 			}
 			rep.Samples = append(rep.Samples, cs)
 			if s.Valid {
@@ -205,7 +221,13 @@ func toCalibSample(run, uid, name string, in calib.Input, s calib.Sample) calibS
 		d := s.Lower.Sub(in.DeletionStart).Seconds()
 		out.LMinusDeletion = &d
 		out.LowerSource = "sent"
+		if s.LowerFromSelection {
+			out.LowerSource = "ingress-any"
+		}
 		for _, p := range in.Probes {
+			if s.LowerFromSelection {
+				break
+			}
 			if p.PodUID == uid && p.IngressSelectedAt != nil && p.IngressSelectedAt.Equal(s.Lower) {
 				out.LowerSource = "ingress"
 				break
@@ -334,8 +356,10 @@ type probeRec struct {
 
 // calibIngress is the part of DIR/ingress.log calibrate uses.
 type calibIngress struct {
-	start    map[string]time.Time // attempt -> start_time, upstream_attempts == 1 only
-	lastByIP map[string]time.Time // upstream IP -> latest start_time of any line
+	start     map[string]time.Time // attempt -> start_time, upstream_attempts == 1, logged once
+	lastByIP  map[string]time.Time // upstream IP -> latest start_time, upstream_attempts == 1 only
+	ambiguous int                  // lines with an upstream and upstream_attempts != 1
+	dups      int                  // attempt ids logged more than once
 }
 
 // startTimeResolution: Envoy's start_time in the access log has millisecond
@@ -355,6 +379,10 @@ func readCalibIngress(path string) (*calibIngress, error) {
 	}
 	defer f.Close()
 	ing := &calibIngress{start: map[string]time.Time{}, lastByIP: map[string]time.Time{}}
+	// unusable: attempt ids seen on an ambiguous line or more than once; they
+	// stay out of start however many more lines follow.
+	unusable := map[string]bool{}
+	seen := map[string]int{}
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	for sc.Scan() {
@@ -376,25 +404,33 @@ func readCalibIngress(path string) (*calibIngress, error) {
 		if err != nil {
 			continue
 		}
-		host, _, err := net.SplitHostPort(l.UpstreamHost)
-		if err == nil && st.After(ing.lastByIP[host]) {
+		host, _, herr := net.SplitHostPort(l.UpstreamHost)
+		var n int
+		single := json.Unmarshal(l.UpstreamAttempts, &n) == nil && n == 1
+		if herr == nil && !single {
+			// Retried inside the ingress (or not recorded): the final
+			// upstream does not say which Pod was selected at start_time.
+			ing.ambiguous++
+		}
+		if herr == nil && single && st.After(ing.lastByIP[host]) {
 			ing.lastByIP[host] = st
 		}
 		if l.Attempt == nil || *l.Attempt == "" || *l.Attempt == "-" {
 			continue
 		}
-		var n int
-		if json.Unmarshal(l.UpstreamAttempts, &n) != nil || n != 1 {
-			// Retried inside the ingress (or not recorded): the line does
-			// not say which selection reached which Pod.
-			delete(ing.start, *l.Attempt)
+		a := *l.Attempt
+		seen[a]++
+		if seen[a] == 2 {
+			ing.dups++
+		}
+		if !single || seen[a] > 1 {
+			unusable[a] = true
+		}
+		if unusable[a] {
+			delete(ing.start, a)
 			continue
 		}
-		if _, dup := ing.start[*l.Attempt]; dup {
-			delete(ing.start, *l.Attempt) // two lines for one attempt: unknown
-			continue
-		}
-		ing.start[*l.Attempt] = st
+		ing.start[a] = st
 	}
 	return ing, sc.Err()
 }

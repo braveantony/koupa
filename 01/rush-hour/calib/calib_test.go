@@ -397,3 +397,59 @@ func TestPostDeletionHitUsesIngressTime(t *testing.T) {
 		t.Fatalf("SentAt mode must not count it: %q", got.InvalidReason)
 	}
 }
+
+// A11 step 3: with per-attempt ingress records, L is the Pod's last recorded
+// selection by any request, not only by a probe. A later non-probe
+// selection moves L, and the model's k misses are counted after it.
+func TestLowerUsesLastSelectionOfAnyRequest(t *testing.T) {
+	s := build(goodPre(), goodPost(), 60)
+	s.in.PerAttemptIngress = true
+	other := s.lastHit.SentAt.Add(10*spacing + 3*time.Millisecond) // between probes 10 and 11 after the hit
+	s.in.LastSelection = &other
+	got := Estimate(s.in, cfg())
+	if !got.Lower.Equal(other) {
+		t.Fatalf("Lower = %v, want the non-probe selection %v", got.Lower, other)
+	}
+	// 18th non-hit probe sent strictly after `other`: probe 11 is the first.
+	want := s.lastHit.SentAt.Add(28*spacing + 5*time.Millisecond)
+	if got.Upper == nil || !got.Upper.Equal(want) {
+		t.Fatalf("Upper = %v, want %v (k misses after the non-probe L)", got.Upper, want)
+	}
+	if !got.LowerFromSelection {
+		t.Errorf("LowerFromSelection = false")
+	}
+	// An earlier selection does not move L.
+	early := s.lastHit.SentAt.Add(-time.Second)
+	s.in.LastSelection = &early
+	if got := Estimate(s.in, cfg()); !got.Lower.Equal(s.lastHit.SentAt) || got.LowerFromSelection {
+		t.Errorf("earlier selection moved L to %v", got.Lower)
+	}
+	// Without per-attempt records it is ignored.
+	s.in.PerAttemptIngress = false
+	s.in.LastSelection = &other
+	if got := Estimate(s.in, cfg()); !got.Lower.Equal(s.lastHit.SentAt) {
+		t.Errorf("SentAt mode used LastSelection: %v", got.Lower)
+	}
+}
+
+// A non-probe selection after the deletion counts as a hit after deletion.
+func TestLastSelectionAfterDeletionCountsAsHit(t *testing.T) {
+	pre := goodPre()
+	pre[len(pre)-1] = true
+	s := build(pre, make([]bool, 90), 30)
+	s.in.PerAttemptIngress = true
+	d := s.deletion.Add(time.Second)
+	s.in.DirectUpper = &d
+	sel := s.deletion.Add(200 * time.Millisecond)
+	s.in.LastSelection = &sel
+	got := Estimate(s.in, cfg())
+	if got.InvalidReason == ReasonNoHitAfterDeletion || !got.Lower.Equal(sel) {
+		t.Fatalf("reason %q lower %v", got.InvalidReason, got.Lower)
+	}
+	// Direct evidence earlier than the selection is contradicted.
+	early := s.deletion.Add(100 * time.Millisecond)
+	s.in.DirectUpper = &early
+	if got := Estimate(s.in, cfg()); !got.DirectRejected {
+		t.Errorf("direct upper before the last selection not rejected")
+	}
+}
