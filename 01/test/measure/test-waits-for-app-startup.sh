@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# No readinessProbe (design 4.9): a Pod is Ready before the app has opened
+# Without a readinessProbe (step 0, calibrate; design 4.5) a Pod is Ready before the app has opened
 # its database pool, so its tx_timeout_check line can come seconds after
 # the rollout. measure.sh waits for that line in every Pod's log before
 # preflight instead of failing the tx-timeout check on a race; a Pod that

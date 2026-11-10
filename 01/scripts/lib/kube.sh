@@ -39,8 +39,9 @@ sys.exit(0 if items and all(p["metadata"].get("labels", {}).get("pod-template-ha
 }
 
 # app_started: every koupa Pod's log has its tx_timeout_check line, the
-# app's own startup verdict (there is no readinessProbe, design 4.9, so a
-# Pod is Ready before the app has opened its database pool).
+# app's own startup verdict (step 0 and calibrate have no readinessProbe,
+# design 4.5, so a Pod is Ready before the app has opened its database
+# pool; from step 1 on Ready already implies it).
 app_started() {
 	local pods pod
 	pods=$("$KUBECTL" -n "$NS" get pods -l app.kubernetes.io/name=koupa -o json 2>/dev/null |

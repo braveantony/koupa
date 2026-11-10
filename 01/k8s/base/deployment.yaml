@@ -46,7 +46,7 @@ spec:
           matchLabelKeys:
             - pod-template-hash
       # No readinessProbe on purpose: step 0 is Ready as soon as the container
-      # starts. Step 1 adds it (design 4.9), because tkha showed failures from
+      # starts. Step 1 adds it (design 4.5), because tkha showed failures from
       # new Pods receiving traffic before they listen (env-findings section 9).
       containers:
         - name: koupa

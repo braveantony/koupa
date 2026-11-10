@@ -1,7 +1,7 @@
 package server
 
 // These tests build the real app binary and run it as a subprocess, so a
-// real SIGTERM reaches the real signal handling (plan A5, design 4.4/4.6).
+// real SIGTERM reaches the real signal handling (plan A5, design 4.4/4.7).
 
 import (
 	"bufio"

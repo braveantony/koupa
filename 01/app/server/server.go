@@ -1,5 +1,5 @@
 // Package server wires the HTTP routes, the request log middleware and the
-// two SIGTERM behaviours (design 4.4 step 0, 4.6 graceful shutdown).
+// two SIGTERM behaviours (design 4.4 step 0, 4.7 graceful shutdown).
 package server
 
 import (
@@ -132,7 +132,7 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleHealthz is readiness (design 4.9): the server is listening, the
+// handleHealthz is readiness (design 4.5, step 1's readinessProbe): the server is listening, the
 // database answers, and the broadcaster's LISTEN is active now.
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	if !s.started.Load() {
