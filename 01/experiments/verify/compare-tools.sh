@@ -29,8 +29,8 @@
 # Because k6 has no kitchen, every order of a k6 run stays 'preparing'.
 # After each k6 run its orders (client_ref <run>-c<n>, still 'preparing')
 # are deleted with their items and idempotency keys (cleanup-k6-orders;
-# DIR/cleanup.txt; a failed cleanup makes that k6 run invalid, so the
-# comparison cannot succeed). Order numbers wrap at 9999, so leftovers would put two
+# DIR/cleanup.txt; a failed cleanup makes that k6 run invalid and the whole
+# comparison fail, however many valid runs remain). Order numbers wrap at 9999, so leftovers would put two
 # unfinished orders with the same number on the kitchen list. k6's counts
 # come from its own result, not the database, so this changes no number.
 #
@@ -215,6 +215,7 @@ compare() {
 import collections, glob, json, os, statistics, sys
 root = sys.argv[1]
 rows = []
+CLEANUP_FAILED = []  # k6 runs whose unfinished orders were not deleted
 def numeric(x):
     return isinstance(x, (int, float)) and not isinstance(x, bool)
 def item(it, key):
@@ -252,6 +253,7 @@ for f in sorted(glob.glob(os.path.join(root, "k6", "*", "k6-run.json"))):
         valid, why = False, "; ".join(x for x in (why, "no k6 result") if x)
     # Evidence from before the cleanup existed has no "cleanup" key.
     if "cleanup" in k and k["cleanup"] != "ok":
+        CLEANUP_FAILED.append("%s（%s）" % (k["run"], k["cleanup"]))
         valid, why = False, "; ".join(x for x in (why, "未完成訂單沒有清掉（%s）" % k["cleanup"]) if x)
     rows.append(require_fields({"tool": "k6", "step": k["step"], "run": k["run"], "valid": valid, "invalid_reason": why,
                  "orders": r.get("orders"), "first": r.get("first_try_failed"), "first_unknown": 0,
@@ -350,6 +352,11 @@ for key, label in (("first", "第一次送出沒有成功回應"), ("after", "�
         P("  %s：Rush Hour %s～%s，k6 %s～%s（範圍%s）" % (step, a["min"], a["max"], b["min"], b["max"], "重疊" if overlap else "不重疊"))
 P("")
 P("比較不完整：" + "；".join(b for b in BAD if "次，不足" in b) if any("次，不足" in b for b in BAD) else "每個工具、每個步驟都有 %d 次有效量測" % REQUIRED)
+# Any failed cleanup fails the whole comparison, however many valid runs
+# remain: unfinished orders were left in the database.
+if CLEANUP_FAILED:
+    BAD.append("cleanup")
+    P("比較失敗：未完成訂單沒有清掉：" + "；".join(CLEANUP_FAILED))
 text = "\n".join(out) + "\n"
 open(os.path.join(root, "compare.txt"), "w").write(text)
 json.dump({"rows": rows, "summary": {"%s %s" % k: v for k, v in summary.items()}, "direction": dirs},

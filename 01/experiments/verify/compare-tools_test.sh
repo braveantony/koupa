@@ -116,4 +116,24 @@ else
 	echo "FAIL cleanup failure makes the comparison unsuccessful (cleanup exit $crc, compare exit $rc)"
 	fail=1
 fi
+
+# Six k6 step-0 runs, five valid and one whose cleanup failed: enough
+# valid runs, but the comparison must still fail.
+six=$tmp/six
+make "$six"
+mkdir -p "$six/k6/k6-step-0-r6"
+cat >"$six/k6/k6-step-0-r6/k6-run.json" <<'J'
+{"run": "k6-step-0-r6", "step": "step-0", "valid": true, "k6_exit": 0, "cleanup": "failed: ERROR: boom",
+ "result": {"orders": 1200, "first_try_failed": 44, "failed_after_retry": 4, "dropped_iterations": 0}}
+J
+out=$(CRIT_NO_RESTORE=1 VERIFY_EVIDENCE=$tmp/ev "$here/compare-tools.sh" compare "$six" 2>/dev/null)
+rc=$?
+if [ "$rc" = 1 ] && grep -qF "每個工具、每個步驟都有 5 次有效量測" <<<"$out" &&
+	grep -qF "比較失敗：未完成訂單沒有清掉：k6-step-0-r6（failed: ERROR: boom）" <<<"$out"; then
+	echo "ok   one failed cleanup among 6 runs fails the comparison"
+else
+	echo "FAIL one failed cleanup among 6 runs fails the comparison (exit $rc)"
+	grep -E '比較|每個工具' <<<"$out" | sed 's/^/     /'
+	fail=1
+fi
 exit $fail
