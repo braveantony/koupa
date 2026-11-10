@@ -67,7 +67,7 @@ def app():
     d.box(30, 340, 460, 255, '廚房頁  /kitchen', '瀏覽器頁面',
           ['每 2 秒更新「製作中」的訂單：', 'GET /api/orders', '按「完成」：POST /orders/{id}/ready', 'v2 才有「售完」切換：', 'POST /api/menu/{id}/available'], 'host')
     d.box(30, 640, 460, 165, '叫號看板  /board', '瀏覽器頁面',
-          ['GET /events（SSE 長連線）', '伺服器持續推送：', '「請 0058 號取餐」'], 'host')
+          ['GET /events（SSE 長連線）', '伺服器持續推送「請 0058 號取餐」', '製作中號碼：每 2 秒 GET /api/orders'], 'host')
     d.box(640, 180, 280, 415, 'koupa App', 'process',
           ['Go 程式 · 埠 8080', '收單時發號碼牌', '出餐時分配叫號編號', '推送叫號給看板', 'v1 基本功能', 'v2 多「售完標示」'])
     d.box(1320, 180, 230, 195, 'PostgreSQL', '資料庫',
@@ -121,7 +121,7 @@ def deployed():
     d.text(910, 595, '3 個 worker 各一個同版本 Pod', 16, anchor='middle')
     d.box(650, 895, 520, 150, 'PostgreSQL koupa-db-1', '資料庫 · CNPG 單一實例',
           ['Service koupa-db-rw:5432', '固定於 infra worker（worker A）', '節點標籤：koupa.dev/infra=true'], 'db')
-    d.box(370, 895, 255, 150, 'koupa-migrate-000004', 'Job · migration',
+    d.box(370, 895, 255, 150, 'koupa-migrate-000005', 'Job · migration',
           ['每次部署執行一次', '只套用還沒執行過的變更', '完成就結束'], 'neutral', True)
     d.box(650, 1145, 520, 110, 'CNPG operator', 'operator',
           ['管理 PostgreSQL · infra worker（worker A）'], 'db')

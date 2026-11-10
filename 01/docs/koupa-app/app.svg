@@ -22,8 +22,8 @@
 <text x="44" y="664" font-size="15" fill="#26364a" text-anchor="start">瀏覽器頁面</text>
 <text x="44" y="695" font-size="20" fill="#26364a" text-anchor="start" font-weight="700">叫號看板  /board</text>
 <text x="44" y="725" font-size="16" fill="#26364a" text-anchor="start">GET /events（SSE 長連線）</text>
-<text x="44" y="752" font-size="16" fill="#26364a" text-anchor="start">伺服器持續推送：</text>
-<text x="44" y="779" font-size="16" fill="#26364a" text-anchor="start">「請 0058 號取餐」</text>
+<text x="44" y="752" font-size="16" fill="#26364a" text-anchor="start">伺服器持續推送「請 0058 號取餐」</text>
+<text x="44" y="779" font-size="16" fill="#26364a" text-anchor="start">製作中號碼：每 2 秒 GET /api/orders</text>
 <rect x="640" y="180" width="280" height="415" rx="12" fill="#eaf3ff" stroke="#9baabd" stroke-width="1.5"/>
 <text x="654" y="204" font-size="15" fill="#26364a" text-anchor="start">process</text>
 <text x="654" y="235" font-size="20" fill="#26364a" text-anchor="start" font-weight="700">koupa App</text>
