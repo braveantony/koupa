@@ -29,6 +29,38 @@ rc=$?
 check "stale Pod digest fails (rc=$rc)" [ "$rc" -eq 1 ]
 check "names the Pod" grep -q '^FAIL image-digest:.*koupa-abc-2' <<<"$out"
 
+# The node holds the same image under a second name (the experiments image
+# built from the same commit has the same manifest digest): CRI-O may report
+# that name in status.image and imageID. The digest is the one the v1 tag
+# resolves to, so the Pod runs the wanted image.
+make_live step-0
+python3 -I - "$FAKE/pods.json" <<'PY'
+import json, sys
+p = json.load(open(sys.argv[1]))
+for it in p["items"]:
+    st = it["status"]["containerStatuses"][0]
+    st["image"] = "ghcr.io/braveantony/koupa-experiments:app-0000000"
+    st["imageID"] = "ghcr.io/braveantony/koupa-experiments@sha256:" + "0" * 63 + "1"
+json.dump(p, open(sys.argv[1], "w"))
+PY
+out=$("$STAGE/scripts/preflight.sh" step-0 2>&1)
+rc=$?
+check "same image under another name passes (rc=$rc)" [ "$rc" -eq 0 ]
+[ "$rc" -eq 0 ] || grep FAIL <<<"$out" | sed 's/^/    /'
+
+# Another name and another digest: really another image.
+python3 -I - "$FAKE/pods.json" <<'PY'
+import json, sys
+p = json.load(open(sys.argv[1]))
+st = p["items"][1]["status"]["containerStatuses"][0]
+st["imageID"] = "ghcr.io/braveantony/koupa-experiments@sha256:" + "8" * 64
+json.dump(p, open(sys.argv[1], "w"))
+PY
+out=$("$STAGE/scripts/preflight.sh" step-0 2>&1)
+rc=$?
+check "another name and digest fails (rc=$rc)" [ "$rc" -eq 1 ]
+check "spec names the Pod" grep -q '^FAIL spec:.*koupa-abc-1 runs image' <<<"$out"
+
 make_live step-0
 touch "$FAKE/skopeo-fail"
 out=$("$STAGE/scripts/preflight.sh" step-0 2>&1)

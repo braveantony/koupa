@@ -219,7 +219,13 @@ for p in pods:
     s = settings(p.get("spec", {}))
     problems += diff(s, "Pod " + p["metadata"]["name"])
     st = [c for c in p.get("status", {}).get("containerStatuses", []) if c.get("name") == "koupa"]
-    if st and st[0].get("image") not in (image, "docker.io/" + image):
+    # status.image (and imageID) use one of the names the node knows the
+    # image by: when the same manifest is cached under a second name (the
+    # experiments image built from the same commit) CRI-O may report that
+    # one. A digest equal to what the tag resolves to is still our image.
+    iid_digest = (st[0].get("imageID") or "").rsplit("@", 1)[-1] if st else ""
+    same_digest = digest.startswith("sha256:") and iid_digest == digest
+    if st and st[0].get("image") not in (image, "docker.io/" + image) and not same_digest:
         problems.append("Pod %s runs image %s, want %s" % (p["metadata"]["name"], st[0].get("image"), image))
 report("spec", not problems, "; ".join(problems) if problems else
        "image %s, env %s, preStop %s, readinessProbe %s, grace %s match %s" % (image, ",".join(sorted(want["env"])), want["preStop"],
