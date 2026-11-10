@@ -4,7 +4,7 @@
 
 | 階段 | 主題 |
 |------|------|
-| 01 | Rolling update 時長連線和短連線的處理 |
+| 01 | Rolling update 時怎麼處理長連線和短連線 |
 | 02 | 程式升級、退版時，資料庫 schema 怎麼跟著變 |
 | 03 | 用 Cilium Gateway API 分流做金絲雀部署 |
 

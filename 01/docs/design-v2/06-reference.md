@@ -4,16 +4,16 @@
 
 ## 6.1 環境需求
 
-**課前已經準備好**（每個學生一套，和 tk8s 規格相同）：
+**課前已經準備好**（每個學生一套）：
 
-- 1 個 control plane＋3 個 worker，節點是主機上的 podman container；
+- 3 個 worker，節點是主機上的 podman container；control plane 的數量不限（2026-11-10 實測的 tkha 是 3 個 control plane＋3 個 worker）。koupa 的 3 個 Pod 每個 worker 放一個，`measure.sh drain` 要求每個 worker 剛好一個 Pod；
 - Cilium，並啟用 Gateway API、LoadBalancer IP 池和 L2 廣播（讓 LoadBalancer IP 在節點所在的網段裡連得到）；
-- 預設的 StorageClass `local-path`（把資料存在節點本機磁碟上）；
+- StorageClass `local-path`（把資料存在節點本機磁碟上）。`k8s/db/cluster.yaml` 明確指定它，不依賴叢集的預設 StorageClass；
 - 主機上可以執行 podman，而且主機連得到 Gateway 分配到的 IP。
 
-**學生自己安裝**：
+**由 `setup.sh` 安裝**：
 
-- CNPG operator（固定版本）。學生講義的第一步就是安裝它，讓學生知道資料庫是怎麼來的。CNPG 在 02 也可能用到。
+- CNPG operator（固定 v1.30.1）。`setup.sh` 的第一段會安裝它，再建立資料庫，讓學生知道資料庫是怎麼來的。CNPG 在 02 也可能用到。
 
 YAML 不寫死 IP，`measure.sh` 會自動查 Gateway 的 IP。
 
