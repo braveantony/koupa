@@ -64,6 +64,42 @@ test('order page retries once with the same client_ref and body', async ({ page 
   expect(JSON.parse(bodies[0]).client_ref).toMatch(/^[0-9a-f-]{36}$/);
 });
 
+test('order page works without crypto.randomUUID (plain HTTP, not localhost)', async ({ page }) => {
+  // Over http://<Gateway IP> the page is not a secure context and
+  // crypto.randomUUID does not exist. Simulate that here.
+  await page.addInitScript(() => {
+    delete (Crypto.prototype as any).randomUUID;
+    delete (crypto as any).randomUUID;
+  });
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  const bodies: string[] = [];
+  const attempts: string[] = [];
+  let first = true;
+  await page.route('**/orders', async (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    bodies.push(route.request().postData() ?? '');
+    attempts.push(route.request().headers()['x-koupa-attempt'] ?? '');
+    if (first) {
+      first = false;
+      return route.abort('connectionreset');
+    }
+    return route.continue();
+  });
+  await page.goto('/');
+  expect(await page.evaluate(() => typeof (crypto as any).randomUUID)).toBe('undefined');
+  await page.locator('#menu li[data-name="綠茶三劍客"] button.inc').click();
+  await page.locator('#submit').click();
+  await expect(page.locator('#ticket')).toHaveText(NUMBER);
+  expect(errors).toEqual([]);
+  expect(bodies).toHaveLength(2);
+  expect(bodies[1]).toBe(bodies[0]);
+  const v4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  expect(JSON.parse(bodies[0]).client_ref).toMatch(v4);
+  for (const a of attempts) expect(a).toMatch(v4);
+  expect(attempts[1]).not.toBe(attempts[0]);
+});
+
 test('v2: sold-out item is disabled on the order page', async ({ page, request }) => {
   const menu = await (await request.get('/api/menu')).json();
   const tea = menu.find((m: any) => m.name === '晚霞紅茶');
