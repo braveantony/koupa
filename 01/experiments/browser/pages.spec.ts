@@ -93,16 +93,24 @@ test('board EventSource fires shutdown when the app gets SIGTERM', async ({ page
     },
     stdio: 'ignore',
   });
-  const exited = new Promise<number | null>((resolve) => app.on('exit', (code) => resolve(code)));
+  // A spawn error (e.g. no binary) emits 'error' and maybe never 'exit':
+  // resolve on either, so neither the test nor the cleanup waits forever.
   let spawnError: Error | undefined;
-  app.on('error', (e) => (spawnError = e));
+  const exited = new Promise<number | null>((resolve) => {
+    app.on('exit', (code) => resolve(code));
+    app.on('error', (e) => {
+      spawnError = e;
+      resolve(null);
+    });
+  });
   try {
     const base = `http://127.0.0.1:${port}`;
     // Ready only when OUR child answers: the pod uid proves it bound this port.
     await expect
       .poll(
         async () => {
-          if (spawnError || app.exitCode !== null) throw new Error('app exited before it was ready');
+          if (spawnError) throw new Error(`cannot start the app: ${spawnError.message}`);
+          if (app.exitCode !== null) throw new Error(`app exited (${app.exitCode}) before it was ready`);
           const r = await fetch(`${base}/api/whoami`).catch(() => null);
           return r?.ok ? (await r.json()).pod_uid : null;
         },
@@ -119,8 +127,9 @@ test('board EventSource fires shutdown when the app gets SIGTERM', async ({ page
       .toBeGreaterThan(0);
     await expect(page.locator('#status')).toContainText('重新連線');
     expect(await exited).toBe(0);
+    expect(spawnError).toBeUndefined();
   } finally {
-    if (app.exitCode === null) app.kill('SIGKILL');
+    if (app.exitCode === null && !spawnError) app.kill('SIGKILL');
     await exited;
   }
 });
