@@ -37,9 +37,9 @@ Pod 是 Kubernetes 執行程式的單位；這裡每個 koupa Pod 都跑一份 A
 
 ## 一頁看懂
 
-你只改 Kubernetes 的 YAML（程式端的修正已經寫好，用環境變數打開）。每一步都用 Rush Hour 量 5 次「升級 v1 → v2」，看成績單上三個數字怎麼變：
+你會套用不同的 Kubernetes YAML；程式端的修正已經寫好，各步驟會用環境變數打開。每一步都用 Rush Hour 量 5 次「升級 v1 → v2」，看成績單上三個數字怎麼變：
 
-- **第一次送出沒有成功回應**：客人按送出，沒拿到號碼牌的張數；
+- **第一次送出沒有成功回應**（下面簡稱「送出失敗」）：客人第一次按送出，沒拿到號碼牌的張數；
 - **大螢幕漏號**：每台看板少收到幾個叫號；
 - **重複訂單**：同一次點餐在資料庫裡變成兩張以上。
 
@@ -49,7 +49,7 @@ Pod 是 Kubernetes 執行程式的單位；這裡每個 koupa Pod 都跑一份 A
 | 0 | 什麼都不做 | 送出失敗中位數 51 張、每台看板漏號數十個 |
 | 1 | `readinessProbe` | 送出失敗降到中位數 7 張；漏號沒有改善 |
 | 2 | `preStop` 等 8 秒 | 送出失敗變成 0；漏號仍然每台約 80 個 |
-| 3 | Graceful shutdown（優雅關閉：關機前先收尾） | 漏號降到每台約 22 個 |
+| 3 | 優雅關閉（graceful shutdown：關機前先收尾） | 漏號降到每台約 22 個 |
 | 4 | 重連後補號 | 漏號變成 0 |
 | 5 | 重送不重複下單 | 成績單和步驟 4 一樣（這次預設負載下沒有確認到重複訂單）；效果由講師用關鍵時機實驗示範 |
 
@@ -126,6 +126,8 @@ kubectl -n koupa get gateway koupa -o jsonpath='{.status.addresses[0].value}'; e
 
 ### 3.1 跑一次量測
 
+先做[小實驗](#小實驗閒置的看板會不會斷)（它不用 `measure.sh`），再從 control 和步驟 0 開始量。每一步都只要執行 `./measure.sh step-N`：腳本會自己套用那一步的設定，不需要手動修改 YAML 或執行 `kubectl apply`。
+
 ```bash
 ./measure.sh control       # 對照組：不升級，必須全部是 0
 ./measure.sh step-0        # 步驟 0 的設定下升級 v1 → v2
@@ -153,10 +155,10 @@ kubectl -n koupa get gateway koupa -o jsonpath='{.status.addresses[0].value}'; e
 
 ### 3.2 成績單
 
-每次量測結束時都會印出成績單。以下是步驟 3 的一次量測結果（2026-11-10）：
+每次量測結束時都會印出成績單。以下是步驟 3 的一次量測結果（2026-11-10，`preStop` 8 秒）：
 
 ```
-Rush Hour 成績單　量測編號 step-3-20261110-112523-r1-c1ff
+Rush Hour 成績單　量測編號 step-3-20261110-133434-r1-79fb
 
 【主要成績】
 訂單：1200 張
@@ -166,8 +168,8 @@ Rush Hour 成績單　量測編號 step-3-20261110-112523-r1-c1ff
 多出的訂單張數：0 張
 大螢幕漏號（每台看板）：
   board-1：21
-  board-2：16
-  board-3：21
+  board-2：22
+  board-3：22
 ```
 
 判斷不出來的結果不會算成 0，會寫成「已確認 N；另有 M 項未知」。5 次量完後，另外印一張彙整表（每一次的數字、中位數和範圍）。
@@ -184,7 +186,7 @@ Rush Hour 成績單　量測編號 step-3-20261110-112523-r1-c1ff
 | `preflight.txt` | 量測前的設定核對結果 |
 | `evidence-index.txt` | 證據包的檔案清單；缺少的部分標 `MISSING` |
 
-其他是原始紀錄（App log（執行紀錄）、入口紀錄、Pod 和 EndpointSlice（Kubernetes 記錄可用後端位置的清單）的變化、Rush Hour 每次嘗試的紀錄）、套用的 manifest（Kubernetes 資源設定檔）和版本資訊。
+其他檔案保留 App 和入口的原始紀錄、Pod 與可用後端清單（EndpointSlice）的變化、Rush Hour 每次嘗試的紀錄，以及套用的 Kubernetes 設定檔和版本資訊。需要深入排查時再查看。
 
 ## 4. 每一步改什麼、為什麼、你應該看到什麼
 
@@ -268,22 +270,22 @@ kubectl -n kube-system logs -l k8s-app=cilium-envoy --since=20m --tail=-1 --pref
 - 第一次送出沒有成功回應：**0**；
 - 漏號**沒有減少**：每台約 **80 個**（76～109）。看板還連在舊 Pod 上，8 秒後程式照樣直接結束，看板斷線、重連，斷線期間的叫號拿不到。
 
-### 步驟 3：Graceful shutdown
+### 步驟 3：優雅關閉（graceful shutdown）
 
 **改什麼**：`k8s/steps/step-3` 打開 `GRACEFUL_SHUTDOWN`，`SHUTDOWN_TIMEOUT` 15 秒，關機寬限時間（`terminationGracePeriodSeconds`，超過就強制結束）40 秒。
 
-**為什麼**：程式收到 SIGTERM 後，先把手上的訂單處理完，並主動通知每台看板「我要關了，請重連」（`shutdown` 事件），而不是直接結束。時間要符合 `preStop` 8 ＋ `SHUTDOWN_TIMEOUT` 15 ＋ 緩衝 5 ＜ 寬限 40，程式才不會收尾到一半被強制結束。
+**為什麼**：程式收到 SIGTERM 後不再直接結束，而是開始等待處理中的請求收尾，同時通知每台看板「我要關了，請重新連線」（`shutdown` 事件）。超過 `SHUTDOWN_TIMEOUT` 就不保證全部完成。時間要符合 `preStop` 8 ＋ `SHUTDOWN_TIMEOUT` 15 ＋ 緩衝 5 ＜ 寬限 40，程式才不會收尾到一半被強制結束。
 
 **你應該看到**：
 
 - 送出失敗仍然是 0；
-- 漏號從約 80 降到每台約 **22 個**（18～41）：看板收到通知就馬上重連，斷線時間變短，但重連後還是從「現在」開始收。
+- 漏號從約 80 降到每台約 **22 個**（18～41）：看板收到通知後，依伺服器指定的間隔（預設 1 秒）重新連線，斷線時間變短，但重連後還是從「現在」開始收。
 
 ### 步驟 4：重連後補號
 
 **改什麼**：`k8s/steps/step-4` 打開 `RESUME_FROM_LAST_ID`。
 
-**為什麼**：瀏覽器的看板重連時，會自動帶上最後收到的叫號事件編號（`Last-Event-ID`，也就是 `ready_seq`，不是畫面上的號碼牌）。打開這個開關後，App 從那個編號之後補送叫號，斷線期間的叫號就不會漏掉。
+**為什麼**：瀏覽器的看板重連時，會自動帶上最後收到的叫號事件編號（`Last-Event-ID`，也就是 `ready_seq`，不是畫面上的號碼牌）。打開這個開關後，App 從那個編號之後補送叫號，斷線期間的叫號就不會漏掉。只有同一個頁面的自動重連才會帶這個編號；重新整理網頁是一次新的連線，會從「現在」開始收。
 
 **你應該看到**：漏號 **0**（5 次、3 台看板都是 0）。
 
@@ -301,11 +303,11 @@ kubectl -n kube-system logs -l k8s-app=cilium-envoy --since=20m --tail=-1 --pref
 
 ```bash
 ./measure.sh rollback      # 退版 v2 → v1
-./measure.sh drain         # 清空一個 worker（infra worker 不會被選到）
+./measure.sh drain         # 讓一個 worker 暫停接收新 Pod，並移走上面的 Pod（infra worker 不會被選到）
 ./measure.sh scale-down    # Pod 從 3 個縮成 2 個
 ```
 
-結束後會自動恢復：`drain` 會 uncordon 那個 worker 並重新平衡，確認每個 worker 各一個 Pod；`scale-down` 會恢復成 3 個 Pod。2026-11-10 各量 5 次，15 次的成績單都是 0（當時 `preStop` 是 7 秒）。
+結束後會自動恢復：`drain` 會讓那個 worker 恢復接收新 Pod（uncordon），必要時刪掉擠在同一個 worker 上的 Pod 讓它重新排程，確認每個 worker 各一個 Pod；`scale-down` 會恢復成 3 個 Pod。2026-11-10 各量 5 次，15 次的成績單都是 0（當時 `preStop` 是 7 秒）。
 
 ## 預期結果
 
