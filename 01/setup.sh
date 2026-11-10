@@ -102,12 +102,20 @@ if jobs != [job] or cms[0]["metadata"]["name"] != job or want != have:
     sys.exit("k8s/migrate is out of date: want Job/ConfigMap %s with %s, got Jobs %s with %s" % (job, want, jobs, have))
 ' "$job" migrations || die "update k8s/migrate/kustomization.yaml and job.yaml"
 
+tmp_err=$(mktemp)
+trap 'rm -f "$tmp_err"' EXIT
 kubectl -n "$NS" delete job "$job" --ignore-not-found --wait=true
 printf '%s\n' "$migrate" | kubectl apply -f -
 
 status=""
 for i in $(seq 1 120); do
-  status=$(kubectl -n "$NS" get job "$job" -o jsonpath='{range .status.conditions[?(@.status=="True")]}{.type}{" "}{end}')
+  # A failed status query still ends in the diagnostics below, not in a
+  # bare `set -e` exit.
+  if ! status=$(kubectl -n "$NS" get job "$job" -o jsonpath='{range .status.conditions[?(@.status=="True")]}{.type}{" "}{end}' 2>"$tmp_err"); then
+    echo "could not read the status of migration Job $job: $(cat "$tmp_err")" >&2
+    status="unknown (status query failed)"
+    break
+  fi
   case " $status " in
     *" Complete "*) break ;;
     *" Failed "*) break ;;
