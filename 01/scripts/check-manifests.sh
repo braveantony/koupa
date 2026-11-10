@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Check the rendered manifest of one overlay against the expectation table.
 #
-#   scripts/check-manifests.sh <base|step-1|step-2|step-3|step-4|calibrate|test-hooks|idle-lab>
+#   scripts/check-manifests.sh <base|step-1|step-2|step-3|step-4|step-5|calibrate|test-hooks|idle-lab>
 #
 # Pure check: renders with `kubectl kustomize` and inspects the output; it
 # never talks to the cluster. Exit 0 = all checks passed, 1 = a check failed,
@@ -12,9 +12,9 @@ cd "$(dirname "$0")/.."
 step=${1:-}
 case "$step" in
   base) dir=k8s/base ;;
-  step-[1-4]) dir=k8s/steps/$step ;;
+  step-[1-5]) dir=k8s/steps/$step ;;
   calibrate|test-hooks|idle-lab) dir=k8s/$step ;;
-  *) echo "usage: $0 <base|step-1..step-4|calibrate|test-hooks|idle-lab>" >&2; exit 2 ;;
+  *) echo "usage: $0 <base|step-1..step-5|calibrate|test-hooks|idle-lab>" >&2; exit 2 ;;
 esac
 
 if [ ! -f "$dir/kustomization.yaml" ]; then
@@ -49,19 +49,28 @@ BASE = {
     "readinessProbe": ABSENT,
     "imageTag": "v1",
 }
-STEP1 = {**BASE, "preStop": 7}  # calibrated on tkha (Task 23)
-STEP2 = {**STEP1, "GRACEFUL_SHUTDOWN": "1", "SHUTDOWN_TIMEOUT": "15s",
+# Step 1 readiness: GET /healthz on 8080 every 2 s, one failure or success
+# flips it, no initial delay (Task 23c, env-findings section 9).
+READINESS = {"httpGet": {"path": "/healthz", "port": 8080},
+             "periodSeconds": 2, "timeoutSeconds": 1,
+             "failureThreshold": 1, "successThreshold": 1}
+STEP1 = {**BASE, "readinessProbe": READINESS}
+STEP2 = {**STEP1, "preStop": 7}  # calibrated on tkha (Task 23)
+STEP3 = {**STEP2, "GRACEFUL_SHUTDOWN": "1", "SHUTDOWN_TIMEOUT": "15s",
          "terminationGracePeriodSeconds": 40}
-STEP3 = {**STEP2, "RESUME_FROM_LAST_ID": "1"}
-STEP4 = {**STEP3, "IDEMPOTENCY_KEY": "1"}
+STEP4 = {**STEP3, "RESUME_FROM_LAST_ID": "1"}
+STEP5 = {**STEP4, "IDEMPOTENCY_KEY": "1"}
 TABLE = {
     "base": BASE,
     "step-1": STEP1,
     "step-2": STEP2,
     "step-3": STEP3,
     "step-4": STEP4,
+    "step-5": STEP5,
+    # Step 0 plus a long preStop: no readinessProbe (it measures how long an
+    # old Pod keeps being picked, not when a new one becomes ready).
     "calibrate": {**BASE, "preStop": 20, "terminationGracePeriodSeconds": 45},
-    "test-hooks": {**STEP4, "TEST_HOOKS": "1", "hooksPort": 9090},
+    "test-hooks": {**STEP5, "TEST_HOOKS": "1", "hooksPort": 9090},
     "idle-lab": {**BASE, "SSE_HEARTBEAT": "15s"},
 }
 
@@ -159,7 +168,8 @@ for field, want in exp.items():
     if want is ABSENT:
         check(got is ABSENT, field + " is absent" + ("" if got is ABSENT else " (got " + repr(got) + ")"))
     else:
-        check(got == want, field + " = " + repr(want) + ("" if got == want else " (got " + repr(got) + ")"))
+        check(got == want, field + " = " + repr(want) + ("" if got == want else
+              " (got " + ("absent" if got is ABSENT else repr(got)) + ")"))
 
 # Timing inequalities (plan A5, A8).
 pre = actual("preStop")
