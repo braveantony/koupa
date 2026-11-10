@@ -1,4 +1,5 @@
-import { test, expect, Page } from '@playwright/test';
+import { test, expect, Page, APIRequestContext } from '@playwright/test';
+import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 
@@ -97,6 +98,117 @@ test('order page shows a photo per drink; debug info only with ?debug=1', async 
   await expect(page.locator('#debug')).toBeVisible();
   await expect(page.locator('#version')).toContainText('服務版本：v');
   await expect(page.locator('#pod')).toContainText('Pod：');
+});
+
+async function apiOrder(request: APIRequestContext, menuId = 1): Promise<{ order_id: number; number: string }> {
+  const r = await request.post('/orders', {
+    data: { client_ref: randomUUID(), items: [{ menu_item_id: menuId, quantity: 1 }] },
+  });
+  expect(r.ok()).toBeTruthy();
+  return r.json();
+}
+
+test('order page locks the steppers while an order outcome is unknown', async ({ page }) => {
+  const bodies: string[] = [];
+  let fail = true;
+  await page.route('**/orders', async (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    bodies.push(route.request().postData() ?? '');
+    return fail ? route.abort('connectionreset') : route.continue();
+  });
+  await page.goto('/');
+  const card = page.locator('#menu li[data-name="波霸奶茶"]');
+  await card.locator('button.inc').click();
+  await page.locator('#submit').click();
+  // Both attempts failed: the outcome is unknown and the order stays pending.
+  await expect(page.locator('#notice')).toContainText('同一張訂單（波霸奶茶 × 1）');
+  expect(bodies).toHaveLength(2);
+  await expect(card.locator('button.inc')).toBeDisabled();
+  await expect(card.locator('button.dec')).toBeDisabled();
+  await expect(page.locator('#menu li[data-name="綠茶三劍客"] button.inc')).toBeDisabled();
+  await expect(page.locator('#submit')).toBeEnabled();
+  await expect(page.locator('#total')).toHaveText('65');
+  fail = false;
+  await page.locator('#submit').click();
+  await expect(page.locator('#ticket')).toHaveText(NUMBER);
+  expect(bodies).toHaveLength(3);
+  expect(bodies[2]).toBe(bodies[0]);
+  await page.locator('#again').click();
+  await expect(card.locator('button.inc')).toBeEnabled();
+});
+
+test('kitchen sends 完成 once even if the list redraws while it is in flight', async ({ page, request }) => {
+  const a = await apiOrder(request);
+  let posts = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  await page.route('**/orders/*/ready', async (route) => {
+    posts++;
+    await gate;
+    await route.continue();
+  });
+  await page.goto('/kitchen');
+  const row = page.locator(`#orders li[data-order-id="${a.order_id}"]`);
+  const done = row.getByRole('button', { name: '完成' });
+  await done.click();
+  // A new order changes the list, so the next poll redraws every card.
+  const b = await apiOrder(request);
+  await expect(page.locator(`#orders li[data-order-id="${b.order_id}"]`)).toBeVisible();
+  await expect(done).toBeDisabled();
+  await done.click({ force: true }).catch(() => {});
+  release();
+  await expect(row).toHaveCount(0);
+  expect(posts).toBe(1);
+});
+
+test('board: a poll that started before a call does not bring the number back', async ({ page, request }) => {
+  await page.goto('/board');
+  await page.waitForFunction(() => (window as any).__events.includes('hello'));
+  const o = await apiOrder(request);
+  let captured!: () => void;
+  const gotSnapshot = new Promise<void>((r) => (captured = r));
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  let hold = true;
+  await page.route('**/api/orders?status=pending*', async (route) => {
+    const resp = await route.fetch();
+    const body = await resp.text();
+    if (hold && body.includes(`"order_id":${o.order_id}`)) {
+      hold = false;
+      captured();
+      await gate; // the SSE ready event arrives while this response is held
+    }
+    await route.fulfill({ response: resp, body });
+  });
+  await gotSnapshot;
+  await request.post(`/orders/${o.order_id}/ready`);
+  await expect(page.locator('#latest .big')).toHaveText(o.number);
+  release();
+  const stale = page.locator(`#making li[data-number="${o.number}"]`);
+  // Sample (no auto-retry) while the held response renders and the next
+  // poll runs: the called number must never be back under 製作中.
+  for (let i = 0; i < 30; i++) {
+    expect(await stale.count()).toBe(0);
+    await page.waitForTimeout(100);
+  }
+});
+
+test('board ignores a ready event whose id is not newer than the last one', async ({ page }) => {
+  const ev = (seq: number, n: string) =>
+    `event: ready\nid: ${seq}\ndata: {"number":"${n}","order_id":${9000 + seq}}\n\n`;
+  const body =
+    'retry: 60000\n\n' +
+    'event: hello\nid: 0\ndata: {"version":"v2"}\n\n' +
+    ev(4, '0104') + ev(5, '0105') + ev(5, '0105') + ev(3, '0103');
+  await page.route('**/events', (route) =>
+    route.fulfill({ status: 200, headers: { 'Content-Type': 'text/event-stream' }, body }),
+  );
+  await page.goto('/board');
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__events.filter((e: string) => e === 'ready-ignored').length))
+    .toBe(2);
+  await expect(page.locator('#latest .big')).toHaveText('0105');
+  await expect(page.locator('#list li')).toHaveText(['0104']);
 });
 
 function freePort(): Promise<number> {

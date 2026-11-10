@@ -214,3 +214,4 @@ body[data-page="board"] { height: 100vh; height: 100dvh; }
   .call { order: -1; }
   #latest { padding: 24px 0; }
 }
+#menu.locked .stepper { opacity: 0.6; }

@@ -66,16 +66,20 @@ function initOrder() {
     }
     $('total').textContent = total;
     $('cups').textContent = cups;
-    // A pending order can always be sent again, even if the steppers changed.
+    // While an order is unresolved its body is fixed, so the steppers are
+    // locked: the cart on screen is exactly what 確認點餐 sends again.
+    const locked = sending || pending !== null;
+    $('menu').classList.toggle('locked', locked);
     $('submit').disabled = sending || (!pending && cups === 0);
     for (const li of document.querySelectorAll('#menu li')) {
       const q = qty.get(Number(li.dataset.id)) || 0;
       li.querySelector('.qty').textContent = q;
-      li.querySelector('.dec').disabled = li.classList.contains('sold-out') || q === 0;
-      li.querySelector('.inc').disabled = li.classList.contains('sold-out') || q >= 20;
+      li.querySelector('.dec').disabled = locked || li.classList.contains('sold-out') || q === 0;
+      li.querySelector('.inc').disabled = locked || li.classList.contains('sold-out') || q >= 20;
     }
   }
   function step(id, d) {
+    if (sending || pending) return;
     qty.set(id, Math.max(0, Math.min(20, (qty.get(id) || 0) + d)));
     updateTotal();
   }
@@ -148,6 +152,13 @@ function initOrder() {
     loadMenu().catch(() => notice('菜單載入失敗', 'err'));
   }
 
+  function describeItems(items) {
+    return items.map((it) => {
+      const m = menu.find((x) => x.id === it.menu_item_id);
+      return (m ? m.name : '#' + it.menu_item_id) + ' × ' + it.quantity;
+    }).join('、');
+  }
+
   // One attempt; returns {status, data}. status 0 means network failure.
   async function attempt(p) {
     try {
@@ -202,7 +213,8 @@ function initOrder() {
       loadMenu().catch(() => {});
     } else {
       // Still unknown: keep `pending` so pressing again reuses the same client_ref.
-      notice('連線失敗，請再按一次「確認點餐」', 'err');
+      notice('連線失敗，請再按一次「確認點餐」。會重新送出同一張訂單（' + describeItems(pending.items) +
+        '），不會重複下單；結果確認前不能修改杯數。', 'err');
       updateTotal();
     }
   }
@@ -216,6 +228,9 @@ function initOrder() {
 function initKitchen() {
   const msg = (t) => { $('msg').textContent = t; };
   let shown = ''; // last rendered order list, to skip identical redraws
+  // Orders whose 完成 request has not resolved yet. A redraw meanwhile
+  // creates a new button; it stays disabled so the order is sent once.
+  const sending = new Set();
   async function refreshOrders() {
     try {
       const orders = await getJSON('/api/orders?status=pending');
@@ -243,7 +258,10 @@ function initKitchen() {
         const b = el('button', 'done-btn', '完成');
         b.type = 'button';
         b.setAttribute('aria-label', '完成 ' + o.number + ' 號');
+        b.disabled = sending.has(o.order_id);
         b.addEventListener('click', async () => {
+          if (sending.has(o.order_id)) return;
+          sending.add(o.order_id);
           b.disabled = true;
           try {
             const r = await fetch('/orders/' + o.order_id + '/ready', { method: 'POST' });
@@ -251,8 +269,9 @@ function initKitchen() {
             msg('');
           } catch (e) {
             msg('操作失敗，請再試一次');
-            shown = ''; // redraw so the button is usable again
           }
+          sending.delete(o.order_id);
+          shown = ''; // redraw: a failed order's button is usable again
           refreshOrders();
         });
         li.appendChild(b);
@@ -313,30 +332,41 @@ function initBoard() {
   const MAX_MAKING = 30; // the screen has room for about this many
   window.__events = []; // names of the events seen, for tests and debugging
   const recent = [];
+  let lastSeq = 0; // highest ready_seq (SSE event id) shown so far
+  // A poll's snapshot can be older than a ready event that arrived while it
+  // was in flight. called maps order_id -> number of polls started when it
+  // was called; a poll that started no later must not show it again.
+  const called = new Map();
+  let polls = 0;
   const status = (t) => { $('status').textContent = t; };
 
-  function renderMaking(numbers) {
+  function renderMaking(orders) {
     const ul = $('making');
     ul.textContent = '';
-    for (const n of numbers.slice(0, MAX_MAKING)) {
-      const li = el('li', 'num', n);
-      li.dataset.number = n;
+    for (const o of orders.slice(0, MAX_MAKING)) {
+      const li = el('li', 'num', o.number);
+      li.dataset.number = o.number;
+      li.dataset.orderId = o.order_id;
       ul.appendChild(li);
     }
-    if (numbers.length > MAX_MAKING) ul.appendChild(el('li', '', '…'));
-    $('no-making').hidden = numbers.length > 0;
+    if (orders.length > MAX_MAKING) ul.appendChild(el('li', '', '…'));
+    $('no-making').hidden = orders.length > 0;
   }
-  // Same 2 s polling as the kitchen page.
+  // Same 2 s interval as the kitchen page, but one poll at a time: the next
+  // one starts 2 s after the previous one finished.
   async function refreshMaking() {
+    const mine = ++polls;
     try {
       const orders = await getJSON('/api/orders?status=pending');
-      renderMaking(orders.map((o) => o.number));
+      renderMaking(orders.filter((o) => !(called.has(o.order_id) && mine <= called.get(o.order_id))));
+      // Polls started after these calls can no longer list them.
+      for (const [id, at] of called) if (at < mine) called.delete(id);
     } catch (e) {
       // keep the last list; the next poll tries again
     }
+    setTimeout(refreshMaking, 2000);
   }
   refreshMaking();
-  setInterval(refreshMaking, 2000);
 
   const es = new EventSource('/events');
   es.addEventListener('open', () => { status('SSE 已連線'); });
@@ -349,8 +379,20 @@ function initBoard() {
     $('version').textContent = '服務版本：' + JSON.parse(e.data).version;
   });
   es.addEventListener('ready', (e) => {
+    // Ignore a ready_seq already shown (a duplicate or an older event) so it
+    // cannot repeat a number or replace the latest one. EventSource keeps
+    // its own Last-Event-ID; this does not touch it.
+    const seq = Number(e.lastEventId);
+    if (e.lastEventId !== '' && Number.isFinite(seq)) {
+      if (seq <= lastSeq) {
+        window.__events.push('ready-ignored');
+        return;
+      }
+      lastSeq = seq;
+    }
     window.__events.push('ready');
     const d = JSON.parse(e.data);
+    called.set(d.order_id, polls);
     const latest = $('latest');
     latest.textContent = '';
     latest.append(el('span', 'big num', d.number), el('span', 'caption', '請 ' + d.number + ' 號取餐 🧋'));
@@ -361,7 +403,7 @@ function initBoard() {
     for (const n of recent.slice(1)) ul.appendChild(el('li', 'num', n));
     $('recent').hidden = recent.length < 2;
     // The called number leaves 製作中 now rather than at the next poll.
-    const li = document.querySelector('#making li[data-number="' + d.number + '"]');
+    const li = document.querySelector('#making li[data-order-id="' + d.order_id + '"]');
     if (li) li.remove();
     $('no-making').hidden = $('making').children.length > 0;
   });
