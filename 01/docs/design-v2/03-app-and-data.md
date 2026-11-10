@@ -59,9 +59,9 @@ order_items       order_id │ menu_item_id │ quantity │ unit_price
 idempotency_keys  client_ref（唯一）│ order_id │ request_hash │ created_at
 ```
 
-- `orders.client_ref` 不論開關有沒有打開都會記錄，但**不設唯一限制**，所以步驟 0～3 會留下重複訂單，Rush Hour 才量得到。
+- `orders.client_ref` 不論開關有沒有打開都會記錄，但**不設唯一限制**，所以步驟 0～4 會留下重複訂單，Rush Hour 才量得到。
 - `ready_attempt` 記錄是哪一次出餐嘗試（嘗試編號，見 [5.2](05-measurement.md#52-rush-hour-的角色)）配發了 `ready_seq`，和配號寫在同一個交易裡，所以對帳時可以用它判斷是哪個嘗試編號配了號；入口重試或證據不足時，仍依實作計畫標為「未知」。
-- `idempotency_keys` 只在防重複開關打開時使用（見 [4.8](04-step-mechanisms.md#48-步驟-4重送不重複下單)）。
+- `idempotency_keys` 只在防重複開關打開時使用（見 [4.9](04-step-mechanisms.md#49-步驟-5重送不重複下單)）。
 - 02 會把甜度、冰塊加在 `order_items` 上，因為同一張單裡每一杯可以不同。
 
 ## 3.5 建表方式

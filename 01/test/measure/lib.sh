@@ -3,7 +3,7 @@
 #
 #   . "$(dirname "$0")/lib.sh"
 #   setup_fakes            # $T (scratch), $FAKE (fake state), PATH, env
-#   make_live step-1 'env["GRACEFUL_SHUTDOWN"] = "1"'
+#   make_live step-2 'env["GRACEFUL_SHUTDOWN"] = "1"'
 #   finish                 # prints PASS/FAIL, exits
 set -uo pipefail
 

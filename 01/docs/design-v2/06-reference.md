@@ -43,7 +43,7 @@ YAML 不寫死 IP，`measure.sh` 會自動查 Gateway 的 IP。
 │   ├── db/         CNPG Cluster
 │   ├── migrate/    migration Job
 │   ├── base/       App、Service、Gateway、HTTPRoute
-│   ├── steps/      step-1 ～ step-4（一層疊一層）
+│   ├── steps/      step-1 ～ step-5（一層疊一層）
 │   └── idle-lab/   閒置斷線小實驗
 ├── setup.sh        分段部署：資料庫 → 建表 → App
 ├── measure.sh      一鍵量測與校正（step-N、control、calibrate、rollback、drain、scale-down、all）
@@ -62,8 +62,8 @@ YAML 不寫死 IP，`measure.sh` 會自動查 Gateway 的 IP。
 |---|---|---|
 | 叫號鎖 | 每秒 20 張負載下的等鎖時間和出餐延遲是否可以接受 | [4.1](04-step-mechanisms.md#41-標記完成與配發叫號編號) |
 | 入口切斷長連線 | 是哪一種逾時、切斷時間、心跳間隔，或改調 HTTPRoute。已在 tkha 實測（[env-findings 3.2](../env-findings.md)）：沒寫 `timeouts` 的路由**沒有** route timeout（Cilium 產生 `max_stream_duration: 0s`，Envoy 因此不採用 15 秒預設值），SSE 連續 100 秒未被切斷；寫了 `timeouts.request: 30s` 則 30 秒被切斷（`flags=UT`）；stream idle 300 秒在 config dump 已確認、實際切斷行為待測 | [4.3](04-step-mechanisms.md#43-閒置斷線小實驗) |
-| `preStop` 秒數、關機寬限時間 | 實際需要等多久；入口多快停止送流量給終止中的 Pod | [4.5](04-step-mechanisms.md#45-步驟-1prestop)、[4.6](04-step-mechanisms.md#46-步驟-2graceful-shutdown) |
-| readinessProbe | 要不要加進修正步驟 | [4.9](04-step-mechanisms.md#49-readinessprobe待實測) |
+| `preStop` 秒數、關機寬限時間 | 實際需要等多久；入口多快停止送流量給終止中的 Pod | [4.6](04-step-mechanisms.md#46-步驟-2prestop)、[4.7](04-step-mechanisms.md#47-步驟-3graceful-shutdown) |
+| readinessProbe | 要不要加進修正步驟。**已在 tkha 實測**：約 28% 的新 Pod 晚約 5 秒才 listen，沒有 probe 時已經 Ready 而收到請求（`UF`／`Connection refused`），所以加進修正步驟成為步驟 1；加上後這類失敗在步驟 1、3 各 3 次量測中都是 0（[env-findings 第 10 節](../env-findings.md#10-readinessprobe-成為步驟-1-之後的實測task-23c)） | [4.5](04-step-mechanisms.md#45-步驟-1readinessprobe) |
 | 各步驟的成績單 | 預期效果是否成立；講義的範例數字換成實測結果 | [4](04-step-mechanisms.md)、[5](05-measurement.md) |
 | 重複訂單 | 預設負載下量不量得到 | [5.3](05-measurement.md#53-成績單的定義) |
 | 號碼牌循環 | 循環時是否還有未完成的同號訂單 | [3.3](03-app-and-data.md#33-識別碼對照) |
@@ -140,7 +140,7 @@ YAML 不寫死 IP，`measure.sh` 會自動查 Gateway 的 IP。
 | `NOTIFY` 在交易提交後才送出；`LISTEN` 生效前的通知收不到 | 規範 | [PostgreSQL NOTIFY](https://www.postgresql.org/docs/current/sql-notify.html)、[LISTEN](https://www.postgresql.org/docs/current/sql-listen.html) | 以 CNPG 使用的 PostgreSQL 版本為準 |
 | sequence 取號不會因 rollback 退回，所以 `ready_seq` 會跳號 | 規範 | [PostgreSQL 序列函式](https://www.postgresql.org/docs/current/functions-sequence.html) | — |
 | 叫號編號照提交順序、看板交接不漏不重複 | App 設計 | 4.1、4.2；實作計畫 A1～A3 | 必測案例全部通過 |
-| 重送不重複下單 | App 設計 | 4.8；實作計畫 A6 | 必測案例全部通過；key 提交後至少保留 24 小時 |
+| 重送不重複下單 | App 設計 | 4.9；實作計畫 A6 | 必測案例全部通過；key 提交後至少保留 24 小時 |
 | 各步驟的成績差異 | 環境實測 | 5.1～5.7 | 只代表單一主機、單一資料庫實例 |
 | 哪些操作會重啟資料庫 | 規範 | [CloudNativePG v1.30.1：rolling updates](https://github.com/cloudnative-pg/cloudnative-pg/blob/v1.30.1/docs/src/rolling_update.md) | CNPG v1.30.1；官方支援 Kubernetes 1.34～1.36，tk8s 的 1.37 屬於「測過、不在支援清單」（[supported_releases](https://github.com/cloudnative-pg/cloudnative-pg/blob/v1.30.1/docs/src/supported_releases.md)） |
 | 整筆交易的總時間上限（`transaction_timeout`），用來保證 key 提交後至少保留 24 小時 | 規範 | [PostgreSQL 用戶端連線設定](https://www.postgresql.org/docs/17/runtime-config-client.html) | 需要 PostgreSQL 17 以上；映像檔固定為 `ghcr.io/cloudnative-pg/postgresql:17.11-202611020810-system-trixie`，index digest `sha256:03a1c6a62b27e8ad31cae5c085131b5ac706b09403d6fcb6c58d16c8daa257cd`（[env-findings 5](../env-findings.md)） |
