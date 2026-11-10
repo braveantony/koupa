@@ -954,7 +954,7 @@
 - `all`：control、step-0～5 交錯 5 輪。
 - `trap` 處理 `EXIT`、`INT`、`TERM`：uncordon、恢復 replica、`collect-timeline.sh stop`。
 
-- [ ] **Step 1：** 寫失敗的腳本測試：`test-measure-trap.sh`（假 `kubectl` 記錄呼叫，在 drain 之後送 SIGINT，斷言之後呼叫過 `uncordon` 和 `collect-timeline.sh stop`）、`test-drain-target.sh`（目標上有資料庫 Pod → 換一個 worker；全部都不符合 → 停止）、`test-all-interleaves.sh`（呼叫順序是 control、0、1、2、3、4 重複 5 次）。
+- [ ] **Step 1：** 寫失敗的腳本測試：`test-measure-trap.sh`（假 `kubectl` 記錄呼叫，在 drain 之後送 SIGINT，斷言之後呼叫過 `uncordon` 和 `collect-timeline.sh stop`）、`test-drain-target.sh`（目標上有資料庫 Pod → 換一個 worker；全部都不符合 → 停止）、`test-all-interleaves.sh`（呼叫順序是 control、0、1、2、3、4、5 重複 5 次）。
 - [ ] **Step 2：** 執行 → FAIL。
 - [ ] **Step 3：** 實作。
 - [ ] **Step 4：** → PASS。在 tk8s 跑 `measure.sh calibrate`，把候選值和是否「未經校正」更新到 `k8s/steps/step-2`（當時編號 step-1）和 TEACHER.md。
