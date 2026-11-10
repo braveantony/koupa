@@ -9,6 +9,11 @@
 # gave 1.504 s -> 7 s. Across both, the last ingress selection of any
 # request to a terminating Pod was at most 1.46 s after the delete request.
 # The 5 s buffer is PROVISIONAL. Grace stays at the default 30 s.
+# koupa.dev/prestop-calibrated says where the seconds come from: "true" =
+# a calibration candidate (above); "false" = the teacher's conservative
+# value after a failed calibration (TEACHER.md section 5). measure.sh reads
+# it from the live Deployment and the scorecard shows 「preStop 未經校正」
+# for "false" (unknown when missing). Steps 3-5 inherit it.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
@@ -22,6 +27,9 @@ patches:
         namespace: koupa
       spec:
         template:
+          metadata:
+            annotations:
+              koupa.dev/prestop-calibrated: "true"
           spec:
             containers:
               - name: koupa

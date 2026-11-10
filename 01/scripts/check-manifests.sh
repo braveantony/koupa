@@ -47,6 +47,7 @@ BASE = {
     "TEST_MUTATION": ABSENT,
     "hooksPort": ABSENT,
     "readinessProbe": ABSENT,
+    "preStopCalibrated": ABSENT,
     "imageTag": "v1",
 }
 # Step 1 readiness: GET /healthz on 8080 every 2 s, one failure or success
@@ -55,7 +56,11 @@ READINESS = {"httpGet": {"path": "/healthz", "port": 8080},
              "periodSeconds": 2, "timeoutSeconds": 1,
              "failureThreshold": 1, "successThreshold": 1}
 STEP1 = {**BASE, "readinessProbe": READINESS}
-STEP2 = {**STEP1, "preStop": 8}  # calibrated on tkha (2026-11-10, candidate 2.127 s)
+# preStopCalibrated: the pod template annotation koupa.dev/prestop-calibrated;
+# "true" while preStop is a calibration candidate, "false" with the
+# conservative value (TEACHER.md section 5).
+STEP2 = {**STEP1, "preStop": 8,  # calibrated on tkha (2026-11-10, candidate 2.127 s)
+         "preStopCalibrated": "true"}
 STEP3 = {**STEP2, "GRACEFUL_SHUTDOWN": "1", "SHUTDOWN_TIMEOUT": "15s",
          "terminationGracePeriodSeconds": 40}
 STEP4 = {**STEP3, "RESUME_FROM_LAST_ID": "1"}
@@ -154,6 +159,9 @@ def actual(field):
         return 9090 if 9090 in ports else ABSENT
     if field == "readinessProbe":
         return c.get("readinessProbe", ABSENT)
+    if field == "preStopCalibrated":
+        a = (spec["template"].get("metadata") or {}).get("annotations") or {}
+        return a.get("koupa.dev/prestop-calibrated", ABSENT)
     if field == "imageTag":
         return None  # checked above
     e = env.get(field)
@@ -182,6 +190,10 @@ if exp["GRACEFUL_SHUTDOWN"] == "1":
           "A5: preStop %s + SHUTDOWN_TIMEOUT %s + 5 < grace %s" % (pre, st, grace))
 elif pre:
     check(pre < grace, "preStop %s < grace %s" % (pre, grace))
+# The scorecard label needs the marker wherever a step sets preStop.
+if step.startswith("step-") and pre:
+    check(actual("preStopCalibrated") in ("true", "false"),
+          "preStop is marked calibrated or not (koupa.dev/prestop-calibrated true|false)")
 
 # Service: port 80 -> 8080; the hooks port is never exposed.
 svcs = find("Service", "koupa")

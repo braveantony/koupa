@@ -3,8 +3,8 @@
 
     scorecard.py RUN_DIR ACTION [ARG]
 
-ACTION: invalid-new REASON | invalid REASON | banner TEXT | control-ok |
-problem | is-invalid (see each branch).
+ACTION: invalid-new REASON | invalid REASON | banner TEXT | prestop |
+control-ok | problem | is-invalid (see each branch).
 """
 import json, os, sys
 d, action = sys.argv[1], sys.argv[2]
@@ -58,6 +58,57 @@ elif action == "banner":
     s["diagnostic"] = True
     s["diagnostic_banner"] = arg
     save(s, text)
+elif action == "prestop":
+    # Design 4.x / plan A11: a preStop that is the teacher's conservative
+    # value (calibration failed) is labelled 「preStop 未經校正」. The source is
+    # the pod template annotation koupa.dev/prestop-calibrated of the live
+    # Deployment read after preflight (deployment-at-start.json): "true" |
+    # "false"; missing or anything else is unknown, never "calibrated".
+    # Runs without preStop (step 0, 1, control) and calibrate get no line.
+    KEY = "koupa.dev/prestop-calibrated"
+    s = load()
+    try:
+        params = json.load(open(os.path.join(d, "params.json")))
+    except (OSError, ValueError):
+        params = {}
+    mode, overlay = params.get("mode"), params.get("overlay")
+    expects = overlay in ("step-2", "step-3", "step-4", "step-5")
+    seconds = marker = reason = None
+    try:
+        dep = json.load(open(os.path.join(d, "deployment-at-start.json")))
+        tmpl = dep["spec"]["template"]
+        ctr = [c for c in tmpl["spec"]["containers"] if c.get("name") == "koupa"][0]
+        seconds = (((ctr.get("lifecycle") or {}).get("preStop") or {}).get("sleep") or {}).get("seconds")
+        marker = ((tmpl.get("metadata") or {}).get("annotations") or {}).get(KEY)
+        have = True
+    except (OSError, ValueError, KeyError, IndexError, TypeError, AttributeError):
+        have = False
+    if mode == "calibrate" or (not expects and (not have or seconds is None)):
+        status, line = "not_applicable", None
+    elif not have:
+        status, reason = "unknown", "沒有讀到量測開始時的 Deployment（deployment-at-start.json）"
+    elif marker == "true":
+        status = "calibrated"
+    elif marker == "false":
+        status = "uncalibrated"
+    else:
+        status = "unknown"
+        reason = ("Deployment 沒有 %s 標記" % KEY if marker is None
+                  else "%s 標記值 %r 不是 true 或 false" % (KEY, marker))
+    sec = "%s 秒" % seconds if seconds is not None else "秒數不明"
+    line = {"calibrated": "preStop：%s（已依本環境校正）" % sec,
+            "uncalibrated": "preStop 未經校正：%s是講師手冊的保守值，不是本環境量出的候選值" % sec,
+            "unknown": "preStop 是否經過校正：未知（%s；%s）" % (sec, reason)}.get(status)
+    s["prestop_calibration"] = {"status": status, "prestop_s": seconds, "marker": marker,
+                                "marker_key": KEY, "source": "deployment-at-start.json",
+                                "reason": reason}
+    text = open(tp).read() if os.path.exists(tp) else ""
+    lines = [l for l in text.split("\n") if not l.startswith(("preStop：", "preStop 未經校正", "preStop 是否經過校正"))]
+    if line:
+        # Right after the title line (a banner, if any, stays on line 1).
+        at = next((i + 1 for i, l in enumerate(lines) if l.startswith("Rush Hour 成績單")), 0)
+        lines.insert(at, line)
+    save(s, "\n".join(lines))
 elif action == "control-ok":
     # A13: valid, no unknown, orders sent, every failure item exactly 0, and
     # every item and all three boards present and determinable: an absent or

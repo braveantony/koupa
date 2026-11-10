@@ -115,7 +115,7 @@
 1. `k8s/steps/step-2` 的 `seconds` 改成 20；
 2. `k8s/steps/step-3` 的 `terminationGracePeriodSeconds` 改成 45（20 ＋ 15 ＋ 5 ＝ 40，寬限要大於 40；calibrate 也用 45）；
 3. `scripts/check-manifests.sh` 裡 `STEP2`、`STEP3` 的期望值跟著改，`scripts/check-manifests.sh step-2`、`step-3` 要通過；
-4. 程式不會自動在成績單上標示「`preStop` 未經校正」：講師要在實測紀錄和上課時明講。
+4. `k8s/steps/step-2` 的標記 `koupa.dev/prestop-calibrated` 改成 `"false"`（Pod 範本的 annotation，步驟 3～5 繼承），`scripts/check-manifests.sh` 裡 `STEP2` 的 `preStopCalibrated` 也改成 `"false"`。`measure.sh` 量測前讀 live Deployment 上的這個標記（存成證據包的 `deployment-at-start.json`），步驟 2 以後的成績單標題下一行就會印「preStop 未經校正：20 秒是講師手冊的保守值……」，`scorecard.json` 的 `prestop_calibration.status` 是 `uncalibrated`。標記是 `"true"` 時印「preStop：N 秒（已依本環境校正）」；沒有標記或不是 `true`／`false` 時印「未知」，不會當成已校正。重新校正成功、改回候選值時，記得把標記改回 `"true"`。實測紀錄裡仍要寫明用的是保守值。
 
 如果有效樣本不足，是因為 U 距離 `preStop` 結束不到 5 秒，就表示 20 秒不夠長。請把 `k8s/calibrate` 的 `preStop` 和寬限時間一起加長，再重新校正。
 

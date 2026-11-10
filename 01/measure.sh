@@ -20,6 +20,10 @@
 #   6. at D rush-hour winds down by itself (A9) and writes its scorecard
 #   7. stop the collectors, complete the evidence pack (scripts/evidence.sh)
 #      in evidence/<run-id>/
+#   8. label the scorecard's preStop: calibrated, 「preStop 未經校正」 or
+#      unknown, from the koupa.dev/prestop-calibrated annotation of the
+#      Deployment read after preflight (deployment-at-start.json); runs
+#      without preStop get no label
 #
 # Other modes (plan A8 table, A11, A15):
 #   calibrate   k8s/calibrate (step 0 + preStop 20 s, grace 45 s); a
@@ -754,6 +758,10 @@ print(c["lifecycle"]["preStop"]["sleep"]["seconds"])' "$cur_dir/manifest/applied
 		abort_run "量測前核對不符：$(grep '^FAIL' "$cur_dir/preflight.txt" | sed 's/^FAIL \([a-z-]*\):.*/\1/' | paste -sd, -)"
 	fi
 	log "preflight: all 7 checks passed"
+	# The Deployment as measured: the scorecard's preStop label reads its
+	# koupa.dev/prestop-calibrated annotation (no file = unknown).
+	"$KUBECTL" -n "$NS" get deploy koupa -o json >"$cur_dir/deployment-at-start.json" 2>>"$cur_dir/measure.log" ||
+		rm -f "$cur_dir/deployment-at-start.json"
 
 	# drain (A15): one koupa Pod per worker before the run (rebalance if
 	# not), then a target worker that passes the checks, or stop.
@@ -969,6 +977,7 @@ PY
 	if [ "$change" = drain ] && ! scorecard_py "$cur_dir" is-invalid; then
 		printf '\n註：drain 的「完成」是 kubectl drain 在第 D − 10 秒前結束（Pod 都已驅逐並結束）；worker cordon 期間，替代 Pod 受 topology spread（DoNotSchedule）限制，可能到 uncordon 才排程，所以這段時間可能只有 2 個 Pod（見 rollout.json、distribution-at-drain.json）。\n' >>"$cur_dir/scorecard.txt"
 	fi
+	scorecard_py "$cur_dir" prestop || warn "preStop label not written for $cur_id"
 	if [ "$mode" = calibrate ]; then
 		if ! "$HOST_RH" calibrate --prestop "${calib_prestop}s" --json "$cur_dir/calibrate.json" "$cur_dir" \
 			>"$cur_dir/calibrate.txt" 2>>"$cur_dir/measure.log"; then
@@ -1162,7 +1171,7 @@ if [ "$mode" = calibrate ]; then
 	if [ -n "$prestop" ]; then
 		log "calibrate: 有效樣本 $calib_valid 個；步驟 2 的 preStop 候選值 $prestop 秒（ceil(候選值) + 緩衝 $PRESTOP_BUFFER_S 秒，緩衝暫定；上界為模型推估）；$cdir/candidate.json"
 	else
-		warn "calibrate: 有效樣本 $calib_valid 個，不足 $CALIB_MIN_VALID 個：不產生候選值；步驟 2 改用保守值，標示「preStop 未經校正」"
+		warn "calibrate: 有效樣本 $calib_valid 個，不足 $CALIB_MIN_VALID 個：不產生候選值；步驟 2 改用保守值，並把 koupa.dev/prestop-calibrated 改成 \"false\"，成績單才會標示「preStop 未經校正」（TEACHER.md 第 5 節）"
 		calib_short=1
 	fi
 fi
