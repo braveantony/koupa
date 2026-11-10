@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# preflight.sh step-3 must fail when the live Deployment still carries
+# preflight.sh step-2 must fail when the live Deployment still carries
 # GRACEFUL_SHUTDOWN from step 3 (a previous-step setting not removed), and
 # the readinessProbe must be present exactly when the overlay has it.
 . "$(dirname "$0")/lib.sh"

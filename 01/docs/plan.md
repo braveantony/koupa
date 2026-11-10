@@ -123,7 +123,7 @@
 4. 任何一步碰到 `lock_timeout`：先 rollback，再回傳 503；
 5. 碰到 `transaction_timeout`：PostgreSQL 會終止整個 session，原連線不能再 rollback，直接丟棄這條連線。碰到其他連線中斷：依資料庫驅動的規則淘汰這條不能用的連線。兩種情況都依發生時機分成：
    - 還沒送出 `COMMIT`：交易一定沒有提交，回傳 503；
-   - 已經送出 `COMMIT`、還沒收到結果：**提交結果未知**。App 記一筆「提交結果未知」的 log，HTTP 連線還能寫就回傳 503（可以重試）。客人用同一個 `client_ref` 重送時，開關打開就由第 1、3 步查回原本的號碼牌或重新建立；開關關閉時可能產生重複訂單，這正是步驟 4 要展示的情況。
+   - 已經送出 `COMMIT`、還沒收到結果：**提交結果未知**。App 記一筆「提交結果未知」的 log，HTTP 連線還能寫就回傳 503（可以重試）。客人用同一個 `client_ref` 重送時，開關打開就由第 1、3 步查回原本的號碼牌或重新建立；開關關閉時可能產生重複訂單，這正是步驟 5 要展示的情況。
 
 清理：只刪除 `order_id` 有值、`created_at < now() - interval '25 hours'` 的資料。`now()` 是交易開始的時間，所以 `created_at` 會比 key 實際提交的時間早，最多早一個交易的長度；多留 1 小時，就能保證 key 在**提交後**至少保留 24 小時（前提是 `transaction_timeout` 讓整筆交易不超過 1 小時；`statement_timeout`、`idle_in_transaction_session_timeout` 只限制單一陳述式或連續閒置，不能保證這一點）。
 
@@ -951,7 +951,7 @@
 - `rollback`：先套 v2，第 5 步改 v1。
 - `drain`：A15 的目標檢查（有 koupa Pod、沒有資料庫 Pod、沒有 `emptyDir` 重要資料）→ `kubectl drain --ignore-daemonsets`（不加 `--delete-emptydir-data`）→ uncordon → 重新平衡並核對分布。
 - `scale-down`：縮成 2，結束後恢復 3 並確認可用。
-- `all`：control、step-0～4 交錯 5 輪。
+- `all`：control、step-0～5 交錯 5 輪。
 - `trap` 處理 `EXIT`、`INT`、`TERM`：uncordon、恢復 replica、`collect-timeline.sh stop`。
 
 - [ ] **Step 1：** 寫失敗的腳本測試：`test-measure-trap.sh`（假 `kubectl` 記錄呼叫，在 drain 之後送 SIGINT，斷言之後呼叫過 `uncordon` 和 `collect-timeline.sh stop`）、`test-drain-target.sh`（目標上有資料庫 Pod → 換一個 worker；全部都不符合 → 停止）、`test-all-interleaves.sh`（呼叫順序是 control、0、1、2、3、4 重複 5 次）。

@@ -104,6 +104,9 @@ left_db=$(psql_db "SELECT datname FROM pg_database WHERE datname LIKE 'koupa\_in
 [ -z "$left_db" ] && pass "no case database left behind" || fail "case databases left: $left_db"
 left_ctr=$(podman ps -a --format '{{.Names}}' | grep '^koupa-ingress-envoy-' || true)
 [ -z "$left_ctr" ] && pass "no Envoy container left behind" || fail "Envoy containers left: $left_ctr"
-ls -d "$stage"/bin/ingress-* >/dev/null 2>&1 && fail "build directories left: $(ls -d "$stage"/bin/ingress-*)" || pass "no build directory left behind"
+# Only run.sh's own build directories (bin/ingress-run-<id>); other files in
+# bin/ (e.g. bin/ingress-reconcile) are not this test's business.
+left_bin=$(find "$stage/bin" -maxdepth 1 -type d -name 'ingress-run-*' 2>/dev/null)
+[ -z "$left_bin" ] && pass "no build directory left behind" || fail "build directories left: $left_bin"
 echo "--- evidence: $out"
 exit $rc

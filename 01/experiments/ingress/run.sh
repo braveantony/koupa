@@ -45,7 +45,9 @@ ENVOY_NAME=koupa-ingress-envoy-$run_id
 DEFAULT_DB_CONTAINER=koupa-test-db
 DB_CONTAINER=${INGRESS_DB_CONTAINER:-$DEFAULT_DB_CONTAINER}
 DB_NAME=koupa_ingress_$run_id
-BIN=$stage/bin/ingress-$run_id
+# Build directory: bin/ingress-run-<id>, a prefix no other tool in bin/ uses
+# (bin/ingress-reconcile is experiments/verify's binary).
+BIN=$stage/bin/ingress-run-$run_id
 APP_PORT=${INGRESS_APP_PORT:-18080}
 ENVOY_PORT=${INGRESS_ENVOY_PORT:-18000}
 ADMIN_PORT=${INGRESS_ADMIN_PORT:-18001}
