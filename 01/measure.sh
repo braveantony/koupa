@@ -253,6 +253,12 @@ rush_hour() {
 }
 
 # ---------------------------------------------------------------- scorecards
+# reindex DIR: refresh the file sizes in DIR/evidence-index.txt after the
+# scorecard was edited once the pack was indexed.
+reindex() {
+	[ -f "$1/evidence-index.txt" ] || return 0
+	"$stage/scripts/evidence.sh" --reindex "$1" >>"$1/measure.log" 2>&1 || warn "evidence-index.txt not refreshed for $1"
+}
 # scorecard_py DIR ACTION [ARG]: the scorecard edits and A13 checks.
 scorecard_py() { python3 -I "$stage/scripts/lib/scorecard.py" "$@"; }
 
@@ -658,7 +664,7 @@ abort_run() {
 # apply_banner: the diagnostic banner on line 1 of every scorecard so far.
 apply_banner() {
 	local d
-	for d in "${run_dirs[@]}"; do scorecard_py "$d" banner "$BANNER"; done
+	for d in "${run_dirs[@]}"; do scorecard_py "$d" banner "$BANNER" && reindex "$d"; done
 	warn "$BANNER（每張成績單第一行都已標示）"
 }
 
@@ -984,6 +990,7 @@ PY
 			warn "rush-hour calibrate failed for $cur_id (see measure.log)"
 		fi
 	fi
+	reindex "$cur_dir"
 	in_run=0
 	if scorecard_py "$cur_dir" is-invalid; then
 		log "run $n/$runs finished: invalid (evidence: $cur_dir)"

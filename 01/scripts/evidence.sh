@@ -21,10 +21,29 @@
 #   evidence-index.txt        every file with its size; MISSING lines for
 #                             required pieces that are absent
 # Exit 0 when every required piece is present, 1 otherwise, 2 usage.
+#
+#   scripts/evidence.sh --reindex <run-dir>
+#
+# Only rewrites the "# all files" part of evidence-index.txt (sizes now),
+# keeping the required-piece lines: measure.sh calls it after it edits the
+# scorecard once the pack is indexed (preStop label, drain note, invalid,
+# diagnostic banner). measure.log keeps growing until the invocation ends.
 set -uo pipefail
 stage=$(cd "$(dirname "$0")/.." && pwd)
 NS=${KOUPA_NS:-koupa}
 KUBECTL=${KUBECTL:-kubectl}
+
+# all_files: every file of the pack with its size (not the index itself).
+all_files() { (cd "$1" && find . -path ./evidence-index.txt -prune -o -type f -printf '%10s  %P\n' | sort -k2); }
+if [ "${1:-}" = --reindex ]; then
+	[ $# -eq 2 ] && [ -f "$2/evidence-index.txt" ] || {
+		echo "usage: $0 --reindex <run-dir with evidence-index.txt>" >&2
+		exit 2
+	}
+	idx=$2/evidence-index.txt
+	{ sed '/^# all files$/,$d' "$idx"; echo "# all files"; all_files "$2"; } >"$idx.tmp" && mv "$idx.tmp" "$idx"
+	exit
+fi
 
 [ $# -eq 1 ] && [ -d "$1" ] || {
 	echo "usage: $0 <run-dir>" >&2
@@ -292,7 +311,7 @@ missing=0
 		fi
 	done
 	echo "# all files"
-	(cd "$run" && find . -path ./evidence-index.txt -prune -o -type f -printf '%10s  %P\n' | sort -k2)
+	all_files "$run"
 } >"$run/evidence-index.txt"
 if [ "$missing" -gt 0 ]; then
 	echo "evidence: $missing required piece(s) missing in $run (see evidence-index.txt)" >&2

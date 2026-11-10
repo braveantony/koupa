@@ -13,6 +13,25 @@ KEY=koupa.dev/prestop-calibrated
 status() {
 	python3 -I -c 'import json,sys; print((json.load(open(sys.argv[1])).get("prestop_calibration") or {}).get("status", ""))' "$1/scorecard.json"
 }
+# index_matches RUN: evidence-index.txt lists scorecard.txt and
+# scorecard.json with their final sizes (the label and the banner are
+# written after the pack is first indexed).
+index_matches() {
+	python3 -I - "$1" <<'PY'
+import os, sys
+run = sys.argv[1]
+lines = open(os.path.join(run, "evidence-index.txt"), encoding="utf-8").read().splitlines()
+listed = {}
+for l in lines[lines.index("# all files") + 1:]:
+    size, name = l.split(None, 1)
+    listed[name] = int(size)
+bad = [(f, listed.get(f), os.path.getsize(os.path.join(run, f)))
+       for f in ("scorecard.txt", "scorecard.json") if listed.get(f) != os.path.getsize(os.path.join(run, f))]
+if bad:
+    print("    indexed vs actual:", bad)
+sys.exit(1 if bad else 0)
+PY
+}
 # marker EDIT: make_live edit that sets (or with "del", removes) the annotation.
 marker() {
 	if [ "$1" = del ]; then
@@ -43,9 +62,11 @@ check "step-2 calibrated: text says 8 s calibrated, right after the title" \
 	[ "$(sed -n 2p "$run/scorecard.txt")" = "preStop：8 秒（已依本環境校正）" ]
 check "step-2 calibrated: stdout shows the label" grep -q "^preStop：8 秒（已依本環境校正）" "$T/out"
 check "step-2 calibrated: no 未經校正" bash -c '! grep -q "未經校正" "$1"' _ "$run/scorecard.txt"
+check "step-2 calibrated: evidence-index.txt has the final scorecard sizes" index_matches "$run"
 
 # (The seconds stay 8: preflight requires the live spec to match the overlay.)
 measure step-3 step-3 "$(marker false)"
+check "step-3 conservative: evidence-index.txt has the final scorecard sizes" index_matches "$run"
 check "step-3 conservative: JSON status uncalibrated" [ "$(status "$run")" = uncalibrated ]
 check "step-3 conservative: text says preStop 未經校正" \
 	grep -q "^preStop 未經校正：8 秒是講師手冊的保守值" "$run/scorecard.txt"
@@ -77,6 +98,17 @@ for m in step-0 step-1 control; do
 	check "$m: JSON status not_applicable" [ "$(status "$run")" = not_applicable ]
 	check "$m: no preStop line in the scorecard" bash -c '! grep -q "^preStop" "$1"' _ "$run/scorecard.txt"
 done
+
+# A diagnostic banner is written later still: the index follows it too.
+rm -rf "${MEASURE_EVIDENCE_DIR:?}"/*
+make_live step-0 ""
+scorecard 's["has_unknown"] = True; s["items"]["missing"]["board-1"]["unknown"] = 2'
+"$STAGE/measure.sh" control --runs 1 --duration 30 --diagnostic >"$T/out" 2>"$T/err"
+run=$(latest_run)
+check "control --diagnostic: bannered" grep -q "^診斷模式" "$run/scorecard.txt"
+check "control --diagnostic: evidence-index.txt has the final scorecard sizes" index_matches "$run"
+check "control --diagnostic: index keeps the required-piece lines" grep -q "^OK      params.json" "$run/evidence-index.txt"
+scorecard_clean
 
 # scorecard.py directly: step 2 without the Deployment file is unknown,
 # and running the action twice keeps one line.
