@@ -1,0 +1,11 @@
+{"run": "r1", "board": "board-1", "conn": 1, "kind": "connect", "at": "2026-11-09T09:59:59Z", "pod_uid": "uid-a", "err": "", "status": 200}
+{"run": "r1", "board": "board-1", "conn": 1, "kind": "hello", "at": "2026-11-09T09:59:59Z", "pod_uid": "uid-a", "err": "", "start": 0, "version": "v1"}
+{"run": "r1", "board": "board-1", "conn": 1, "kind": "ready", "at": "2026-11-09T10:00:05Z", "pod_uid": "uid-a", "err": "", "ready_seq": 1, "number": "A001"}
+{"run": "r1", "board": "board-1", "conn": 1, "kind": "ready", "at": "2026-11-09T10:00:05Z", "pod_uid": "uid-a", "err": "", "ready_seq": 3, "number": "A003"}
+{"run": "r1", "board": "board-2", "conn": 1, "kind": "connect", "at": "2026-11-09T09:59:59Z", "pod_uid": "uid-a", "err": "", "status": 200}
+{"run": "r1", "board": "board-2", "conn": 1, "kind": "hello", "at": "2026-11-09T09:59:59Z", "pod_uid": "uid-a", "err": "", "start": 0, "version": "v1"}
+{"run": "r1", "board": "board-2", "conn": 1, "kind": "ready", "at": "2026-11-09T10:00:05Z", "pod_uid": "uid-a", "err": "", "ready_seq": 1, "number": "A001"}
+{"run": "r1", "board": "board-3", "conn": 1, "kind": "connect", "at": "2026-11-09T09:59:59Z", "pod_uid": "uid-a", "err": "", "status": 200}
+{"run": "r1", "board": "board-3", "conn": 1, "kind": "hello", "at": "2026-11-09T09:59:59Z", "pod_uid": "uid-a", "err": "", "start": 0, "version": "v1"}
+{"run": "r1", "board": "board-3", "conn": 1, "kind": "ready", "at": "2026-11-09T10:00:05Z", "pod_uid": "uid-a", "err": "", "ready_seq": 1, "number": "A001"}
+{"run": "r1", "board": "board-3", "conn": 1, "kind": "ready", "at": "2026-11-09T10:00:05Z", "pod_uid": "uid-a", "err": "", "ready_seq": 2, "number": "A002"}

@@ -1,0 +1,81 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: koupa
+  namespace: koupa
+  labels:
+    app.kubernetes.io/name: koupa
+spec:
+  replicas: 3
+  # No strategy block: step 0 is the default rolling update, untouched.
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: koupa
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: koupa
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        # distroless "nonroot" is uid 65532; the kubelet needs it numeric.
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      # Workers only: tk8s control planes are not tainted. Spreading then
+      # counts only the 3 workers (nodeAffinityPolicy defaults to Honor).
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
+      topologySpreadConstraints:
+        - topologyKey: kubernetes.io/hostname
+          maxSkew: 1
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: koupa
+          # Count only Pods of the same ReplicaSet. Without this, old Pods
+          # still present during a rollout skew the count and the new
+          # ReplicaSet can end up 2-1-0 (seen on tkha).
+          matchLabelKeys:
+            - pod-template-hash
+      # No readinessProbe on purpose: step 0 is Ready as soon as the container
+      # starts. Step 1 adds it (design 4.5), because tkha showed failures from
+      # new Pods receiving traffic before they listen (env-findings section 9).
+      containers:
+        - name: koupa
+          image: ghcr.io/braveantony/koupa:v1
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: koupa-db-app
+                  key: uri
+            - name: POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

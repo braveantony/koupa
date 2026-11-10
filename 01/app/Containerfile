@@ -1,0 +1,15 @@
+FROM docker.io/library/golang:1.26 AS build
+ARG VERSION=dev
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+    -ldflags "-s -w -X koupa/app/config.Version=${VERSION}" \
+    -o /out/koupa ./app
+
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:52dcfbabb7457ea47c82f6e13af8c8a4a1d9f7b0145142b3ecab20f2b888411d
+COPY --from=build /out/koupa /koupa
+USER nonroot
+EXPOSE 8080
+ENTRYPOINT ["/koupa"]

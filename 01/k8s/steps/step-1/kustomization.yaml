@@ -1,0 +1,32 @@
+# Step 1: a readinessProbe, so a new Pod gets traffic only once /healthz
+# says it is ready (listening, database answers, LISTEN active). Measured on
+# tkha without it (docs/env-findings.md section 9): about 28 % of new Pods
+# start listening ~5.02 s late (their first DNS lookup is dropped while the
+# Cilium endpoint has no identity yet), yet are Ready at once, so the gateway
+# sends them requests that fail with UF / connection refused.
+# Every 2 s, one failure or success flips Ready, no initial delay: a new Pod
+# becomes Ready at most ~2 s after it can answer.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: koupa
+        namespace: koupa
+      spec:
+        template:
+          spec:
+            containers:
+              - name: koupa
+                readinessProbe:
+                  httpGet:
+                    path: /healthz
+                    port: 8080
+                  periodSeconds: 2
+                  timeoutSeconds: 1
+                  failureThreshold: 1
+                  successThreshold: 1

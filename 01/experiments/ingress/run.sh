@@ -1,0 +1,302 @@
+#!/usr/bin/env bash
+# Ingress retries and late arrival (plan A10, the first four must-tests),
+# reproduced locally against the same Envoy as Cilium's Gateway:
+#
+#   Rush Hour (cmd/ingress) -> Envoy 1.39.5 (podman) -> testproxy.HTTP -> App v2 -> test DB
+#
+# Five checks: late-arrival, retry-success, retry-ended-no-response,
+# retry-ended-error (case 3's two sub-cases) and retry-uf. In every case
+# the server-side result must be 未知 (unsettled) and the A10 state as
+# listed in check_case. Evidence: evidence/ingress-<ts>/ (summary.txt,
+# results.jsonl, envoy/access.log, app/<uid>.log, cases/<case>/scorecard.*).
+# Exits non-zero on any FAIL. The EXIT trap stops Envoy, the harness (it
+# owns the proxy) and the App, and drops the case database; the test DB
+# container itself is left running.
+#
+# Envoy here has retries on (num_retries 1, as Cilium makes from an
+# HTTPRoute `retry: {attempts: 1}`); the koupa HTTPRoute has no retry, so
+# formal measurements run without ingress retries. This harness only checks
+# the scorecard's classification if someone turns them on.
+#
+#   experiments/ingress/run.sh
+#
+# Ownership: every run has its own id; the case database, the Envoy
+# container and the build directory carry it, and cleanup removes only what
+# this run created. The shared test DB container is never removed or
+# replaced: scripts/test-db.sh runs only when no container of that name
+# exists; one that exists but is not usable fails the setup. A cleanup step
+# that fails is a FAIL. experiments/ingress/test/ownership.sh checks this.
+#
+# Test seams: INGRESS_RESULTS_CMD, when set, is run instead of the whole
+# setup and harness; its stdout is taken as results.jsonl (one JSON object
+# per case, see cmd/ingress). INGRESS_DB_CONTAINER (koupa-test-db): any
+# other name is never created, only used. Ports: INGRESS_APP_PORT (18080),
+# INGRESS_ENVOY_PORT (18000), INGRESS_ADMIN_PORT (18001); concurrent runs
+# need different ports.
+set -uo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+stage=$(cd "$here/../.." && pwd)
+run_id=$(date -u +%Y%m%d%H%M%S)_$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')
+EVID=${INGRESS_EVIDENCE:-$stage/evidence/ingress-$run_id}
+SUMMARY=$EVID/summary.txt
+RESULTS=$EVID/results.jsonl
+ENVOY_IMAGE=docker.io/envoyproxy/envoy:v1.39.5@sha256:15ecaee735013685c53d3e4e2189ccee6fbd20450ab1dffe98ef85f1e1b36d78
+ENVOY_NAME=koupa-ingress-envoy-$run_id
+DEFAULT_DB_CONTAINER=koupa-test-db
+DB_CONTAINER=${INGRESS_DB_CONTAINER:-$DEFAULT_DB_CONTAINER}
+DB_NAME=koupa_ingress_$run_id
+# Build directory: bin/ingress-run-<id>, a prefix no other tool in bin/ uses
+# (bin/ingress-reconcile is experiments/verify's binary).
+BIN=$stage/bin/ingress-run-$run_id
+APP_PORT=${INGRESS_APP_PORT:-18080}
+ENVOY_PORT=${INGRESS_ENVOY_PORT:-18000}
+ADMIN_PORT=${INGRESS_ADMIN_PORT:-18001}
+POD_UID=00000000-0000-4000-8000-000000000025
+POD_NAME=koupa-ingress-local
+CASES="late-arrival retry-success retry-ended-no-response retry-ended-error retry-uf"
+mkdir -p "$EVID"
+: >"$SUMMARY"
+: >"$RESULTS"
+app_pid="" harness_pid="" db_created="" envoy_created="" bin_created=""
+
+log() { echo "ingress: $*" >&2; }
+
+# expect CASE DESCRIPTION JQ-EXPR: the case's result object must satisfy
+# the jq expression (evaluated with -e on that one object).
+expect() {
+	local c=$1 what=$2 expr=$3 obj
+	obj=$(jq -c --arg c "$c" 'select(.case == $c)' "$RESULTS" 2>/dev/null | head -1)
+	if [ -z "$obj" ]; then
+		echo "FAIL $c - no result" >>"$SUMMARY"
+		return 1
+	fi
+	if jq -e "$expr" <<<"$obj" >/dev/null 2>&1; then
+		echo "ok   $c - $what" >>"$SUMMARY"
+		return 0
+	fi
+	echo "FAIL $c - $what (got: $(jq -c '{error, upstream_attempts: .ingress.upstream_attempts, flags: .ingress.response_flags, settled, settle_reason, state, full_success, client_status, client_err, orders_at_eval, orders_after_release, duplicate_refs}' <<<"$obj"))" >>"$SUMMARY"
+	return 1
+}
+
+# check_case CASE: the A10 expectations. Every case: the harness ran it
+# (no error), the ingress logged the attempt, and the server-side result is
+# 未知 (Settle: not settled; the scorecard has unknowns).
+check_case() {
+	local c=$1 ok=0
+	expect "$c" "harness ran the case" '.error == ""' || return 1
+	expect "$c" "scorecard is valid" '.invalid == false' || ok=1
+	expect "$c" "伺服器端結果未知" '.settled == false and .has_unknown == true' || ok=1
+	case $c in
+	late-arrival)
+		expect "$c" "入口轉給 Pod 一次（upstream_attempts 1）" '.ingress.upstream_attempts == 1' || ok=1
+		expect "$c" "客人沒有收到完整回應，狀態「未知」" '.full_success == false and .client_status == null and .state == "unknown"' || ok=1
+		expect "$c" "收尾時還沒有訂單，不印成確定的 0" '.orders_at_eval == 0 and .duplicate_refs.unknown >= 1' || ok=1
+		expect "$c" "放行後下一次對帳查得到訂單" '.orders_after_release == 1' || ok=1
+		;;
+	retry-success)
+		expect "$c" "入口重試（upstream_attempts 2）且回應成功" '.ingress.upstream_attempts == 2 and .ingress.status == 201 and .full_success == true and .client_status == 201' || ok=1
+		expect "$c" "成功的嘗試不列入失敗狀態" '.state == ""' || ok=1
+		expect "$c" "重複訂單不印成確定的 0" '.orders_at_eval == 1 and .duplicate_refs.confirmed == 0 and .duplicate_refs.unknown >= 1 and .duplicate_extra.unknown >= 1' || ok=1
+		expect "$c" "第一次在收尾後才提交，對帳查得到兩張訂單" '.orders_after_release == 2' || ok=1
+		;;
+	retry-ended-no-response)
+		expect "$c" "入口重試（upstream_attempts 2）" '.ingress.upstream_attempts == 2' || ok=1
+		expect "$c" "第二次在 App 正常結束" '.app_ends_at_eval == 1 and .orders_at_eval == 1' || ok=1
+		expect "$c" "客人沒有收到完整回應，狀態「未知」" '.full_success == false and .client_status == null and .state == "unknown"' || ok=1
+		expect "$c" "放行後對帳查得到兩張訂單" '.orders_after_release == 2' || ok=1
+		;;
+	retry-ended-error)
+		expect "$c" "入口重試（upstream_attempts 2）" '.ingress.upstream_attempts == 2' || ok=1
+		expect "$c" "第二次在 App 正常結束" '.app_ends_at_eval == 1 and .orders_at_eval == 1' || ok=1
+		expect "$c" "客人收到完整的 5xx，狀態「客人收到錯誤回應」" '.client_status >= 500 and .state == "client_got_error"' || ok=1
+		expect "$c" "放行後對帳查得到兩張訂單" '.orders_after_release == 2' || ok=1
+		;;
+	retry-uf)
+		expect "$c" "入口重試且最終旗標是 UF（upstream_attempts 2）" '.ingress.upstream_attempts == 2 and (.ingress.response_flags | split(",") | index("UF") != null)' || ok=1
+		expect "$c" "本機回應 5xx：狀態「客人收到錯誤回應」，不是「沒送到 App」" '.client_status >= 500 and .state == "client_got_error"' || ok=1
+		expect "$c" "放行後對帳查得到第一次建立的訂單" '.orders_at_eval == 0 and .orders_after_release == 1' || ok=1
+		;;
+	*)
+		echo "FAIL $c - unknown case" >>"$SUMMARY"
+		ok=1
+		;;
+	esac
+	return $ok
+}
+
+# access_log_keys FILE: "key: %OPERATOR%" lines of an access-log JSON map.
+access_log_keys() {
+	sed -nE 's/^ *([a-z_]+): "(%[^"]*%)" *$/\1: \2/p' "$1" | sort
+}
+
+cleanup() {
+	local rc=$?
+	trap - EXIT
+	trap "" INT TERM
+	# Only what this run created; each failure is recorded.
+	if [ -n "$envoy_created" ]; then
+		# `podman container exists`: 0 present, 1 absent, else an error.
+		podman container exists "$ENVOY_NAME" 2>>"$EVID/cleanup.log"
+		case $? in
+		0)
+			podman logs "$ENVOY_NAME" >"$EVID/envoy/envoy.log" 2>&1
+			podman rm -f "$ENVOY_NAME" >>"$EVID/cleanup.log" 2>&1 ||
+				echo "FAIL cleanup - cannot remove container $ENVOY_NAME (see cleanup.log)" >>"$SUMMARY"
+			;;
+		1) ;;
+		*) echo "FAIL cleanup - cannot tell whether container $ENVOY_NAME exists (see cleanup.log)" >>"$SUMMARY" ;;
+		esac
+	fi
+	stop_pid harness "$harness_pid"
+	stop_pid App "$app_pid"
+	if [ -n "$db_created" ]; then
+		podman exec "$DB_CONTAINER" psql -q -U postgres -d postgres \
+			-c "DROP DATABASE IF EXISTS $DB_NAME WITH (FORCE)" >>"$EVID/cleanup.log" 2>&1 ||
+			echo "FAIL cleanup - cannot drop database $DB_NAME (see cleanup.log)" >>"$SUMMARY"
+	fi
+	if [ -n "$bin_created" ]; then
+		rm -rf "$BIN" 2>>"$EVID/cleanup.log" ||
+			echo "FAIL cleanup - cannot remove $BIN" >>"$SUMMARY"
+	fi
+	echo "--- summary ($EVID)"
+	cat "$SUMMARY"
+	grep -q '^FAIL' "$SUMMARY" && rc=1
+	exit $rc
+}
+# stop_pid WHAT PID: TERM a child of this run, KILL it after 10s.
+stop_pid() {
+	local what=$1 pid=$2 i
+	[ -n "$pid" ] || return 0
+	kill -0 "$pid" 2>/dev/null || return 0
+	kill -TERM "$pid" 2>/dev/null
+	for i in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done
+	if kill -0 "$pid" 2>/dev/null; then
+		kill -KILL "$pid" 2>/dev/null
+		echo "FAIL cleanup - $what (pid $pid) ignored TERM, killed" >>"$SUMMARY"
+	fi
+	wait "$pid" 2>/dev/null
+	return 0
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+fail_setup() {
+	echo "FAIL setup - $*" >>"$SUMMARY"
+	exit 1
+}
+
+wait_http() { # URL SECONDS
+	local i
+	for i in $(seq 1 $(($2 * 5))); do
+		curl -fsS -o /dev/null --max-time 1 "$1" 2>/dev/null && return 0
+		sleep 0.2
+	done
+	return 1
+}
+
+setup_and_run() {
+	# 0. The local Envoy must log exactly the cluster's access-log keys.
+	if ! diff <(access_log_keys "$stage/k8s/base/gateway.yaml") <(access_log_keys "$here/envoy.yaml") >"$EVID/access-log-keys.diff"; then
+		fail_setup "envoy.yaml access-log keys differ from k8s/base/gateway.yaml (see access-log-keys.diff)"
+	fi
+	[ -s "$EVID/access-log-keys.diff" ] || echo "ok   setup - envoy.yaml access-log keys match k8s/base/gateway.yaml" >>"$SUMMARY"
+
+	# 1. Test database. scripts/test-db.sh force-recreates its container,
+	# so it runs only when there is none; an existing container is used as
+	# it is or the setup fails, never removed. The absence check and
+	# test-db.sh run under a lock, so two runs starting together create it
+	# once (the second sees it inside the lock).
+	local lock=${XDG_RUNTIME_DIR:-/tmp}/koupa-test-db.lock st
+	exec 9>>"$lock" || fail_setup "cannot open lock $lock"
+	flock -w 300 9 || fail_setup "timed out waiting for lock $lock"
+	podman container exists "$DB_CONTAINER" 2>>"$EVID/setup.log"
+	st=$?
+	case $st in
+	0) ;;
+	1)
+		[ "$DB_CONTAINER" = "$DEFAULT_DB_CONTAINER" ] ||
+			fail_setup "database container $DB_CONTAINER does not exist (only $DEFAULT_DB_CONTAINER is created)"
+		log "starting the test database"
+		(cd "$stage" && scripts/test-db.sh >/dev/null 2>>"$EVID/setup.log") ||
+			fail_setup "scripts/test-db.sh failed (see setup.log)"
+		echo "note: this run created $DB_CONTAINER (scripts/test-db.sh)" >>"$EVID/setup.log"
+		;;
+	*) fail_setup "cannot tell whether container $DB_CONTAINER exists (podman exit $st, see setup.log)" ;;
+	esac
+	flock -u 9
+	exec 9>&-
+	if [ "$(podman exec "$DB_CONTAINER" psql -tA -U postgres -d postgres \
+		-c "SELECT 1 FROM pg_database WHERE datname = 'koupa_template'" 2>/dev/null)" != 1 ]; then
+		fail_setup "container $DB_CONTAINER exists but is not a usable test DB (not running or no koupa_template); left untouched"
+	fi
+	local i
+	for i in 1 2 3 4 5; do
+		# CREATE fails if the name exists, so success means this run owns it.
+		if podman exec "$DB_CONTAINER" psql -q -U postgres -d postgres \
+			-c "CREATE DATABASE $DB_NAME TEMPLATE koupa_template OWNER koupa" >>"$EVID/setup.log" 2>&1; then
+			db_created=1
+			break
+		fi
+		[ "$i" = 5 ] && fail_setup "cannot create database $DB_NAME (see setup.log)"
+		sleep 1 # the template may be in use by another CREATE DATABASE
+	done
+
+	# 2. Build the App (v2) and the harness.
+	local bin=$BIN
+	[ -e "$bin" ] && fail_setup "$bin already exists"
+	mkdir -p "$bin" && bin_created=1
+	log "building"
+	(cd "$stage" && CGO_ENABLED=0 scripts/go build -ldflags "-X koupa/app/config.Version=v2" -o "$bin/koupa" ./app &&
+		CGO_ENABLED=0 scripts/go build -o "$bin/ingress" ./experiments/ingress/cmd/ingress) >"$EVID/build.log" 2>&1 ||
+		fail_setup "build failed (see build.log)"
+
+	# 3. App: stdout is the Pod log Rush Hour reads (--app-logs layout).
+	mkdir -p "$EVID/app" "$EVID/envoy" "$EVID/cases"
+	local collect_start
+	collect_start=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
+	DATABASE_URL="postgres://koupa:koupa@127.0.0.1:55432/$DB_NAME?sslmode=disable" \
+		POD_UID=$POD_UID POD_NAME=$POD_NAME LISTEN_ADDR=127.0.0.1:$APP_PORT \
+		IDEMPOTENCY_KEY=0 GRACEFUL_SHUTDOWN=1 TEST_HOOKS= TEST_MUTATION= \
+		"$bin/koupa" >"$EVID/app/$POD_UID.log" 2>"$EVID/app-stderr.log" &
+	app_pid=$!
+	wait_http "http://127.0.0.1:$APP_PORT/healthz" 30 || fail_setup "App did not become healthy (see app-stderr.log)"
+
+	# 4. Harness (owns testproxy.HTTP); it writes the proxy address, then
+	# waits for Envoy.
+	"$bin/ingress" --app "http://127.0.0.1:$APP_PORT" --envoy "http://127.0.0.1:$ENVOY_PORT" \
+		--access-log "$EVID/envoy/access.log" --app-logs "$EVID/app" \
+		--pod-uid "$POD_UID" --pod-name "$POD_NAME" --collect-start "$collect_start" \
+		--out "$EVID/cases" --proxy-addr-file "$EVID/proxy.addr" \
+		>"$RESULTS" 2>"$EVID/harness.log" &
+	harness_pid=$!
+	for i in $(seq 1 50); do [ -s "$EVID/proxy.addr" ] && break; sleep 0.2; done
+	[ -s "$EVID/proxy.addr" ] || fail_setup "harness wrote no proxy address (see harness.log)"
+	local proxy_port
+	proxy_port=$(sed 's/.*://' "$EVID/proxy.addr")
+
+	# 5. Envoy. --disable-hot-restart: with --network host the hot-restart
+	# domain socket (base id 0) is shared, so a second Envoy would not start.
+	sed -e "s/__ADMIN_PORT__/$ADMIN_PORT/" -e "s/__LISTEN_PORT__/$ENVOY_PORT/" \
+		-e "s/__PROXY_PORT__/$proxy_port/" "$here/envoy.yaml" >"$EVID/envoy/envoy.yaml"
+	: >"$EVID/envoy/access.log"
+	# podman refuses an existing name, so a successful run means it is ours.
+	podman run -d --name "$ENVOY_NAME" --network host -e ENVOY_UID=0 \
+		-v "$EVID/envoy:/logs:Z" "$ENVOY_IMAGE" \
+		-c /logs/envoy.yaml --disable-hot-restart --file-flush-interval-msec 100 --log-level warn \
+		>/dev/null 2>>"$EVID/setup.log" || fail_setup "podman run envoy failed (see setup.log)"
+	envoy_created=1
+
+	wait "$harness_pid"
+	local code=$?
+	harness_pid=""
+	[ "$code" = 0 ] || echo "FAIL harness - exited $code (see harness.log)" >>"$SUMMARY"
+}
+
+if [ -n "${INGRESS_RESULTS_CMD:-}" ]; then
+	$INGRESS_RESULTS_CMD >"$RESULTS" || echo "FAIL harness - results command exited $?" >>"$SUMMARY"
+else
+	setup_and_run
+fi
+for c in $CASES; do
+	check_case "$c"
+done

@@ -1,0 +1,55 @@
+# golang-migrate runs every migration not yet applied, then exits.
+# The name carries the latest migration number; setup.sh deletes the old Job
+# before creating it again (a Job's pod template is immutable).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: koupa-migrate-000004
+  namespace: koupa
+  labels:
+    app.kubernetes.io/name: koupa-migrate
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: koupa-migrate
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: docker.io/migrate/migrate:v4.18.1@sha256:a7a70ebfa0be59cc9b80e405f08c25e8ab746b1c9555c58fc2369abc2c84acab
+          args: ["-path=/migrations", "-database=$(DATABASE_URL)", "up"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: koupa-db-app
+                  key: uri
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: migrations
+          configMap:
+            name: koupa-migrate-000004

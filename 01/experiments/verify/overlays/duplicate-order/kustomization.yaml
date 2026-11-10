@@ -1,0 +1,22 @@
+# Tool validation only (plan A14 實際注入): the critical-timing overlay
+# "on" (step 5 + TEST_HOOKS, experiment image) plus TEST_MUTATION=duplicate-order=2.
+# Never used for real measurements: preflight.sh refuses TEST_MUTATION.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../critical/overlays/on
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: koupa
+        namespace: koupa
+      spec:
+        template:
+          spec:
+            containers:
+              - name: koupa
+                env:
+                  - name: TEST_MUTATION
+                    value: "duplicate-order=2"

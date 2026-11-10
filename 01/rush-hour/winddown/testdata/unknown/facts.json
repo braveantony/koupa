@@ -1,0 +1,47 @@
+{
+ "run": "r1",
+ "tx_timeout_ms": 60000,
+ "evaluated_at": "2026-11-09T10:02:00Z",
+ "audit": {
+  "cursor": 3,
+  "orders": {
+   "r1-c1": [
+    1
+   ],
+   "r1-c2": [
+    2
+   ],
+   "r1-c3": [
+    3,
+    4
+   ]
+  },
+  "ready": [
+   {
+    "order_id": 1,
+    "ready_seq": 1,
+    "ready_attempt": "r1-k-a1-t1"
+   },
+   {
+    "order_id": 3,
+    "ready_seq": 2,
+    "ready_attempt": "r1-k-a3-t1"
+   },
+   {
+    "order_id": 4,
+    "ready_seq": 3,
+    "ready_attempt": "r1-k-a4-t1"
+   }
+  ]
+ },
+ "caught_up": {
+  "board-1": true,
+  "board-2": false,
+  "board-3": true
+ },
+ "client_in_flight": [
+  "r1-c2"
+ ],
+ "client_cancel_at": "2026-11-09T10:01:10Z",
+ "boards_stopped_at": "2026-11-09T10:01:50Z"
+}

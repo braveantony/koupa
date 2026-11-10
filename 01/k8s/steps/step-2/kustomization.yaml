@@ -1,0 +1,39 @@
+# Step 2: delay SIGTERM with a preStop sleep so endpoint removal can reach
+# the gateway first. 8 s = ceil(candidate 2.127 s) + 5 s buffer: the
+# candidate is the maximum over all valid samples of the latest calibration
+# for this environment (tkha), `measure.sh calibrate` on 2026-11-10 12:52
+# (evidence/calibrate-20261110-125225/), 3 runs, 7 valid samples; L is the
+# Pod's last unambiguous per-attempt ingress selection, upper bounds are
+# model estimates (A11 step 4; no direct endpoint-update evidence). The
+# previous calibration (2026-11-09 22:06, evidence/calibrate-20261109-220635/)
+# gave 1.504 s -> 7 s. Across both, the last ingress selection of any
+# request to a terminating Pod was at most 1.46 s after the delete request.
+# The 5 s buffer is PROVISIONAL. Grace stays at the default 30 s.
+# koupa.dev/prestop-calibrated says where the seconds come from: "true" =
+# a calibration candidate (above); "false" = the teacher's conservative
+# value after a failed calibration (TEACHER.md section 5). measure.sh reads
+# it from the live Deployment and the scorecard shows 「preStop 未經校正」
+# for "false" (unknown when missing). Steps 3-5 inherit it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../step-1
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: koupa
+        namespace: koupa
+      spec:
+        template:
+          metadata:
+            annotations:
+              koupa.dev/prestop-calibrated: "true"
+          spec:
+            containers:
+              - name: koupa
+                lifecycle:
+                  preStop:
+                    sleep:
+                      seconds: 8

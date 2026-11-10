@@ -1,0 +1,67 @@
+{
+ "run": "r1",
+ "tx_timeout_ms": 60000,
+ "evaluated_at": "2026-11-09T10:02:00Z",
+ "audit": {
+  "cursor": 4,
+  "orders": {
+   "r1-c1": [
+    1
+   ],
+   "r1-c2": [
+    2
+   ],
+   "r1-c3": [
+    3,
+    4
+   ]
+  },
+  "ready": [
+   {
+    "order_id": 1,
+    "ready_seq": 1,
+    "ready_attempt": "r1-k-a1-t1"
+   },
+   {
+    "order_id": 2,
+    "ready_seq": 2,
+    "ready_attempt": "r1-k-a2-t1"
+   },
+   {
+    "order_id": 3,
+    "ready_seq": 3,
+    "ready_attempt": "r1-k-a3-t1"
+   },
+   {
+    "order_id": 4,
+    "ready_seq": 4,
+    "ready_attempt": "r1-k-a4-t1"
+   }
+  ]
+ },
+ "caught_up": {
+  "board-1": true,
+  "board-2": true,
+  "board-3": true
+ },
+ "boards_stopped_at": "2026-11-09T10:01:50Z",
+ "timeline": [
+  {
+   "at": "2026-11-09T09:59:59Z",
+   "what": "看板都收到 hello"
+  },
+  {
+   "at": "2026-11-09T10:00:00Z",
+   "what": "開始送單"
+  },
+  {
+   "at": "2026-11-09T10:01:00Z",
+   "what": "停止送新單"
+  }
+ ],
+ "host": {
+  "samples": 60,
+  "max_cpu_pct": 35.5,
+  "min_mem_avail_pct": 60.2
+ }
+}

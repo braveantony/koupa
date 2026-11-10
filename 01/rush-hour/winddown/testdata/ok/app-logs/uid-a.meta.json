@@ -1,0 +1,1 @@
+{"pod_uid": "uid-a", "pod_name": "koupa-a", "complete": true, "exited_at": "2026-11-09T10:00:04Z", "term_start": "2026-11-09T10:00:03Z", "pod_ip": "10.0.0.5", "collect_start": "2026-11-09T09:59:50Z", "collect_end": "2026-11-09T10:00:04.2Z", "stopped_at": "2026-11-09T10:00:10Z"}

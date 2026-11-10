@@ -1,0 +1,57 @@
+# Access log contract with the rush-hour parser: keep these keys exactly.
+# Cilium only accepts telemetry through a GatewayClass parametersRef, and the
+# built-in "cilium" GatewayClass has none, so koupa brings its own class.
+apiVersion: cilium.io/v2alpha1
+kind: CiliumGatewayClassConfig
+metadata:
+  name: koupa-access-log
+  namespace: koupa
+spec:
+  # Cilium's Helm default makes Gateway Services externalTrafficPolicy Local.
+  # Their only endpoint is a placeholder (192.192.192.192) on no node, so no
+  # node is eligible for L2 announcement and the LB IP is unreachable from
+  # the host. Cluster lets every node announce (and Envoy runs on every node).
+  service:
+    externalTrafficPolicy: Cluster
+  telemetry:
+    accessLogs:
+      - format: JSON
+        targets: [HTTP]
+        json:
+          start_time: "%START_TIME%"
+          path: "%REQ(:PATH)%"
+          method: "%REQ(:METHOD)%"
+          status: "%RESPONSE_CODE%"
+          upstream_host: "%UPSTREAM_HOST%"
+          response_flags: "%RESPONSE_FLAGS%"
+          response_code_details: "%RESPONSE_CODE_DETAILS%"
+          upstream_attempts: "%UPSTREAM_REQUEST_ATTEMPT_COUNT%"
+          duration_ms: "%DURATION%"
+          attempt: "%REQ(X-KOUPA-ATTEMPT)%"
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: koupa
+spec:
+  controllerName: io.cilium/gateway-controller
+  parametersRef:
+    group: cilium.io
+    kind: CiliumGatewayClassConfig
+    name: koupa-access-log
+    namespace: koupa
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: koupa
+  namespace: koupa
+spec:
+  gatewayClassName: koupa
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Same

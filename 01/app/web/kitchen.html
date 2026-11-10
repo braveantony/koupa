@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Koupa 酷杯 - 廚房</title>
+<style>body{font-family:system-ui,"Noto Sans TC",sans-serif;max-width:40rem;margin:1rem auto;padding:0 1rem}
+nav a{margin-right:1rem}ul{list-style:none;padding:0}li{padding:.4rem 0;border-bottom:1px solid #ddd}
+li.sold-out{color:#999;background:#f4f4f4}button{padding:.3rem .8rem}.err{color:#b00020}
+#version{float:right;color:#666;font-size:.85rem}#latest{font-size:2rem;margin:1rem 0}</style>
+</head>
+<body data-page="kitchen">
+<header><h1>Koupa 酷杯</h1><small>微糖、去冰、零停機</small>
+<nav><a href="/">點餐</a><a href="/kitchen">廚房</a><a href="/board">看板</a></nav></header>
+<h2>廚房</h2>
+<h3>製作中</h3>
+<ul id="orders"></ul>
+<h3 id="menu-title" hidden>品項供應</h3>
+<ul id="menu"></ul>
+<p id="msg" class="err"></p>
+<script src="/app.js"></script>
+</body>
+</html>

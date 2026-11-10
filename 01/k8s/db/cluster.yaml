@@ -1,0 +1,30 @@
+# Single-instance PostgreSQL 17 managed by CloudNativePG 1.30.1.
+# CNPG generates the secret koupa-db-app (key "uri") that the app and the
+# migration Job read. Image pinned by tag and index digest (env-findings 5.2).
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: koupa-db
+  namespace: koupa
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.11-202611020810-system-trixie@sha256:03a1c6a62b27e8ad31cae5c085131b5ac706b09403d6fcb6c58d16c8daa257cd
+  storage:
+    storageClass: local-path
+    size: 1Gi
+  bootstrap:
+    initdb:
+      database: koupa
+      owner: koupa
+  # Workers only, like the app (tk8s control planes are not tainted), and
+  # on the infra worker that setup.sh labels, so the other workers can be
+  # drained without --delete-emptydir-data (plan A15).
+  affinity:
+    nodeSelector:
+      koupa.dev/infra: "true"
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: node-role.kubernetes.io/control-plane
+                operator: DoesNotExist

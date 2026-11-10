@@ -48,7 +48,7 @@
 - 刻意丟掉 `NOTIFY`（例如暫停 LISTEN 連線）：下一次定時觸發後的那次查詢就查到這個叫號並分派（分別記錄觸發、查詢完成、分派、用戶端收到的時間；後面幾段受查詢耗時和網路影響，不要求在一個週期內）；
 - 分派順序一定依 `ready_seq` 遞增。
 
-## A3. 每條看板連線的交接（設計 4.2、4.7）
+## A3. 每條看板連線的交接（設計 4.2、4.8）
 
 每條連線有一個專屬的 buffered channel 和一個專屬的寫入 goroutine。channel 從登記起就同時扮演「暫存區」和「即時推送管道」，所以從補送切換到即時推送時，不需要另外搬移資料，也就不會有空隙。
 
@@ -62,7 +62,7 @@
 6. 開始讀 channel：`ready_seq` ≤ 已送出編號的跳過，其餘照順序送出；
 7. channel 溢位、寫入失敗，或收到關機通知時，結束連線並取消登記。
 
-開關關閉時，第 2 步一律用目前最大值，斷線期間的叫號就會漏掉，這是步驟 0～2 刻意保留的行為。
+開關關閉時，第 2 步一律用目前最大值，斷線期間的叫號就會漏掉，這是步驟 0～3 刻意保留的行為。
 
 必測案例：
 
@@ -87,7 +87,7 @@
 
 `shutdown` 之前先送 `retry: <毫秒>`。
 
-## A5. Graceful shutdown（設計 4.6）
+## A5. Graceful shutdown（設計 4.7）
 
 - 設定：`preStop` 的 `sleep` 秒數＋`SHUTDOWN_TIMEOUT`＋緩衝（至少 5 秒）＜ `terminationGracePeriodSeconds`。`setup.sh` 或量測前的核對要檢查這個不等式；
 - 收到 SIGTERM：
@@ -103,7 +103,7 @@
 - 有一條看板寫入卡住時，其他看板照樣收到 `shutdown`，程式仍在 `SHUTDOWN_TIMEOUT` 內結束；
 - 有一個故意卡住的請求時，程式在 `SHUTDOWN_TIMEOUT` 後結束，並留下 log。
 
-## A6. 重送不重複下單（設計 4.8）
+## A6. 重送不重複下單（設計 4.9）
 
 **所有寫入交易的共同設定**（下單不論防重複開關、出餐、設定售完都適用）：
 
@@ -123,7 +123,7 @@
 4. 任何一步碰到 `lock_timeout`：先 rollback，再回傳 503；
 5. 碰到 `transaction_timeout`：PostgreSQL 會終止整個 session，原連線不能再 rollback，直接丟棄這條連線。碰到其他連線中斷：依資料庫驅動的規則淘汰這條不能用的連線。兩種情況都依發生時機分成：
    - 還沒送出 `COMMIT`：交易一定沒有提交，回傳 503；
-   - 已經送出 `COMMIT`、還沒收到結果：**提交結果未知**。App 記一筆「提交結果未知」的 log，HTTP 連線還能寫就回傳 503（可以重試）。客人用同一個 `client_ref` 重送時，開關打開就由第 1、3 步查回原本的號碼牌或重新建立；開關關閉時可能產生重複訂單，這正是步驟 4 要展示的情況。
+   - 已經送出 `COMMIT`、還沒收到結果：**提交結果未知**。App 記一筆「提交結果未知」的 log，HTTP 連線還能寫就回傳 503（可以重試）。客人用同一個 `client_ref` 重送時，開關打開就由第 1、3 步查回原本的號碼牌或重新建立；開關關閉時可能產生重複訂單，這正是步驟 5 要展示的情況。
 
 清理：只刪除 `order_id` 有值、`created_at < now() - interval '25 hours'` 的資料。`now()` 是交易開始的時間，所以 `created_at` 會比 key 實際提交的時間早，最多早一個交易的長度；多留 1 小時，就能保證 key 在**提交後**至少保留 24 小時（前提是 `transaction_timeout` 讓整筆交易不超過 1 小時；`statement_timeout`、`idle_in_transaction_session_timeout` 只限制單一陳述式或連續閒置，不能保證這一點）。
 
@@ -144,7 +144,7 @@
 - 判定重複後 key 被清理：重試後正常完成；
 - 開關關閉：完全不碰 `idempotency_keys`，重送會產生重複訂單。
 
-## A7. 鎖的順序（設計 3.2、4.1、4.8）
+## A7. 鎖的順序（設計 3.2、4.1、4.9）
 
 | 路徑 | 取得鎖的順序 |
 |---|---|
@@ -162,7 +162,7 @@
 2. `kubectl rollout status` 等待完成，然後核對：
    - Deployment 的 `observedGeneration` 等於 `generation`；
    - 所有運作中的 Pod 都屬於目前的 ReplicaSet；
-   - 映像檔、環境變數、`preStop`、`terminationGracePeriodSeconds` 都符合 step-N 的 manifest，而且前一步才有的設定已經移除；
+   - 映像檔、環境變數、`preStop`、`readinessProbe`（步驟 1 起才有）、`terminationGracePeriodSeconds` 都符合 step-N 的 manifest，而且其他步驟才有的設定已經移除；
    - 有打開 `GRACEFUL_SHUTDOWN` 時，A5 的時間不等式成立；其他設定只檢查實際啟用的 `preStop` 小於寬限時間；`calibrate` 另依 A11 核對；
    - `TEST_HOOKS` 和 `TEST_MUTATION` 都沒有設定（A12、A14）；
    - 每個 Pod 的啟動 log 顯示 `transaction_timeout` 是 60 秒（A6 的共同設定）；
@@ -177,10 +177,10 @@
 | 模式 | 和 step-N 的差別 |
 |---|---|
 | `control` | 套用步驟 0，第 5 步什麼都不做。必須 0 失敗、0 漏號、0 重複（A13） |
-| `calibrate` | 套用步驟 0，加上很長的 `preStop` 和足夠的寬限時間，另外送探測流量，量入口停止送流量的延遲（A11） |
+| `calibrate` | 套用步驟 0（不加 `readinessProbe`：量的是舊 Pod），加上很長的 `preStop` 和足夠的寬限時間，另外送探測流量，量入口停止送流量的延遲（A11） |
 | `rollback` | 先套用 v2，第 5 步改成 v1 |
 | `drain`、`scale-down` | 第 5 步改成 drain 一個 worker，或把 replica 縮成 2（A15） |
-| `all` | 講師課前驗證用：control、步驟 0～4 交錯執行，重複 5 輪 |
+| `all` | 講師課前驗證用：control、步驟 0～5 交錯執行，重複 5 輪 |
 
 任何一步失敗或逾時，就停止並把這次量測標成無效。收尾階段（A9）的逾時不在此列，依 A9 的規則處理。
 
@@ -267,7 +267,7 @@
 - App 成功寫出 503、Rush Hour 也收到 503：只歸「客人收到錯誤回應」；
 - 刪掉某個 Pod 的部分 log，相關嘗試變成「未知」，不會被誤判成「沒送到 App」。
 
-## A11. 時間線收集與 preStop 校正（設計 5.4、4.5）
+## A11. 時間線收集與 preStop 校正（設計 5.4、4.6）
 
 **收集**：量測期間在主機上同時收集，每一筆都記兩個時間：來源本身的事件時間（有的話），以及收集端收到的時間。
 
@@ -320,8 +320,8 @@
    - 刪除請求之後，這個 Pod 至少命中過一次（否則分不出「入口很快拿掉它」和「根本沒被選到」）；
    - 取得了上界 U，而且 U 早於 `preStop` 結束至少 5 秒（否則 20 秒不夠長，把 `preStop` 和寬限時間一起加長後重新量測）；
    - 探測請求不重用用戶端連線（每次新連線），並記錄這個設定；入口和 Pod 之間的連線重用無法由用戶端控制，取得入口紀錄時再交叉核對；
-6. 重複到至少有 5 個有效樣本。步驟 1 的 `preStop` 秒數取有效樣本中「U − 刪除請求時間」的最大值，再加緩衝（緩衝秒數待實測後訂），寫明這是本環境的候選值，以及上界是直接證據還是模型推估。有效樣本不足 5 個，就不產生候選值；這時步驟 1 改用講師手冊列的保守值，成績單標示「`preStop` 未經校正」。每個樣本的下界、上界、緩衝都保留在證據包；
-7. 之後每次量測都統計「SIGTERM 之後才送到這個 Pod 的請求」（設計 5.3）。步驟 1 以後只要不是 0，就標成「候選值需要調查」：先用入口紀錄和連線資訊確認這些請求是新選的流量、既有連線上的請求，還是紀錄延遲，再決定要不要重新校正。
+6. 重複到至少有 5 個有效樣本。步驟 2 的 `preStop` 秒數取有效樣本中「U − 刪除請求時間」的最大值，再加緩衝（緩衝秒數待實測後訂），寫明這是本環境的候選值，以及上界是直接證據還是模型推估。有效樣本不足 5 個，就不產生候選值；這時步驟 2 改用講師手冊列的保守值，成績單標示「`preStop` 未經校正」。每個樣本的下界、上界、緩衝都保留在證據包；
+7. 之後每次量測都統計「SIGTERM 之後才送到這個 Pod 的請求」（設計 5.3）。步驟 2 以後只要不是 0，就標成「候選值需要調查」：先用入口紀錄和連線資訊確認這些請求是新選的流量、既有連線上的請求，還是紀錄延遲，再決定要不要重新校正。
 
 必測案例：
 
@@ -391,7 +391,7 @@
   對帳結果和 App log 逐筆比對。「注入了幾個」和「最後漏了幾個」分開記錄：注入的叫號如果在重連後被補回，就不算漏號；
 - **協定**：用無頭瀏覽器（例如 Playwright 控制的 Chromium）開看板頁面，和 Rush Hour 的看板同時連線，記錄兩條連線各自連到的 Pod 和起點，在兩者都連著的共同區間內逐筆比較 `ready_seq`，必須一致。`shutdown` 依各連線所在 Pod 的終止事件分別驗證；要逐筆比較 `shutdown`，就讓兩條連線直接連到同一個受測 Pod；另外用 `curl -N` 保存原始 SSE 串流，檢查欄位、空行和事件格式（`hello`、`ready`、`retry:`、`shutdown` 的空 `data:`），結果放進證據包；
 - **和入口的紀錄對帳**：限定同一段時間、`/orders` 路徑、最終回應（不算入口內部的重試），Rush Hour 和 access log 依路徑和嘗試編號逐筆比對；Envoy 統計的計數器是整個 cluster 的，沒有路徑維度，所以用它涵蓋的全部流量比較，另外列出非 `/orders` 的流量、入口自己產生的回應、逾時等無法拆分的差額。差額依「客人端逾時」「入口內部重試」「其他路徑或其他流量」「沒經過入口」分類列出，對不上的部分照實保留（A11 確認入口紀錄的取得方式之後才做）；
-- **另一套工具**：k6 或 vegeta 以相同的速率、逾時和重試設定，對步驟 0 和步驟 2 各量 5 次「送出沒有成功回應」，比較兩套工具看到的增減方向和範圍。兩邊不一致就調查原因；兩邊一致但沒有改善，也照實記錄，並回頭檢討這一步的假設。
+- **另一套工具**：k6 或 vegeta 以相同的速率、逾時和重試設定，對步驟 0 和步驟 3 各量 5 次「送出沒有成功回應」，比較兩套工具看到的增減方向和範圍。兩邊不一致就調查原因；兩邊一致但沒有改善，也照實記錄，並回頭檢討這一步的假設。
 
 ## A15. 其他 Pod 終止的情況（設計 5.7）
 
@@ -407,7 +407,7 @@
 1. 第 5 步執行 `kubectl scale deploy/koupa --replicas=2`；
 2. 量測結束或中途失敗都要恢復成 3，並確認 3 個 Pod 都可用。
 
-兩種都在步驟 4 的設定下量 5 次，比較和升級相同的條件（不漏號、不重複、送出沒有成功回應的張數），數字和升級分開報告。
+兩種都在步驟 5 的設定下量 5 次，比較和升級相同的條件（不漏號、不重複、送出沒有成功回應的張數），數字和升級分開報告。
 
 ---
 
@@ -439,7 +439,7 @@
 - `calibrate`：`preStop` 20 秒、寬限 45 秒、探測每秒 50 次、模型門檻 (1 − p)ᵏ ≤ 0.001、刪除前樣本至少 100 次、顯著水準 0.05、U 至少早於 `preStop` 結束 5 秒、至少 5 個有效樣本。
 - 有未知項目時，成績寫成「已確認 N；另有 M 項未知」，不可以印成單獨的 0。
 - 正式量測時 `TEST_HOOKS`、`TEST_MUTATION` 必須沒有設定。
-- 映像檔：`registry.gitlab.com/kubeantony/koupa:v1`、`:v2`、`registry.gitlab.com/kubeantony/rush-hour:<版本>`；distroless、`linux/amd64`、公開、不用 `latest`。
+- 映像檔：`ghcr.io/braveantony/koupa:v1`、`:v2`、`ghcr.io/braveantony/rush-hour:<版本>`；distroless、`linux/amd64`、公開、不用 `latest`。
 - namespace `koupa`；技術名稱 `koupa`、`rush-hour`。
 - 標頭名稱：`X-Koupa-Attempt`（嘗試編號，Rush Hour 送）、`X-Koupa-Pod-UID`（App 回）。
 
@@ -472,7 +472,7 @@
 │   └── winddown/               收尾流程
 ├── testproxy/                  測試用 TCP 代理（資料庫的提交結果未知、HTTP 延遲）
 ├── migrations/
-├── k8s/{db,migrate,base,steps/step-1..4,idle-lab,calibrate,test-hooks}/
+├── k8s/{db,migrate,base,steps/step-1..5,idle-lab,calibrate,test-hooks}/
 ├── scripts/                    test-db.sh、collect-timeline.sh、check-manifests.sh
 ├── experiments/                A12 關鍵時機、A10 入口代理、A14 交叉檢查
 ├── setup.sh
@@ -768,19 +768,20 @@
 ### Task 14：Manifest 與 setup.sh（3.5、4、6.1）
 
 **檔案：**
-- 建立：`k8s/db/cluster.yaml`、`k8s/migrate/job.yaml`、`k8s/base/{deployment,service,gateway,httproute,namespace,kustomization}.yaml`、`k8s/steps/step-{1,2,3,4}/kustomization.yaml`、`k8s/idle-lab/kustomization.yaml`、`k8s/calibrate/kustomization.yaml`、`k8s/test-hooks/kustomization.yaml`、`setup.sh`、`scripts/check-manifests.sh`
+- 建立：`k8s/db/cluster.yaml`、`k8s/migrate/job.yaml`、`k8s/base/{deployment,service,gateway,httproute,namespace,kustomization}.yaml`、`k8s/steps/step-{1,2,3,4,5}/kustomization.yaml`、`k8s/idle-lab/kustomization.yaml`、`k8s/calibrate/kustomization.yaml`、`k8s/test-hooks/kustomization.yaml`、`setup.sh`、`scripts/check-manifests.sh`
 
 **介面：**
 - base：3 replica、`topologySpreadConstraints`（`kubernetes.io/hostname`、`maxSkew: 1`、`whenUnsatisfiable: DoNotSchedule`）、`POD_UID`／`POD_NAME` 用 downward API、映像檔 `koupa:v1`、預設 rolling update。
-- step-1：`lifecycle.preStop.sleep.seconds`，值先用 TEACHER.md 的保守值，Task 23 校正後更新。
-- step-2：`GRACEFUL_SHUTDOWN=1`、`SHUTDOWN_TIMEOUT`、`terminationGracePeriodSeconds`。
-- step-3：`RESUME_FROM_LAST_ID=1`；step-4：`IDEMPOTENCY_KEY=1`。
-- calibrate：以 base 為準，`preStop` 20 秒、寬限 45 秒。test-hooks：以 step-4 為準，加 `TEST_HOOKS=1` 和 9090 containerPort（不加進 Service）。
+- step-1：`readinessProbe`（`httpGet /healthz` 8080、`periodSeconds: 2`、`timeoutSeconds: 1`、`failureThreshold: 1`、`successThreshold: 1`，不設 `initialDelaySeconds`）。Task 23c 依實測加入（設計 4.5），原本的 step-1～4 依序改成 step-2～5。
+- step-2：`lifecycle.preStop.sleep.seconds`，值先用 TEACHER.md 的保守值，Task 23 校正後更新。
+- step-3：`GRACEFUL_SHUTDOWN=1`、`SHUTDOWN_TIMEOUT`、`terminationGracePeriodSeconds`。
+- step-4：`RESUME_FROM_LAST_ID=1`；step-5：`IDEMPOTENCY_KEY=1`。
+- calibrate：以 base 為準（不加 `readinessProbe`），`preStop` 20 秒、寬限 45 秒。test-hooks：以 step-5 為準，加 `TEST_HOOKS=1` 和 9090 containerPort（不加進 Service）。
 - `scripts/check-manifests.sh <step>`：從 `kubectl kustomize` 的輸出檢查該步應有、不應有的欄位和 A5 不等式。
 
 - [ ] **Step 1：** 寫 `scripts/check-manifests.sh` 的期待表（每一步 × 每個欄位：有／沒有／值），先跑 → FAIL（manifest 還不存在）。
 - [ ] **Step 2：** 寫 manifest。
-- [ ] **Step 3：** `for s in base step-1 step-2 step-3 step-4 calibrate test-hooks; do scripts/check-manifests.sh $s; done` → 全部 PASS。
+- [ ] **Step 3：** `for s in base step-1 step-2 step-3 step-4 step-5 calibrate test-hooks; do scripts/check-manifests.sh $s; done` → 全部 PASS。
 - [ ] **Step 4：** 寫 `setup.sh`（3.5 的三段、重跑時先刪舊 Job、失敗印 log）。在 tk8s 執行兩次，第二次也成功；`curl http://<gateway-ip>/api/whoami` 回傳 Pod UID。
 - [ ] **Step 5：** commit `feat(k8s): base, steps and setup script`。
 
@@ -927,13 +928,13 @@
 - 建立：`measure.sh`、`scripts/preflight.sh`、`scripts/evidence.sh`、`test/measure/*.sh`
 
 **介面：**
-- `measure.sh <mode> [--runs 5] [--duration 60] [--rate 20] [--verbose] [--diagnostic]`，`mode` 為 `step-0`～`step-4`、`control`、`calibrate`、`rollback`、`drain`、`scale-down`、`all`。
+- `measure.sh <mode> [--runs 5] [--duration 60] [--rate 20] [--verbose] [--diagnostic]`，`mode` 為 `step-0`～`step-5`、`control`、`calibrate`、`rollback`、`drain`、`scale-down`、`all`。
 - `scripts/preflight.sh <step>`：A8 第 2 步的六項核對，任一不符印出哪一項並以 1 結束。
 - 一次量測照 A8 第 1～7 步；等 rush-hour 印出 `SENDING_STARTED` 後計時第 10 秒；第 D − 10 秒 rollout 未完成 → 該次無效。
 - `scripts/evidence.sh <run-dir>`：存 manifest（`kubectl kustomize` 輸出和實際 `kubectl get -o yaml`）、版本、映像檔 digest、參數、原始紀錄、`/api/audit` 結果、成績單。
 - A13：`control` 有任何失敗或未知、或步驟 0 的 5 次都沒觀察到問題 → 結束狀態 3，除非 `--diagnostic`（這時每張成績單第一行加「診斷模式：對照組不成立，不可用於比較」）。
 
-- [ ] **Step 1：** 寫失敗的腳本測試（不連叢集，用假的 `kubectl`、`rush-hour` 放在 `PATH` 前面）：`test-preflight-detects-leftover-env.sh`（step-1 卻帶著 `GRACEFUL_SHUTDOWN`）、`test-preflight-rejects-test-hooks.sh`、`test-invalid-when-rollout-late.sh`、`test-control-unknown-fails.sh`（結束狀態 3）、`test-diagnostic-banner.sh`、`test-evidence-layout.sh`。
+- [ ] **Step 1：** 寫失敗的腳本測試（不連叢集，用假的 `kubectl`、`rush-hour` 放在 `PATH` 前面）：`test-preflight-detects-leftover-env.sh`（step-2 卻帶著 `GRACEFUL_SHUTDOWN`；`readinessProbe` 和 overlay 不一致）、`test-preflight-rejects-test-hooks.sh`、`test-invalid-when-rollout-late.sh`、`test-control-unknown-fails.sh`（結束狀態 3）、`test-diagnostic-banner.sh`、`test-evidence-layout.sh`。
 - [ ] **Step 2：** `for t in test/measure/test-*.sh; do bash $t; done` → FAIL。
 - [ ] **Step 3：** 實作。
 - [ ] **Step 4：** → PASS。在 tk8s 跑 `measure.sh control --runs 1` 和 `measure.sh step-0 --runs 1`，證據包齊全。
@@ -950,13 +951,13 @@
 - `rollback`：先套 v2，第 5 步改 v1。
 - `drain`：A15 的目標檢查（有 koupa Pod、沒有資料庫 Pod、沒有 `emptyDir` 重要資料）→ `kubectl drain --ignore-daemonsets`（不加 `--delete-emptydir-data`）→ uncordon → 重新平衡並核對分布。
 - `scale-down`：縮成 2，結束後恢復 3 並確認可用。
-- `all`：control、step-0～4 交錯 5 輪。
+- `all`：control、step-0～5 交錯 5 輪。
 - `trap` 處理 `EXIT`、`INT`、`TERM`：uncordon、恢復 replica、`collect-timeline.sh stop`。
 
-- [ ] **Step 1：** 寫失敗的腳本測試：`test-measure-trap.sh`（假 `kubectl` 記錄呼叫，在 drain 之後送 SIGINT，斷言之後呼叫過 `uncordon` 和 `collect-timeline.sh stop`）、`test-drain-target.sh`（目標上有資料庫 Pod → 換一個 worker；全部都不符合 → 停止）、`test-all-interleaves.sh`（呼叫順序是 control、0、1、2、3、4 重複 5 次）。
+- [ ] **Step 1：** 寫失敗的腳本測試：`test-measure-trap.sh`（假 `kubectl` 記錄呼叫，在 drain 之後送 SIGINT，斷言之後呼叫過 `uncordon` 和 `collect-timeline.sh stop`）、`test-drain-target.sh`（目標上有資料庫 Pod → 換一個 worker；全部都不符合 → 停止）、`test-all-interleaves.sh`（呼叫順序是 control、0、1、2、3、4、5 重複 5 次）。
 - [ ] **Step 2：** 執行 → FAIL。
 - [ ] **Step 3：** 實作。
-- [ ] **Step 4：** → PASS。在 tk8s 跑 `measure.sh calibrate`，把候選值和是否「未經校正」更新到 `k8s/steps/step-1` 和 TEACHER.md。
+- [ ] **Step 4：** → PASS。在 tk8s 跑 `measure.sh calibrate`，把候選值和是否「未經校正」更新到 `k8s/steps/step-2`（當時編號 step-1）和 TEACHER.md。
 - [ ] **Step 5：** commit `feat(measure): calibrate, rollback, drain, scale-down, all`。
 
 ---
@@ -1006,7 +1007,7 @@ Task 1 結論是「入口重試可以關掉」時，這個任務仍然要做（�
 - [ ] **Step 1：** `mutation.sh`：分別用 `TEST_MUTATION=drop-ready=3` 和 `duplicate-order=2` 部署（`k8s/test-hooks` 改這個環境變數），跑一次量測，比對 App log 的注入紀錄和成績單：注入的漏號如果被補回就不算，`duplicate-order` 的重複訂單數必須等於 2。期待寫好後先跑 → FAIL（環境變數未接上時）。
 - [ ] **Step 2：** `browser.spec.ts`：Playwright 開看板頁，和 Rush Hour 看板同時連線；在共同區間逐筆比對 `ready_seq`；直接連同一個 Pod 時比對 `shutdown`。`curl-stream.sh`：`curl -N` 存原始串流，檢查欄位格式。
 - [ ] **Step 3：** `ingress-reconcile.go`：依 A14「和入口的紀錄對帳」的範圍和差額分類輸出表格（Task 1 結論是做不到時，輸出「入口紀錄取不到」並結束）。
-- [ ] **Step 4：** `compare-tools.sh`：k6 以相同速率、逾時、重試 1 次，對步驟 0 和步驟 2 各量 5 次，和 Rush Hour 的「送出沒有成功回應」並排印出方向和範圍。
+- [ ] **Step 4：** `compare-tools.sh`：k6 以相同速率、逾時、重試 1 次，對步驟 0 和步驟 3 各量 5 次，和 Rush Hour 的「送出沒有成功回應」並排印出方向和範圍。
 - [ ] **Step 5：** 全部執行，結果存進 `evidence/verify-<時間>/`。
 - [ ] **Step 6：** commit `test(verify): mutation, protocol and tool cross-checks`。
 
@@ -1020,7 +1021,7 @@ Task 1 結論是「入口重試可以關掉」時，這個任務仍然要做（�
 - 建立：`README.md`、`TEACHER.md`、`docs/measurements/<日期>.md`
 - 修改：`docs/design-v2/06-reference.md`（6.4 每一項填上結果或維持待實測）、`docs/design-v2/04-step-mechanisms.md`（實測推翻的步驟照實改）
 
-- [ ] **Step 1：** 先做兩個實測小實驗：閒置斷線小實驗（套用 `k8s/idle-lab`，記錄切斷時間和 Envoy 逾時種類，決定心跳間隔或改調 HTTPRoute，依 4.3）；readinessProbe（步驟 0 量測中有沒有「新 Pod 還沒準備好就接收流量」造成的失敗，依 4.9 決定要不要加進步驟）。
+- [ ] **Step 1：** 先做兩個實測小實驗：閒置斷線小實驗（套用 `k8s/idle-lab`，記錄切斷時間和 Envoy 逾時種類，決定心跳間隔或改調 HTTPRoute，依 4.3）；readinessProbe（步驟 0 量測中有沒有「新 Pod 還沒準備好就接收流量」造成的失敗，依 4.5 決定要不要加進步驟；Task 23c 已依 tkha 的實測加成步驟 1）。
 - [ ] **Step 2：** 講師跑完 6.5「程式或環境改版後」整列：自動化測試、`calibrate`、`measure.sh all`、Task 24～26、drain 和 scale-down。全部結果和證據包路徑寫進 `docs/measurements/<日期>.md`。
 - [ ] **Step 3：** 寫 README.md（6.3 列的內容；範例數字用 Step 2 的實測值，標明環境和次數）和 TEACHER.md（原理、閒置斷線小實驗結論、保守 `preStop` 值、口頭補充、驗證工作表和預估時間）。
 - [ ] **Step 4：** 用 docs-review skill 審閱 README.md 和 TEACHER.md。
