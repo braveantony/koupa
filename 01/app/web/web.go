@@ -1,5 +1,6 @@
-// Package web embeds the three pages (order, kitchen, board) and their
-// shared script. No build step, no framework, no external assets.
+// Package web embeds the three pages (order, kitchen, board), their shared
+// script and stylesheet, and the drink photos. No build step, no framework,
+// no external assets.
 package web
 
 import (
@@ -7,7 +8,7 @@ import (
 	"io/fs"
 )
 
-//go:embed *.html app.js
+//go:embed *.html app.js app.css img/*.webp
 var files embed.FS
 
 // Pages returns the embedded files at the root of the FS.

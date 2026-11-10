@@ -6,30 +6,40 @@ const NUMBER = /\b\d{4}\b/;
 
 async function placeOrder(page: Page): Promise<string> {
   await page.goto('/');
-  await page.locator('#menu li[data-name="滾動珍珠奶茶"] input').fill('2');
+  const plus = page.locator('#menu li[data-name="波霸奶茶"] button.inc');
+  await plus.click();
+  await plus.click();
   await expect(page.locator('#total')).toHaveText('130');
+  await expect(page.locator('#cups')).toHaveText('2');
   await page.locator('#submit').click();
   const result = page.locator('#result');
-  await expect(result).toContainText(NUMBER);
-  return (await result.innerText()).match(NUMBER)![0];
+  await expect(result).toBeVisible();
+  await expect(result).toContainText('波霸奶茶 × 2');
+  await expect(result).toContainText('做好會在店內的叫號螢幕叫號');
+  const ticket = page.locator('#ticket');
+  await expect(ticket).toHaveText(NUMBER);
+  return (await ticket.innerText()).match(NUMBER)![0];
 }
 
 test('order, kitchen done, board calls the number', async ({ browser, page }) => {
   const board = await browser.newPage();
-  await board.goto('/board');
+  await board.goto('/board?debug=1');
   await expect(board.locator('#version')).toContainText('服務版本：v');
 
   const number = await placeOrder(page);
+  await expect(board.locator(`#making li[data-number="${number}"]`)).toBeVisible();
 
   const kitchen = await browser.newPage();
   await kitchen.goto('/kitchen');
   const row = kitchen.locator(`#orders li[data-number="${number}"]`);
   await expect(row).toBeVisible();
-  await expect(row).toContainText('滾動珍珠奶茶 x2');
+  await expect(row).toContainText('波霸奶茶 × 2');
   await row.getByRole('button', { name: '完成' }).click();
   await expect(row).toHaveCount(0);
 
   await expect(board.locator('#latest')).toContainText(`請 ${number} 號取餐 🧋`);
+  await expect(board.locator('#latest .big')).toHaveText(number);
+  await expect(board.locator(`#making li[data-number="${number}"]`)).toHaveCount(0);
 });
 
 test('order page retries once with the same client_ref and body', async ({ page }) => {
@@ -45,9 +55,9 @@ test('order page retries once with the same client_ref and body', async ({ page 
     return route.continue();
   });
   await page.goto('/');
-  await page.locator('#menu li[data-name="容器冬瓜茶"] input').fill('1');
+  await page.locator('#menu li[data-name="冬瓜檸檬"] button.inc').click();
   await page.locator('#submit').click();
-  await expect(page.locator('#result')).toContainText(NUMBER);
+  await expect(page.locator('#ticket')).toHaveText(NUMBER);
   expect(bodies).toHaveLength(2);
   expect(bodies[1]).toBe(bodies[0]);
   expect(JSON.parse(bodies[0]).client_ref).toMatch(/^[0-9a-f-]{36}$/);
@@ -55,18 +65,38 @@ test('order page retries once with the same client_ref and body', async ({ page 
 
 test('v2: sold-out item is disabled on the order page', async ({ page, request }) => {
   const menu = await (await request.get('/api/menu')).json();
-  const tea = menu.find((m: any) => m.name === 'Pod 沫紅茶');
+  const tea = menu.find((m: any) => m.name === '晚霞紅茶');
   const kitchen = await page.context().newPage();
   await kitchen.goto('/kitchen');
   const toggle = kitchen.locator(`#menu li[data-id="${tea.id}"] button`);
   await toggle.click();
   try {
     await page.goto('/');
-    await expect(page.locator(`#menu li[data-id="${tea.id}"] input`)).toBeDisabled();
-    await expect(page.locator(`#menu li[data-id="${tea.id}"]`)).toHaveClass(/sold-out/);
+    const card = page.locator(`#menu li[data-id="${tea.id}"]`);
+    await expect(card.locator('button.inc')).toBeDisabled();
+    await expect(card.locator('button.dec')).toBeDisabled();
+    await expect(card).toHaveClass(/sold-out/);
+    await expect(card).toContainText('今日售完');
   } finally {
     await request.post(`/api/menu/${tea.id}/available`, { data: { available: true } });
   }
+});
+
+test('order page shows a photo per drink; debug info only with ?debug=1', async ({ page }) => {
+  await page.goto('/');
+  const cards = page.locator('#menu li');
+  await expect(cards).toHaveCount(4);
+  for (const name of ['波霸奶茶', '晚霞紅茶', '綠茶三劍客', '冬瓜檸檬']) {
+    const img = page.locator(`#menu li[data-name="${name}"] img`);
+    await expect(img).toHaveAttribute('alt', name);
+    await img.scrollIntoViewIfNeeded();
+    await expect.poll(() => img.evaluate((e: HTMLImageElement) => e.complete && e.naturalWidth)).toBe(800);
+  }
+  await expect(page.locator('#debug')).toBeHidden();
+  await page.goto('/?debug=1');
+  await expect(page.locator('#debug')).toBeVisible();
+  await expect(page.locator('#version')).toContainText('服務版本：v');
+  await expect(page.locator('#pod')).toContainText('Pod：');
 });
 
 function freePort(): Promise<number> {
@@ -117,7 +147,7 @@ test('board EventSource fires shutdown when the app gets SIGTERM', async ({ page
         { timeout: 15_000 },
       )
       .toBe(uid);
-    await page.goto(`${base}/board`);
+    await page.goto(`${base}/board?debug=1`);
     await expect(page.locator('#version')).toContainText('服務版本：v');
     app.kill('SIGTERM');
     await expect
