@@ -1,5 +1,5 @@
 # Critical-timing experiments (plan A12) timing 5: every mechanism on (step
-# 4 plus TEST_HOOKS), and in test mode a 64 KiB SSE comment line every
+# 5 plus TEST_HOOKS), and in test mode a 64 KiB SSE comment line every
 # 10 ms (TEST_SSE_FILLER_BYTES, SSE_HEARTBEAT) so a board that stops
 # reading fills the socket buffers within moments. Never used for real
 # measurements.

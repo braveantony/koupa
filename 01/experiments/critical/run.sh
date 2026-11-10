@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run every critical-timing experiment (plan A12, design 5.5, A10's pause
-# point must-tests) on the live cluster, then restore step 4 (image v1, no
+# point must-tests) on the live cluster, then restore step 5 (image v1, no
 # TEST_HOOKS, no experiment pull secret or test Pods). Evidence:
 # evidence/critical-<ts>/<experiment>/<setting>/. Exits non-zero when any
 # experiment FAILs or the restore fails. Interrupted (INT/TERM) or not, the
@@ -14,7 +14,7 @@
 #
 # Test seams (experiments/critical/test): CRIT_EXP_DIR (where NN-*.sh are,
 # default this directory) and CRIT_RESTORE (command run instead of the
-# step-4 restore).
+# step-5 restore).
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 stage=$(cd "$here/../.." && pwd)
@@ -40,12 +40,12 @@ parent_cleanup() {
 		echo "FAIL interrupted $(basename "${cur:-?}")" >>"$CRIT_SUMMARY"
 		rc=1
 	fi
-	# Restore once (lib.sh's restore_step4: step 4, v1, no TEST_HOOKS, test
+	# Restore once (lib.sh's restore_step5: step 5, v1, no TEST_HOOKS, test
 	# Pods and the pull secret deleted).
 	if [ -n "${CRIT_RESTORE:-}" ]; then
 		restore_ok() { $CRIT_RESTORE; }
 	else
-		restore_ok() { (CRIT_NO_RESTORE=1 && . "$here/lib.sh" && restore_step4); }
+		restore_ok() { (CRIT_NO_RESTORE=1 && . "$here/lib.sh" && restore_step5); }
 	fi
 	if ! restore_ok 2>>"$CRIT_EVIDENCE/run.log"; then
 		echo "FAIL restore" >>"$CRIT_SUMMARY"

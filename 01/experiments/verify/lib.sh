@@ -1,6 +1,6 @@
 # Shared helpers of the measurement-tool checks (plan A14, design 5.6).
 # Sourced by mutation.sh, protocol.sh and compare-tools.sh; builds on the
-# critical-timing helpers (deploy, pull secret, restore to step 4 at exit).
+# critical-timing helpers (deploy, pull secret, restore to step 5 at exit).
 #
 # Environment:
 #   VERIFY_EVIDENCE  evidence root (default evidence/verify-<ts>)
@@ -8,7 +8,7 @@
 #                    $VERIFY_EVIDENCE/summary.txt)
 #   VERIFY_SKIP_DEPLOY 1 = use the cluster as it is (to show the checks
 #                    failing while the setting under test is not applied)
-#   CRIT_NO_RESTORE  1 = do not restore step 4 at exit
+#   CRIT_NO_RESTORE  1 = do not restore step 5 at exit
 
 verify_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 VERIFY_EVIDENCE=${VERIFY_EVIDENCE:-$(cd "$verify_dir/../.." && pwd)/evidence/verify-$(date -u +%Y%m%dT%H%M%SZ)}

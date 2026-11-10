@@ -1,5 +1,5 @@
 # Tool validation only (plan A14 實際注入): the critical-timing overlay
-# "on" (step 4 + TEST_HOOKS, experiment image) plus TEST_MUTATION=drop-ready=3.
+# "on" (step 5 + TEST_HOOKS, experiment image) plus TEST_MUTATION=drop-ready=3.
 # Never used for real measurements: preflight.sh refuses TEST_MUTATION.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization

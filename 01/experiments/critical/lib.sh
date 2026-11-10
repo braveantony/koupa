@@ -51,7 +51,7 @@ crit_cleanup() {
 	for p in "${BG_PIDS[@]}"; do kill "$p" 2>/dev/null || true; done
 	wait 2>/dev/null
 	if [ "${CRIT_NO_RESTORE:-0}" != 1 ]; then
-		restore_step4 || rc=1
+		restore_step5 || rc=1
 	fi
 	exit "$rc"
 }
@@ -146,13 +146,13 @@ deploy() {
 	echo "$name $CRIT_APP_IMAGE" >"$mark"
 }
 
-# restore_step4: what measure.sh applies for step 4 (image v1), and no
+# restore_step5: what measure.sh applies for step 5 (image v1), and no
 # TEST_HOOKS anywhere in the Deployment or its Pods.
-restore_step4() {
-	log "restoring step-4 (image $V1_IMAGE, no TEST_HOOKS)"
+restore_step5() {
+	log "restoring step-5 (image $V1_IMAGE, no TEST_HOOKS)"
 	mkdir -p "$CRIT_EVIDENCE"
 	rm -f "$CRIT_EVIDENCE/.deployed"
-	apply_overlay "$stage/k8s/steps/step-4" "$V1_IMAGE" "$CRIT_EVIDENCE/restore-manifest.yaml" || { log "restore failed"; return 1; }
+	apply_overlay "$stage/k8s/steps/step-5" "$V1_IMAGE" "$CRIT_EVIDENCE/restore-manifest.yaml" || { log "restore failed"; return 1; }
 	if kubectl -n "$NS" get deploy koupa -o json | grep -c 'TEST_HOOKS\|TEST_MUTATION\|TEST_SSE\|ghcr-experiments\|koupa-experiments' >/dev/null ||
 		kubectl -n "$NS" get pods -l "$APP_SELECTOR" -o json | grep -c 'TEST_HOOKS\|TEST_MUTATION\|TEST_SSE' >/dev/null; then
 		log "restore: test settings still present"
@@ -160,7 +160,7 @@ restore_step4() {
 	fi
 	timeout 60 kubectl -n "$NS" delete pod -l "$TEST_POD_SELECTOR" --ignore-not-found --wait=false >&2 || return 1
 	pull_secret_down || return 1
-	log "restored: step-4, $V1_IMAGE, no test settings, no test Pods, no $PULL_SECRET secret"
+	log "restored: step-5, $V1_IMAGE, no test settings, no test Pods, no $PULL_SECRET secret"
 }
 
 # ------------------------------------------------------------ pull secret

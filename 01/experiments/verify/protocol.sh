@@ -9,7 +9,7 @@
 # Phase gateway: Chromium (Playwright, pinned container) opens
 #   http://<gateway>/board, curl -N reads /events, `rush-hour run` (60 s,
 #   20/s, 3 boards) through the Gateway; at second 10 the image is set to v2
-#   (step 4 settings: graceful shutdown, resume), so every Pod terminates.
+#   (step 5 settings: graceful shutdown, resume), so every Pod terminates.
 #   Checks: for every pair of connections (browser vs each Rush Hour board,
 #   browser vs curl), over the interval both were connected — from the
 #   later hello start to the earlier last received ready_seq — the same
@@ -24,7 +24,7 @@
 #   curl's raw stream passes curl-stream.sh check --expect-shutdown.
 #
 # Evidence: $VERIFY_EVIDENCE/protocol/{gateway,same-pod}/. At exit the
-# Deployment is restored to step 4 (v1).
+# Deployment is restored to step 5 (v1).
 set -uo pipefail
 # shellcheck source=lib.sh
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
@@ -113,7 +113,7 @@ phase_gateway() {
 	local at=$((T0 + 10000000000)) d
 	d=$(((at - $(date +%s%N)) / 1000000))
 	[ "$d" -gt 0 ] && sleep "$(awk -v d="$d" 'BEGIN{printf "%.3f", d/1000}')"
-	log "second 10: set image $V2_IMAGE (step 4 settings)"
+	log "second 10: set image $V2_IMAGE (step 5 settings)"
 	date -u +%Y-%m-%dT%H:%M:%S.%NZ >"$dir/change-at.txt"
 	kubectl -n "$NS" set image deploy/koupa "koupa=$V2_IMAGE" >&2 || orch_fail "$dir" "set image failed"
 	local deadline=$(($(date +%s) + 120))
@@ -363,8 +363,8 @@ build_rush_hour || { log "cannot build rush-hour"; exit 1; }
 root=$VERIFY_EVIDENCE/protocol
 mkdir -p "$root"
 podman image inspect --format '{{.Id}} {{index .RepoDigests 0}}' "$PW_IMAGE" >"$root/playwright-image.txt" 2>&1
-# Start from step 4 (v1) without test settings.
-restore_step4 || { log "cannot restore step 4 before the run"; exit 1; }
+# Start from step 5 (v1) without test settings.
+restore_step5 || { log "cannot restore step 5 before the run"; exit 1; }
 phase_gateway
 phase_same_pod
 stop_bg

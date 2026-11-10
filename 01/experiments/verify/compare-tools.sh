@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Second load tool (plan A14 「另一套工具」, design 5.6): k6 against Rush Hour,
-# step 0 and step 2, side by side.
+# step 0 and step 3, side by side.
 #
 #   experiments/verify/compare-tools.sh [--runs 5]          measure, then compare
 #   experiments/verify/compare-tools.sh compare DIR         only the comparison
@@ -10,8 +10,8 @@
 # counts; 1 otherwise: the comparison is incomplete, or investigate (A14).
 #
 # Each round, in this order: measure.sh step-0 --runs 1 (Rush Hour, the real
-# measurement with its evidence pack), k6 step 0, measure.sh step-2 --runs 1,
-# k6 step 2. Interleaving keeps both tools on the same cluster state.
+# measurement with its evidence pack), k6 step 0, measure.sh step-3 --runs 1,
+# k6 step 3. Interleaving keeps both tools on the same cluster state.
 #
 # A k6 run repeats measure.sh's orchestration for one run (A8 steps 1, 2, 5):
 # render the step's overlay with image v1, apply, wait for the rollout and
@@ -24,9 +24,9 @@
 # kitchen: only the orders are compared.
 #
 # Compared per run and as median / range: 第一次送出沒有成功回應 and
-# 重試後仍沒有成功回應, and the direction from step 0 to step 2 for each tool.
+# 重試後仍沒有成功回應, and the direction from step 0 to step 3 for each tool.
 # Output: $VERIFY_EVIDENCE/tools/{rush-hour/,k6/,compare.txt,compare.json}.
-# At exit the Deployment is restored to step 4 (v1).
+# At exit the Deployment is restored to step 5 (v1).
 set -uo pipefail
 # shellcheck source=lib.sh
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
@@ -56,7 +56,7 @@ now_ms() { echo $(($(date +%s%N) / 1000000)); }
 overlay_of() {
 	case $1 in
 	step-0) echo "$stage/k8s/base" ;;
-	step-[1-4]) echo "$stage/k8s/steps/$1" ;;
+	step-[1-5]) echo "$stage/k8s/steps/$1" ;;
 	*) return 1 ;;
 	esac
 }
@@ -234,7 +234,7 @@ for r in rows:
 P("")
 summary = {}
 for tool in ("rush-hour", "k6"):
-    for step in ("step-0", "step-2"):
+    for step in ("step-0", "step-3"):
         v = [r for r in rows if r["tool"] == tool and r["step"] == step and r["valid"]]
         s = {"n": len(v)}
         for key in ("first", "after"):
@@ -252,7 +252,7 @@ for (tool, step), s in summary.items():
 P("")
 P("第一次送出沒有成功回應，依客人端看到的結果（中位數，範圍）：")
 for tool in ("rush-hour", "k6"):
-    for step in ("step-0", "step-2"):
+    for step in ("step-0", "step-3"):
         v = [r["first_kinds"] or {} for r in rows if r["tool"] == tool and r["step"] == step and r["valid"]]
         parts = []
         for key, label in (("5xx", "入口回 5xx"), ("no_response", "沒有回應（逾時／斷線）")):
@@ -267,7 +267,7 @@ def direction(a, b):
     return "減少" if b < a else "增加" if b > a else "持平"
 dirs = {}
 for key, label in (("first", "第一次送出沒有成功回應"), ("after", "重試後仍沒有成功回應")):
-    d = {t: direction(summary[(t, "step-0")][key]["median"], summary[(t, "step-2")][key]["median"]) for t in ("rush-hour", "k6")}
+    d = {t: direction(summary[(t, "step-0")][key]["median"], summary[(t, "step-3")][key]["median"]) for t in ("rush-hour", "k6")}
     dirs[key] = d
     if "無法判斷" in d.values():
         verdict = "無法比較（缺有效資料）"
@@ -277,8 +277,8 @@ for key, label in (("first", "第一次送出沒有成功回應"), ("after", "�
     else:
         verdict = "方向不一致，要調查"
         BAD.append(label)
-    P("%s：步驟 0 → 步驟 2，Rush Hour %s、k6 %s → %s" % (label, d["rush-hour"], d["k6"], verdict))
-    for step in ("step-0", "step-2"):
+    P("%s：步驟 0 → 步驟 3，Rush Hour %s、k6 %s → %s" % (label, d["rush-hour"], d["k6"], verdict))
+    for step in ("step-0", "step-3"):
         a, b = summary[("rush-hour", step)][key], summary[("k6", step)][key]
         if a["median"] is None or b["median"] is None:
             continue
@@ -308,7 +308,7 @@ runs=5
 mkdir -p "$root/rush-hour" "$root/k6"
 echo "runs=$runs started=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$root/plan.txt"
 for n in $(seq 1 "$runs"); do
-	for step in step-0 step-2; do
+	for step in step-0 step-3; do
 		log "round $n/$runs: measure.sh $step --runs 1 (Rush Hour)"
 		MEASURE_EVIDENCE_DIR=$root/rush-hour timeout 1200 "$stage/measure.sh" "$step" --runs 1 >"$root/rush-hour/measure-$step-r$n.log" 2>&1
 		log "measure.sh $step exited $?"

@@ -4,7 +4,7 @@
 #   experiments/verify/mutation.sh [drop-ready] [duplicate-order]   (default: both)
 #   experiments/verify/mutation.sh check SETTING DIR   re-evaluate saved evidence
 #
-# For each setting: deploy experiments/verify/overlays/<setting> (step 4 +
+# For each setting: deploy experiments/verify/overlays/<setting> (step 5 +
 # TEST_HOOKS + TEST_MUTATION, experiment image), run one measurement and
 # compare the App log's injection records with the scorecard:
 #
@@ -36,7 +36,7 @@
 #
 # VERIFY_SKIP_DEPLOY=1 runs the checks against the cluster as it is (no
 # TEST_MUTATION): they must FAIL. At exit the Deployment is restored to
-# step 4 (v1, no TEST_*, no pull secret).
+# step 5 (v1, no TEST_*, no pull secret).
 set -uo pipefail
 # shellcheck source=lib.sh
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"

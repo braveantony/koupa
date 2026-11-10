@@ -16,7 +16,7 @@ make() {
 	python3 -I - "$d" "$bad" <<'PY'
 import json, os, sys
 d, bad = sys.argv[1], sys.argv[2]
-for step, first in (("step-0", 40), ("step-2", 10)):
+for step, first in (("step-0", 40), ("step-3", 10)):
     for n in range(1, 6):
         rd = os.path.join(d, "rush-hour", "%s-20261109-0000%02d-r1-ab%02d" % (step, n, n))
         os.makedirs(rd)
@@ -28,7 +28,7 @@ for step, first in (("step-0", 40), ("step-2", 10)):
         res = {"orders": 1200, "first_try_failed": first + n, "failed_after_retry": n, "dropped_iterations": 0}
         if bad and not bad.startswith("rh:") and step == "step-0" and n == 3:
             res = json.loads(bad)
-        if bad.startswith("rh:") and step == "step-2" and n == 2:
+        if bad.startswith("rh:") and step == "step-3" and n == 2:
             sc = json.load(open(os.path.join(rd, "scorecard.json")))
             del sc["items"][bad[3:]]
             json.dump(sc, open(os.path.join(rd, "scorecard.json"), "w"))
@@ -56,5 +56,5 @@ case_ complete 0 "每個工具、每個步驟都有 5 次有效量測"
 case_ missing-field 1 "k6 step-0：有效 4 次，不足 5 次" '{"orders": 1200, "failed_after_retry": 3, "dropped_iterations": 0}'
 case_ non-numeric 1 "k6 step-0：有效 4 次，不足 5 次" '{"orders": 1200, "first_try_failed": "x", "failed_after_retry": 3, "dropped_iterations": 0}'
 case_ null-field 1 "k6 step-0：有效 4 次，不足 5 次" '{"orders": 1200, "first_try_failed": 43, "failed_after_retry": null, "dropped_iterations": 0}'
-case_ rush-hour-missing 1 "rush-hour step-2：有效 4 次，不足 5 次" "rh:failed_after_retry"
+case_ rush-hour-missing 1 "rush-hour step-3：有效 4 次，不足 5 次" "rh:failed_after_retry"
 exit $fail
