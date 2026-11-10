@@ -4,7 +4,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: koupa-migrate-000004
+  name: koupa-migrate-000005
   namespace: koupa
   labels:
     app.kubernetes.io/name: koupa-migrate
@@ -52,4 +52,4 @@ spec:
       volumes:
         - name: migrations
           configMap:
-            name: koupa-migrate-000004
+            name: koupa-migrate-000005

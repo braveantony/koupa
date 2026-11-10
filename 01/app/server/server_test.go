@@ -425,7 +425,7 @@ func TestPendingOrders(t *testing.T) {
 	if len(full) == 2 && (full[0].ClientRef != "p-1" || full[1].ClientRef != "p-2") {
 		t.Errorf("pending client_ref = %q, %q; want p-1, p-2", full[0].ClientRef, full[1].ClientRef)
 	}
-	if len(full) != 2 || len(full[1].Items) != 1 || full[1].Items[0].Name != "容器冬瓜茶" || full[1].Items[0].Quantity != 2 {
+	if len(full) != 2 || len(full[1].Items) != 1 || full[1].Items[0].Name != "冬瓜檸檬" || full[1].Items[0].Quantity != 2 {
 		t.Errorf("pending items = %+v", full)
 	}
 }
