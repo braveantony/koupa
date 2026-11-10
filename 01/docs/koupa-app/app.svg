@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1580" height="980" viewBox="0 0 1580 980" role="img" aria-labelledby="title desc" font-family="Noto Sans TC, PingFang TC, Microsoft JhengHei, WenQuanYi Zen Hei, sans-serif">
+<title id="title">Koupa 酷杯 App（不含 Kubernetes）</title>
+<desc id="desc">點餐頁與廚房頁以短連線呼叫 Go App；App 透過 SSE 推送叫號看板，並以 SQL 與 PostgreSQL 溝通。</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#52657b"/></marker></defs>
+<rect width="1580" height="980" fill="white"/>
+<text x="32" y="49" font-size="26" fill="#26364a" text-anchor="start" font-weight="700">Koupa 酷杯 App（不含 Kubernetes）</text>
+<rect x="30" y="140" width="460" height="155" rx="12" fill="#f0edf8" stroke="#9baabd" stroke-width="1.5"/>
+<text x="44" y="164" font-size="15" fill="#26364a" text-anchor="start">瀏覽器頁面</text>
+<text x="44" y="195" font-size="20" fill="#26364a" text-anchor="start" font-weight="700">點餐頁  /</text>
+<text x="44" y="225" font-size="16" fill="#26364a" text-anchor="start">選飲料、送出訂單</text>
+<text x="44" y="252" font-size="16" fill="#26364a" text-anchor="start">POST /orders</text>
+<text x="44" y="279" font-size="16" fill="#26364a" text-anchor="start">回應：號碼牌</text>
+<rect x="30" y="340" width="460" height="255" rx="12" fill="#f0edf8" stroke="#9baabd" stroke-width="1.5"/>
+<text x="44" y="364" font-size="15" fill="#26364a" text-anchor="start">瀏覽器頁面</text>
+<text x="44" y="395" font-size="20" fill="#26364a" text-anchor="start" font-weight="700">廚房頁  /kitchen</text>
+<text x="44" y="425" font-size="16" fill="#26364a" text-anchor="start">每 2 秒更新「製作中」的訂單：</text>
+<text x="44" y="452" font-size="16" fill="#26364a" text-anchor="start">GET /api/orders</text>
+<text x="44" y="479" font-size="16" fill="#26364a" text-anchor="start">按「完成」：POST /orders/{id}/ready</text>
+<text x="44" y="506" font-size="16" fill="#26364a" text-anchor="start">v2 才有「售完」切換：</text>
+<text x="44" y="533" font-size="16" fill="#26364a" text-anchor="start">POST /api/menu/{id}/available</text>
+<rect x="30" y="640" width="460" height="165" rx="12" fill="#f0edf8" stroke="#9baabd" stroke-width="1.5"/>
+<text x="44" y="664" font-size="15" fill="#26364a" text-anchor="start">瀏覽器頁面</text>
+<text x="44" y="695" font-size="20" fill="#26364a" text-anchor="start" font-weight="700">叫號看板  /board</text>
+<text x="44" y="725" font-size="16" fill="#26364a" text-anchor="start">GET /events（SSE 長連線）</text>
+<text x="44" y="752" font-size="16" fill="#26364a" text-anchor="start">伺服器持續推送：</text>
+<text x="44" y="779" font-size="16" fill="#26364a" text-anchor="start">「請 0058 號取餐」</text>
+<rect x="640" y="180" width="280" height="415" rx="12" fill="#eaf3ff" stroke="#9baabd" stroke-width="1.5"/>
+<text x="654" y="204" font-size="15" fill="#26364a" text-anchor="start">process</text>
+<text x="654" y="235" font-size="20" fill="#26364a" text-anchor="start" font-weight="700">koupa App</text>
+<text x="654" y="265" font-size="16" fill="#26364a" text-anchor="start">Go 程式 · 埠 8080</text>
+<text x="654" y="292" font-size="16" fill="#26364a" text-anchor="start">收單時發號碼牌</text>
+<text x="654" y="319" font-size="16" fill="#26364a" text-anchor="start">出餐時分配叫號編號</text>
+<text x="654" y="346" font-size="16" fill="#26364a" text-anchor="start">推送叫號給看板</text>
+<text x="654" y="373" font-size="16" fill="#26364a" text-anchor="start">v1 基本功能</text>
+<text x="654" y="400" font-size="16" fill="#26364a" text-anchor="start">v2 多「售完標示」</text>
+<rect x="1320" y="180" width="230" height="195" rx="12" fill="#eaf5ef" stroke="#9baabd" stroke-width="1.5"/>
+<text x="1334" y="204" font-size="15" fill="#26364a" text-anchor="start">資料庫</text>
+<text x="1334" y="235" font-size="20" fill="#26364a" text-anchor="start" font-weight="700">PostgreSQL</text>
+<text x="1334" y="265" font-size="16" fill="#26364a" text-anchor="start">menu_items</text>
+<text x="1334" y="292" font-size="16" fill="#26364a" text-anchor="start">orders</text>
+<text x="1334" y="319" font-size="16" fill="#26364a" text-anchor="start">order_items</text>
+<text x="1334" y="346" font-size="16" fill="#26364a" text-anchor="start">idempotency_keys</text>
+<polyline points="490,230 640,230" fill="none" stroke="#52657b" stroke-width="3.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<text x="565" y="211" font-size="16" fill="#26364a" text-anchor="middle">POST /orders</text>
+<text x="565" y="261" font-size="15" fill="#26364a" text-anchor="middle">短連線</text>
+<polyline points="490,460 640,460" fill="none" stroke="#52657b" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<text x="565" y="440" font-size="16" fill="#26364a" text-anchor="middle">短連線</text>
+<polyline points="640,550 610,550 610,680 490,680" fill="none" stroke="#52657b" stroke-width="1.8" stroke-linejoin="round" stroke-dasharray="12 5 2 5" marker-end="url(#arrow)"/>
+<text x="640" y="650" font-size="16" fill="#26364a" text-anchor="start">SSE 推送</text>
+<text x="640" y="675" font-size="15" fill="#26364a" text-anchor="start">瀏覽器發起連線，App 推送事件</text>
+<polyline points="920,230 1320,230" fill="none" stroke="#52657b" stroke-width="3.5" stroke-linejoin="round" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<text x="1120" y="211" font-size="16" fill="#26364a" text-anchor="middle">SQL：存訂單、分配叫號編號 ready_seq</text>
+<polyline points="1320,340 920,340" fill="none" stroke="#52657b" stroke-width="1.8" stroke-linejoin="round" stroke-dasharray="2 5" marker-end="url(#arrow)"/>
+<text x="1120" y="321" font-size="16" fill="#26364a" text-anchor="middle">LISTEN/NOTIFY：有新叫號</text>
+<rect x="960" y="820" width="590" height="135" rx="12" fill="#fafbfd" stroke="#9baabd" stroke-width="1.5"/>
+<text x="978" y="851" font-size="20" fill="#26364a" text-anchor="start" font-weight="700">圖例</text>
+<polyline points="980,875 1035,875" fill="none" stroke="#52657b" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<text x="1050" y="881" font-size="15" fill="#26364a" text-anchor="start">短連線</text>
+<polyline points="1240,875 1295,875" fill="none" stroke="#52657b" stroke-width="1.8" stroke-linejoin="round" stroke-dasharray="12 5 2 5" marker-end="url(#arrow)"/>
+<text x="1310" y="881" font-size="15" fill="#26364a" text-anchor="start">SSE 長連線</text>
+<polyline points="980,920 1035,920" fill="none" stroke="#52657b" stroke-width="1.8" stroke-linejoin="round" stroke-dasharray="2 5" marker-end="url(#arrow)"/>
+<text x="1050" y="926" font-size="15" fill="#26364a" text-anchor="start">資料庫通知</text>
+<polyline points="1240,920 1295,920" fill="none" stroke="#52657b" stroke-width="3.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<text x="1310" y="926" font-size="15" fill="#26364a" text-anchor="start">粗線＝主要路徑</text>
+</svg>

@@ -98,6 +98,8 @@ App 的映像檔 `ghcr.io/braveantony/koupa:v1`、`:v2` 是公開的，節點會
 
 ## 2. 部署
 
+App 由哪些部分組成、部署後叢集裡有什麼、怎麼清除，見[Koupa 酷杯範例應用](docs/koupa-app.md)。
+
 ```bash
 ./setup.sh
 ```

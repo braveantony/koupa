@@ -1,6 +1,6 @@
 # Koupa 酷杯 01：講師手冊
 
-學生講義是 [README.md](README.md)。這份手冊寫給講師：每一步背後的原理、上課節奏、常見提問、口頭補充，以及課前和改版後要做的驗證。所有數字都來自 [實測紀錄 2026-11-10](docs/measurements/2026-11-10.md)，只代表 tkha（單一主機上的 3 個 control plane＋3 個 worker）。
+學生講義是 [README.md](README.md)；範例應用本身（組成、部署、確認連得到、清除）見[Koupa 酷杯範例應用](docs/koupa-app.md)。這份手冊寫給講師：每一步背後的原理、上課節奏、常見提問、口頭補充，以及課前和改版後要做的驗證。所有數字都來自 [實測紀錄 2026-11-10](docs/measurements/2026-11-10.md)，只代表 tkha（單一主機上的 3 個 control plane＋3 個 worker）。
 
 ## 先看一張圖：整堂課只在講這件事
 

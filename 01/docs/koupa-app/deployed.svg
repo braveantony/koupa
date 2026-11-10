@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="1480" viewBox="0 0 1240 1480" role="img" aria-labelledby="title desc" font-family="Noto Sans TC, PingFang TC, Microsoft JhengHei, WenQuanYi Zen Hei, sans-serif">
+<title id="title">部署到 Kubernetes 之後</title>
+<desc id="desc">主機上的瀏覽器與 Rush Hour 經 Gateway、Service 呼叫分散於三個 worker 的 App Pod。資料庫與 CNPG operator 固定於 infra worker。</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#52657b"/></marker></defs>
+<rect width="1240" height="1480" fill="white"/>
+<text x="32" y="49" font-size="26" fill="#26364a" text-anchor="start" font-weight="700">部署到 Kubernetes 之後</text>
+<rect x="20" y="100" width="280" height="495" rx="12" fill="#f8f6fc" stroke="#9baabd" stroke-width="1.5"/>
+<text x="38" y="131" font-size="20" fill="#26364a" text-anchor="start" font-weight="700">主機（叢集外）</text>
+<rect x="320" y="100" width="900" height="1200" rx="12" fill="#f8fafc" stroke="#9baabd" stroke-width="1.5"/>
+<text x="338" y="131" font-size="20" fill="#26364a" text-anchor="start" font-weight="700">Kubernetes 叢集（tk8s）</text>
+<rect x="340" y="155" width="860" height="915" rx="12" fill="#ffffff" stroke="#9baabd" stroke-width="1.5"/>
+<text x="358" y="186" font-size="20" fill="#26364a" text-anchor="start" font-weight="700">namespace：koupa</text>
+<rect x="340" y="1100" width="860" height="175" rx="12" fill="#f1f7f3" stroke="#9baabd" stroke-width="1.5"/>
+<text x="358" y="1131" font-size="20" fill="#26364a" text-anchor="start" font-weight="700">namespace：cnpg-system</text>
+<rect x="40" y="175" width="240" height="150" rx="12" fill="#f0edf8" stroke="#9baabd" stroke-width="1.5"/>
+<text x="54" y="199" font-size="15" fill="#26364a" text-anchor="start">主機端</text>
+<text x="54" y="230" font-size="20" fill="#26364a" text-anchor="start" font-weight="700">瀏覽器</text>
+<text x="54" y="260" font-size="16" fill="#26364a" text-anchor="start">點餐頁 /</text>
+<text x="54" y="287" font-size="16" fill="#26364a" text-anchor="start">廚房頁 /kitchen</text>
+<text x="54" y="314" font-size="16" fill="#26364a" text-anchor="start">叫號看板 /board</text>
+<rect x="40" y="385" width="240" height="195" rx="12" fill="#f0edf8" stroke="#9baabd" stroke-width="1.5" stroke-dasharray="7 5"/>
+<text x="54" y="409" font-size="15" fill="#26364a" text-anchor="start">container（podman）</text>
+<text x="54" y="440" font-size="20" fill="#26364a" text-anchor="start" font-weight="700">Rush Hour</text>
+<text x="54" y="470" font-size="16" fill="#26364a" text-anchor="start">量測工具：模擬客人、</text>
+<text x="54" y="497" font-size="16" fill="#26364a" text-anchor="start">廚房和 3 台看板</text>
+<text x="54" y="524" font-size="16" fill="#26364a" text-anchor="start">每秒送出 20 張訂單</text>
+<rect x="370" y="220" width="350" height="175" rx="12" fill="#fff2d9" stroke="#9baabd" stroke-width="1.5"/>
+<text x="384" y="244" font-size="15" fill="#26364a" text-anchor="start">Gateway</text>
+<text x="384" y="275" font-size="20" fill="#26364a" text-anchor="start" font-weight="700">Gateway koupa</text>
+<text x="384" y="305" font-size="16" fill="#26364a" text-anchor="start">Cilium Gateway · 埠 80</text>
+<text x="384" y="332" font-size="16" fill="#26364a" text-anchor="start">LoadBalancer IP</text>
+<text x="384" y="359" font-size="16" fill="#26364a" text-anchor="start">系統入口；照 HTTPRoute 轉送</text>
+<rect x="770" y="220" width="400" height="115" rx="12" fill="#fff2d9" stroke="#9baabd" stroke-width="1.5"/>
+<text x="784" y="244" font-size="15" fill="#26364a" text-anchor="start">HTTPRoute</text>
+<text x="784" y="275" font-size="20" fill="#26364a" text-anchor="start" font-weight="700">HTTPRoute koupa</text>
+<text x="784" y="305" font-size="16" fill="#26364a" text-anchor="start">/ → Service koupa:80</text>
+<rect x="370" y="460" width="350" height="110" rx="12" fill="#fff2d9" stroke="#9baabd" stroke-width="1.5"/>
+<text x="384" y="484" font-size="15" fill="#26364a" text-anchor="start">Service</text>
+<text x="384" y="515" font-size="20" fill="#26364a" text-anchor="start" font-weight="700">Service koupa</text>
+<text x="384" y="545" font-size="16" fill="#26364a" text-anchor="start">ClusterIP · 80 → 8080</text>
+<rect x="370" y="670" width="240" height="145" rx="12" fill="#eaf3ff" stroke="#9baabd" stroke-width="1.5"/>
+<text x="384" y="694" font-size="15" fill="#26364a" text-anchor="start">Pod</text>
+<text x="384" y="725" font-size="20" fill="#26364a" text-anchor="start" font-weight="700">koupa Pod 1</text>
+<text x="384" y="755" font-size="16" fill="#26364a" text-anchor="start">koupa:v1 → 升級到 v2</text>
+<text x="384" y="782" font-size="16" fill="#26364a" text-anchor="start">所在節點：worker A</text>
+<rect x="650" y="670" width="240" height="145" rx="12" fill="#eaf3ff" stroke="#9baabd" stroke-width="1.5"/>
+<text x="664" y="694" font-size="15" fill="#26364a" text-anchor="start">Pod</text>
+<text x="664" y="725" font-size="20" fill="#26364a" text-anchor="start" font-weight="700">koupa Pod 2</text>
+<text x="664" y="755" font-size="16" fill="#26364a" text-anchor="start">koupa:v1 → 升級到 v2</text>
+<text x="664" y="782" font-size="16" fill="#26364a" text-anchor="start">所在節點：worker B</text>
+<rect x="930" y="670" width="240" height="145" rx="12" fill="#eaf3ff" stroke="#9baabd" stroke-width="1.5"/>
+<text x="944" y="694" font-size="15" fill="#26364a" text-anchor="start">Pod</text>
+<text x="944" y="725" font-size="20" fill="#26364a" text-anchor="start" font-weight="700">koupa Pod 3</text>
+<text x="944" y="755" font-size="16" fill="#26364a" text-anchor="start">koupa:v1 → 升級到 v2</text>
+<text x="944" y="782" font-size="16" fill="#26364a" text-anchor="start">所在節點：worker C</text>
+<text x="910" y="568" font-size="16" fill="#26364a" text-anchor="middle">topology spread：穩定狀態下，</text>
+<text x="910" y="595" font-size="16" fill="#26364a" text-anchor="middle">3 個 worker 各一個同版本 Pod</text>
+<rect x="650" y="895" width="520" height="150" rx="12" fill="#eaf5ef" stroke="#9baabd" stroke-width="1.5"/>
+<text x="664" y="919" font-size="15" fill="#26364a" text-anchor="start">資料庫 · CNPG 單一實例</text>
+<text x="664" y="950" font-size="20" fill="#26364a" text-anchor="start" font-weight="700">PostgreSQL koupa-db-1</text>
+<text x="664" y="980" font-size="16" fill="#26364a" text-anchor="start">Service koupa-db-rw:5432</text>
+<text x="664" y="1007" font-size="16" fill="#26364a" text-anchor="start">固定於 infra worker（worker A）</text>
+<text x="664" y="1034" font-size="16" fill="#26364a" text-anchor="start">節點標籤：koupa.dev/infra=true</text>
+<rect x="370" y="895" width="255" height="150" rx="12" fill="#f5f7fa" stroke="#9baabd" stroke-width="1.5" stroke-dasharray="7 5"/>
+<text x="384" y="919" font-size="15" fill="#26364a" text-anchor="start">Job · migration</text>
+<text x="384" y="950" font-size="18" fill="#26364a" text-anchor="start" font-weight="700">koupa-migrate-000004</text>
+<text x="384" y="980" font-size="16" fill="#26364a" text-anchor="start">每次部署執行一次</text>
+<text x="384" y="1007" font-size="16" fill="#26364a" text-anchor="start">只套用還沒執行過的變更</text>
+<text x="384" y="1034" font-size="16" fill="#26364a" text-anchor="start">完成就結束</text>
+<rect x="650" y="1145" width="520" height="110" rx="12" fill="#eaf5ef" stroke="#9baabd" stroke-width="1.5"/>
+<text x="664" y="1169" font-size="15" fill="#26364a" text-anchor="start">operator</text>
+<text x="664" y="1200" font-size="20" fill="#26364a" text-anchor="start" font-weight="700">CNPG operator</text>
+<text x="664" y="1230" font-size="16" fill="#26364a" text-anchor="start">管理 PostgreSQL · infra worker（worker A）</text>
+<polyline points="970,335 970,365 720,365" fill="none" stroke="#52657b" stroke-width="1.8" stroke-linejoin="round" stroke-dasharray="7 5" marker-end="url(#arrow)"/>
+<text x="790" y="354" font-size="16" fill="#26364a" text-anchor="start">套用到 Gateway</text>
+<polyline points="160,325 160,350 370,350" fill="none" stroke="#52657b" stroke-width="3.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<text x="40" y="376" font-size="15" fill="#26364a" text-anchor="start">HTTP：http://&lt;Gateway IP&gt;/</text>
+<polyline points="280,475 310,475 310,350" fill="none" stroke="#52657b" stroke-width="3.5" stroke-linejoin="round"/>
+<polyline points="545,395 545,460" fill="none" stroke="#52657b" stroke-width="3.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="545,570 545,610" fill="none" stroke="#52657b" stroke-width="3.5" stroke-linejoin="round"/>
+<polyline points="490,610 1050,610" fill="none" stroke="#52657b" stroke-width="3.5" stroke-linejoin="round"/>
+<polyline points="490,610 490,670" fill="none" stroke="#52657b" stroke-width="3.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="490,815 490,855" fill="none" stroke="#52657b" stroke-width="1.8" stroke-linejoin="round"/>
+<polyline points="770,610 770,670" fill="none" stroke="#52657b" stroke-width="3.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="770,815 770,855" fill="none" stroke="#52657b" stroke-width="1.8" stroke-linejoin="round"/>
+<polyline points="1050,610 1050,670" fill="none" stroke="#52657b" stroke-width="3.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="1050,815 1050,855" fill="none" stroke="#52657b" stroke-width="1.8" stroke-linejoin="round"/>
+<polyline points="490,855 1050,855" fill="none" stroke="#52657b" stroke-width="1.8" stroke-linejoin="round"/>
+<polyline points="910,855 910,895" fill="none" stroke="#52657b" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<text x="925" y="879" font-size="15" fill="#26364a" text-anchor="start">SQL</text>
+<polyline points="497,895 497,885 680,885 680,895" fill="none" stroke="#52657b" stroke-width="1.8" stroke-linejoin="round" stroke-dasharray="7 5" marker-end="url(#arrow)"/>
+<text x="570" y="878" font-size="15" fill="#26364a" text-anchor="start">套用變更</text>
+<polyline points="910,1145 910,1045" fill="none" stroke="#52657b" stroke-width="1.8" stroke-linejoin="round" stroke-dasharray="7 5" marker-end="url(#arrow)"/>
+<text x="930" y="1093" font-size="15" fill="#26364a" text-anchor="start">管理</text>
+<rect x="340" y="1320" width="860" height="150" rx="12" fill="#fafbfd" stroke="#9baabd" stroke-width="1.5"/>
+<text x="358" y="1351" font-size="20" fill="#26364a" text-anchor="start" font-weight="700">圖例</text>
+<polyline points="360,1375 410,1375" fill="none" stroke="#52657b" stroke-width="3.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<text x="425" y="1381" font-size="15" fill="#26364a" text-anchor="start">使用者主要路徑</text>
+<rect x="610" y="1361" width="35" height="25" rx="4" fill="#fff" stroke="#9baabd" stroke-width="1.5" stroke-dasharray="7 5"/>
+<text x="655" y="1381" font-size="15" fill="#26364a" text-anchor="start">虛線框＝container／一次性 Job</text>
+<text x="360" y="1410" font-size="15" fill="#26364a" text-anchor="start">角落標籤＝資源種類；小字「所在節點」＝worker；虛線箭頭＝套用到 Gateway／管理／套用變更</text>
+<text x="360" y="1435" font-size="15" fill="#26364a" text-anchor="start">worker A／B／C 為示意，實際名稱用 kubectl get pods -o wide 查</text>
+</svg>
