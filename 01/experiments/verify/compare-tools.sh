@@ -4,6 +4,8 @@
 #
 #   experiments/verify/compare-tools.sh [--runs 5]          measure, then compare
 #   experiments/verify/compare-tools.sh compare DIR         only the comparison
+#   experiments/verify/compare-tools.sh cleanup-k6-orders RUNID DIR
+#                                     delete one k6 run's unfinished orders
 #
 # Exit 0 when both tools have 5 valid runs of both steps (a k6 run whose
 # process exited non-zero is invalid) and agree on the direction of both
@@ -22,6 +24,13 @@
 # sending start + 10 s the image is set to v2; the rollout must be complete
 # at D - 10 s, otherwise the k6 run is invalid. k6 has no boards and no
 # kitchen: only the orders are compared.
+#
+# Because k6 has no kitchen, every order of a k6 run stays 'preparing'.
+# After each k6 run its orders (client_ref <run>-c<n>, still 'preparing')
+# are deleted with their items and idempotency keys (cleanup-k6-orders;
+# DIR/cleanup.txt). Order numbers wrap at 9999, so leftovers would put two
+# unfinished orders with the same number on the kitchen list. k6's counts
+# come from its own result, not the database, so this changes no number.
 #
 # Compared per run and as median / range: 第一次送出沒有成功回應 and
 # 重試後仍沒有成功回應, and the direction from step 0 to step 3 for each tool.
@@ -146,6 +155,33 @@ json.dump({"run": run, "step": step, "tool": "k6", "image_id": iid, "valid": not
            "result": r}, open(out, "w"), indent=2, ensure_ascii=False)
 PY
 	log "k6 run $runid: $(cat "$dir/k6.stdout" 2>/dev/null | tail -1) ${invalid:+(invalid: $invalid)}"
+	cleanup_k6_orders "$runid" "$dir" || true
+}
+
+# cleanup_k6_orders RUNID DIR: delete the run's orders that are still
+# 'preparing' (client_ref RUNID-c<n>), their items and idempotency keys, in
+# one transaction on the CNPG primary; the count goes to DIR/cleanup.txt.
+cleanup_k6_orders() {
+	local runid=$1 dir=$2 pod
+	[[ $runid =~ ^k6-[A-Za-z0-9-]+$ ]] || { log "cleanup: not a k6 run id: $runid"; return 1; }
+	pod=$(kubectl -n "$NS" get pod -l cnpg.io/cluster=koupa-db,cnpg.io/instanceRole=primary \
+		-o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+	[ -n "$pod" ] || { log "cleanup: no database primary"; echo "cleanup failed: no database primary" >"$dir/cleanup.txt"; return 1; }
+	if ! kubectl -n "$NS" exec -i "$pod" -c postgres -- psql -X -q -tA -v ON_ERROR_STOP=1 -U postgres -d koupa \
+		-v ref="$runid-c%" >"$dir/cleanup.txt" 2>&1 <<'SQL'; then
+BEGIN;
+CREATE TEMP TABLE k6_gone ON COMMIT DROP AS
+  SELECT id FROM orders WHERE client_ref LIKE :'ref' AND status = 'preparing';
+DELETE FROM idempotency_keys WHERE order_id IN (SELECT id FROM k6_gone);
+DELETE FROM order_items WHERE order_id IN (SELECT id FROM k6_gone);
+DELETE FROM orders WHERE id IN (SELECT id FROM k6_gone);
+SELECT 'deleted_orders=' || count(*) FROM k6_gone;
+COMMIT;
+SQL
+		log "cleanup of $runid failed: $(tail -1 "$dir/cleanup.txt")"
+		return 1
+	fi
+	log "cleanup $runid: $(cat "$dir/cleanup.txt")"
 }
 
 compare() {
@@ -295,6 +331,13 @@ sys.exit(1 if BAD else 0)
 PY
 }
 
+if [ "${1:-}" = cleanup-k6-orders ]; then
+	[ -n "${3:-}" ] || { echo "usage: $0 cleanup-k6-orders RUNID DIR" >&2; exit 64; }
+	CRIT_NO_RESTORE=1
+	mkdir -p "$3"
+	cleanup_k6_orders "$2" "$3"
+	exit $?
+fi
 if [ "${1:-}" = compare ]; then
 	[ -n "${2:-}" ] || { echo "usage: $0 compare DIR" >&2; exit 64; }
 	CRIT_NO_RESTORE=1
