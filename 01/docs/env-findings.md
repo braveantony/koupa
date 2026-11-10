@@ -854,6 +854,8 @@ $ ip neigh show 172.22.0.201      # MAC 是 tkha-worker-1 的 eth0
 
 ## 9. 步驟 2 的 503 與 preStop 重新校正（Task 23b）
 
+> **編號說明**：本節寫於 Task 23c 重新編號之前，沿用當時的步驟編號與量測編號：「步驟 1／step-1」是現在的步驟 2（`preStop`），「步驟 2／step-2」是現在的步驟 3（graceful shutdown），「設計 4.9」是現在的設計 4.5（readinessProbe，現在的步驟 1）。證據包目錄名稱也維持原樣。
+
 背景：Task 26 量到步驟 2 的「第一次送出沒有成功回應」沒有比步驟 0 少，失敗幾乎都是入口回 503（`UF`，`delayed_connect_error: Connection refused`），而且每次差很多（一次不是 0，就是 40～60）。原本推測是步驟 1 的 `preStop` 7 秒不夠，入口在舊 Pod 停止 listen 之後還選它。逐筆核對後，**推測不成立**：這些 503 全部送到**新 Pod**，原因是新 Pod 啟動時的 DNS 查詢被 Cilium 丟掉，App 晚了 5 秒才開始 listen。
 
 ### 9.1 逐筆分析（Task 26 的 10 次量測）
@@ -926,3 +928,27 @@ $ ip neigh show 172.22.0.201      # MAC 是 tkha-worker-1 的 eth0
 1. **readinessProbe**（設計 4.9 的觸發條件已量到）：探測 HTTP 伺服器、資料庫和 `LISTEN` 都準備好才 Ready，新 Pod 在 listen 前就不會進 EndpointSlice。要先確認 kubelet 的探測不會也被 `reserved:init` 擋住（主機來源通常允許），以及 Ready 前入口真的不選它。
 2. 不靠 probe 的替代（只供講師手冊比較）：App 啟動時先 listen 再連資料庫並不正確（會接到請求卻無法處理）；縮短解析器逾時（`dnsConfig.options timeout:1`）只能把 5 秒縮成 1 秒；Cilium 端點身分延遲本身屬於環境問題，不在課程修正範圍。
 3. 還沒解釋：為什麼約三成的新 Pod 會在取得正式身分前送出 DNS 查詢（取決於容器啟動和 Cilium 端點產生的先後）。
+
+## 10. readinessProbe 成為步驟 1 之後的實測（Task 23c）
+
+Task 23c 依第 9 節的結果，把 readinessProbe（`httpGet /healthz` 8080，每 2 秒，逾時 1 秒，失敗／成功門檻都是 1，不設 `initialDelaySeconds`）加成新的步驟 1，原本的步驟 1～4 改成 2～5。本節的步驟編號都是新的編號。2026-11-10 在 tkha 上量測（證據包 `evidence/step-1-20261110-*`、`evidence/step-3-20261110-*`、`evidence/control-20261110-103103-r1-4e3c`；逐筆分類輸出 `evidence/task23c-20261110T1015/split.{txt,json}`）。
+
+分類方法和第 9.1 節相同：每一張「第一次送出沒有成功回應」的訂單，用嘗試編號找到入口的逐次紀錄，依 `upstream_host` 對到 Pod，再看時間落在 Pod 時間線的哪一段。「新 Pod 還沒 listen」= 新 Pod、`UF`、開始時間早於 App 的 `listen_active`；「舊 Pod SIGTERM 後」= 舊 Pod、`UF`、開始時間晚於 SIGTERM；「客人端逾時」= 入口記 `DC`（Rush Hour 等不到回應先斷線）。
+
+| 量測 | 第一次送出沒有成功回應 | 新 Pod 還沒 listen（`UF`） | 舊 Pod SIGTERM 後（`UF`） | 客人端逾時（`DC`） | 其他 | 重試後仍沒有成功回應 | 晚 5 秒才 listen 的新 Pod |
+|---|---|---|---|---|---|---|---|
+| 步驟 1 r1 4dfb | 12 | 0 | 9 | 3 | 0 | 0 | 0／3 |
+| 步驟 1 r2 ed3a | 6 | 0 | 5 | 1 | 0 | 0 | 1／3 |
+| 步驟 1 r3 3919 | 6 | 0 | 6 | 0 | 0 | 0 | 0／3 |
+| 步驟 3 r1 0602 | 0 | 0 | 0 | 0 | 0 | 0 | 1／3 |
+| 步驟 3 r2 23a8 | 0 | 0 | 0 | 0 | 0 | 0 | 2／3 |
+| 步驟 3 r3 388a | 0 | 0 | 0 | 0 | 0 | 0 | 1／3 |
+| control 4e3c | 0 | 0 | 0 | 0 | 0 | 0 | （不升級） |
+
+對照（第 9.4 節，沒有 readinessProbe，舊編號步驟 1／2 = 新編號步驟 2／3）：有 1～2 個晚 5 秒的新 Pod 的 3 次量測，第一次失敗 42～60 張，**全部**是「新 Pod 還沒 listen」。
+
+- **新 Pod 太早接流量造成的失敗消失了**：6 次量測裡有 5 個晚 5 秒才 listen 的新 Pod（5.018～5.030 秒，和第 9 節相同），每一個都在 `listen_active` 之後 1.99～2.01 秒才 Ready（探測週期 2 秒），入口第一次選到它們是在 listen 之後 2.17～2.59 秒；listen 之前一次也沒選到。探測在 listen 之後的下一個週期就成功，沒有看到被 `reserved:init` 擋住而拖延 Ready 的情況。正常啟動的新 Pod 在 listen 之後 0.14～1.98 秒 Ready。
+- **步驟 1 剩下的失敗全部在舊 Pod**：步驟 1 沒有 `preStop`，舊 Pod 收到 SIGTERM 就結束，入口還沒拿掉它（每次 5～9 張 `UF`，和步驟 0 的舊 Pod 部分同一種），另外 0～3 張是客人端逾時。這部分是步驟 2 要處理的問題。
+- **步驟 3（`preStop` 7 秒＋graceful shutdown）3 次都是 0**，入口沒有任何狀態 ≥ 500 或有回應旗標的紀錄（包括看板 `/events` 原本每次 3 筆的 `UPE`）。漏號仍在（每台 17～41 個），這是步驟 4 的問題。
+- control 1 次：0 失敗、0 漏號、0 重複，入口沒有異常紀錄。
+- 次數只有各 3 次，結論是「這 6 次都沒觀察到」，不是「不會發生」。
