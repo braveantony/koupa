@@ -55,7 +55,7 @@ READINESS = {"httpGet": {"path": "/healthz", "port": 8080},
              "periodSeconds": 2, "timeoutSeconds": 1,
              "failureThreshold": 1, "successThreshold": 1}
 STEP1 = {**BASE, "readinessProbe": READINESS}
-STEP2 = {**STEP1, "preStop": 7}  # calibrated on tkha (Task 23)
+STEP2 = {**STEP1, "preStop": 8}  # calibrated on tkha (2026-11-10, candidate 2.127 s)
 STEP3 = {**STEP2, "GRACEFUL_SHUTDOWN": "1", "SHUTDOWN_TIMEOUT": "15s",
          "terminationGracePeriodSeconds": 40}
 STEP4 = {**STEP3, "RESUME_FROM_LAST_ID": "1"}
