@@ -27,13 +27,16 @@ for step, first in (("step-0", 40), ("step-3", 10)):
         kd = os.path.join(d, "k6", "k6-%s-r%d" % (step, n))
         os.makedirs(kd)
         res = {"orders": 1200, "first_try_failed": first + n, "failed_after_retry": n, "dropped_iterations": 0}
-        if bad and not bad.startswith("rh:") and step == "step-0" and n == 3:
+        extra = {}
+        if bad and not bad.startswith("rh:") and not bad.startswith("cleanup:") and step == "step-0" and n == 3:
             res = json.loads(bad)
+        if bad.startswith("cleanup:") and step == "step-3" and n == 4:
+            extra = {"cleanup": bad[8:]}
         if bad.startswith("rh:") and step == "step-3" and n == 2:
             sc = json.load(open(os.path.join(rd, "scorecard.json")))
             del sc["items"][bad[3:]]
             json.dump(sc, open(os.path.join(rd, "scorecard.json"), "w"))
-        json.dump({"run": "k6-%s-r%d" % (step, n), "step": step, "valid": True, "k6_exit": 0, "result": res},
+        json.dump(dict({"run": "k6-%s-r%d" % (step, n), "step": step, "valid": True, "k6_exit": 0, "result": res}, **extra),
                   open(os.path.join(kd, "k6-run.json"), "w"))
 PY
 }
@@ -58,6 +61,8 @@ case_ missing-field 1 "k6 step-0：有效 4 次，不足 5 次" '{"orders": 1200
 case_ non-numeric 1 "k6 step-0：有效 4 次，不足 5 次" '{"orders": 1200, "first_try_failed": "x", "failed_after_retry": 3, "dropped_iterations": 0}'
 case_ null-field 1 "k6 step-0：有效 4 次，不足 5 次" '{"orders": 1200, "first_try_failed": 43, "failed_after_retry": null, "dropped_iterations": 0}'
 case_ rush-hour-missing 1 "rush-hour step-3：有效 4 次，不足 5 次" "rh:failed_after_retry"
+case_ cleanup-failed 1 "k6 step-3：有效 4 次，不足 5 次" "cleanup:failed: no database primary"
+case_ cleanup-ok 0 "每個工具、每個步驟都有 5 次有效量測" "cleanup:ok"
 # cleanup-k6-orders with a fake kubectl that records the exec.
 fake=$tmp/fakebin
 mkdir -p "$fake"
@@ -93,4 +98,22 @@ cleanup_case scoped 0 k6-step-0-20261110-140000-r1 \
 cleanup_case not-k6-run 1 "step-0-20261110-140000-r1-ab12" '[ ! -e $log.args ]'
 cleanup_case quoting 1 "k6-x';DROP TABLE orders;--" '[ ! -e $log.args ]'
 FAKE_EXEC_FAIL=1 cleanup_case exec-fails 1 k6-step-3-20261110-140000-r2 'grep -q boom $tmp/cl-exec-fails-dir/cleanup.txt'
+
+# End to end: a k6 run whose cleanup fails is recorded as such and the
+# comparison of an otherwise complete set is not successful.
+e2e=$tmp/e2e
+make "$e2e"
+kd=$e2e/k6/k6-step-0-r2
+FAKE_EXEC_FAIL=1 FAKE_LOG=$tmp/cl-e2e PATH=$fake:$PATH CRIT_NO_RESTORE=1 VERIFY_EVIDENCE=$tmp/ev \
+	"$here/compare-tools.sh" cleanup-k6-orders k6-step-0-20261110-140000-r2 "$kd" >/dev/null 2>&1
+crc=$?
+out=$(CRIT_NO_RESTORE=1 VERIFY_EVIDENCE=$tmp/ev "$here/compare-tools.sh" compare "$e2e" 2>/dev/null)
+rc=$?
+if [ "$crc" = 1 ] && grep -q '"cleanup": "failed' "$kd/k6-run.json" && [ "$rc" = 1 ] &&
+	grep -qF "k6 step-0：有效 4 次，不足 5 次" <<<"$out" && grep -qF "未完成訂單沒有清掉" <<<"$out"; then
+	echo "ok   cleanup failure makes the comparison unsuccessful"
+else
+	echo "FAIL cleanup failure makes the comparison unsuccessful (cleanup exit $crc, compare exit $rc)"
+	fail=1
+fi
 exit $fail

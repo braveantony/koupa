@@ -6,6 +6,7 @@
 #   experiments/verify/compare-tools.sh compare DIR         only the comparison
 #   experiments/verify/compare-tools.sh cleanup-k6-orders RUNID DIR
 #                                     delete one k6 run's unfinished orders
+#                                     (outcome also into DIR/k6-run.json)
 #
 # Exit 0 when both tools have 5 valid runs of both steps (a k6 run whose
 # process exited non-zero is invalid) and agree on the direction of both
@@ -28,7 +29,8 @@
 # Because k6 has no kitchen, every order of a k6 run stays 'preparing'.
 # After each k6 run its orders (client_ref <run>-c<n>, still 'preparing')
 # are deleted with their items and idempotency keys (cleanup-k6-orders;
-# DIR/cleanup.txt). Order numbers wrap at 9999, so leftovers would put two
+# DIR/cleanup.txt; a failed cleanup makes that k6 run invalid, so the
+# comparison cannot succeed). Order numbers wrap at 9999, so leftovers would put two
 # unfinished orders with the same number on the kitchen list. k6's counts
 # come from its own result, not the database, so this changes no number.
 #
@@ -155,7 +157,30 @@ json.dump({"run": run, "step": step, "tool": "k6", "image_id": iid, "valid": not
            "result": r}, open(out, "w"), indent=2, ensure_ascii=False)
 PY
 	log "k6 run $runid: $(cat "$dir/k6.stdout" 2>/dev/null | tail -1) ${invalid:+(invalid: $invalid)}"
-	cleanup_k6_orders "$runid" "$dir" || true
+	# A run whose orders could not be deleted is not valid: the comparison
+	# must not succeed while it leaves unfinished orders behind.
+	cleanup_and_record "$runid" "$dir"
+}
+
+# cleanup_and_record RUNID DIR: cleanup_k6_orders, then the outcome into
+# DIR/k6-run.json (when it exists). Returns the cleanup's status.
+cleanup_and_record() {
+	local cleanup=ok rc=0
+	cleanup_k6_orders "$1" "$2" || { rc=1; cleanup="failed: $(tail -1 "$2/cleanup.txt" 2>/dev/null)"; }
+	[ ! -f "$2/k6-run.json" ] || set_cleanup_status "$2/k6-run.json" "$cleanup" || rc=1
+	return $rc
+}
+
+# set_cleanup_status FILE STATUS: record the order cleanup in k6-run.json
+# ("ok" or "failed: ..."); compare treats anything but "ok" as invalid.
+set_cleanup_status() {
+	python3 -I - "$1" "$2" <<'PY'
+import json, sys
+f, st = sys.argv[1:]
+k = json.load(open(f))
+k["cleanup"] = st
+json.dump(k, open(f, "w"), indent=2, ensure_ascii=False)
+PY
 }
 
 # cleanup_k6_orders RUNID DIR: delete the run's orders that are still
@@ -225,6 +250,9 @@ for f in sorted(glob.glob(os.path.join(root, "k6", "*", "k6-run.json"))):
         valid, why = False, "; ".join(x for x in (why, "k6 exited %s" % k.get("k6_exit")) if x)
     if not r:
         valid, why = False, "; ".join(x for x in (why, "no k6 result") if x)
+    # Evidence from before the cleanup existed has no "cleanup" key.
+    if "cleanup" in k and k["cleanup"] != "ok":
+        valid, why = False, "; ".join(x for x in (why, "未完成訂單沒有清掉（%s）" % k["cleanup"]) if x)
     rows.append(require_fields({"tool": "k6", "step": k["step"], "run": k["run"], "valid": valid, "invalid_reason": why,
                  "orders": r.get("orders"), "first": r.get("first_try_failed"), "first_unknown": 0,
                  "after": r.get("failed_after_retry"), "after_unknown": 0, "mtime": os.path.getmtime(f),
@@ -335,7 +363,7 @@ if [ "${1:-}" = cleanup-k6-orders ]; then
 	[ -n "${3:-}" ] || { echo "usage: $0 cleanup-k6-orders RUNID DIR" >&2; exit 64; }
 	CRIT_NO_RESTORE=1
 	mkdir -p "$3"
-	cleanup_k6_orders "$2" "$3"
+	cleanup_and_record "$2" "$3"
 	exit $?
 fi
 if [ "${1:-}" = compare ]; then
