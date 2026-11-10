@@ -213,8 +213,8 @@ function initOrder() {
       loadMenu().catch(() => {});
     } else {
       // Still unknown: keep `pending` so pressing again reuses the same client_ref.
-      notice('連線失敗，請再按一次「確認點餐」。會重新送出同一張訂單（' + describeItems(pending.items) +
-        '），不會重複下單；結果確認前不能修改杯數。', 'err');
+      notice('連線失敗，請再按一次「確認點餐」，會重新送出同一張訂單（' + describeItems(pending.items) +
+        '）。結果確認前不能修改杯數。', 'err');
       updateTotal();
     }
   }

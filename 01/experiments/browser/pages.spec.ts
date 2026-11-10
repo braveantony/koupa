@@ -121,7 +121,9 @@ test('order page locks the steppers while an order outcome is unknown', async ({
   await card.locator('button.inc').click();
   await page.locator('#submit').click();
   // Both attempts failed: the outcome is unknown and the order stays pending.
-  await expect(page.locator('#notice')).toContainText('同一張訂單（波霸奶茶 × 1）');
+  await expect(page.locator('#notice')).toContainText('會重新送出同一張訂單（波霸奶茶 × 1）');
+  // Only step 5 (IDEMPOTENCY_KEY) dedupes on the server; the page must not promise it.
+  await expect(page.locator('#notice')).not.toContainText('不會重複');
   expect(bodies).toHaveLength(2);
   await expect(card.locator('button.inc')).toBeDisabled();
   await expect(card.locator('button.dec')).toBeDisabled();
