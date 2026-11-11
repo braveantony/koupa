@@ -272,6 +272,47 @@ test('board ignores a ready event whose id is not newer than the last one', asyn
   await expect(page.locator('#list li')).toHaveText(['0104']);
 });
 
+// The board's debug strip names the Pod holding its SSE stream: it comes
+// from each hello, so a one-off /api/whoami answer (maybe from another Pod)
+// never shows there.
+test('board debug strip takes the Pod from hello, not from whoami', async ({ page, request }) => {
+  const real = (await (await request.get('/api/whoami')).json()).pod_name;
+  expect(real).toBeTruthy();
+  await page.route('**/api/whoami', (r) =>
+    r.fulfill({ json: { pod_uid: 'stale-uid', pod_name: 'stale-pod', version: 'v0.0.0' } }));
+  await page.goto('/board?debug=1');
+  await expect(page.locator('#pod')).toHaveText('Pod：' + real);
+  await page.waitForTimeout(500);
+  await expect(page.locator('#pod')).toHaveText('Pod：' + real);
+  await expect(page.locator('#version')).not.toContainText('v0.0.0');
+});
+
+test('board debug strip follows the Pod after the SSE stream reconnects', async ({ page }) => {
+  const hello = (pod: string, version: string) =>
+    'retry: 100\n\n' +
+    `event: hello\nid: 0\ndata: {"version":"${version}","pod_name":"${pod}","pod_uid":"uid-${pod}"}\n\n`;
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  let n = 0;
+  await page.route('**/events', async (route) => {
+    // The first stream ends right after hello; the browser reconnects and
+    // the next one lands on "another Pod".
+    const first = n++ === 0;
+    if (!first) await gate;
+    await route.fulfill({
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+      body: first ? hello('pod-a', 'v2.2.1') : hello('pod-b', 'v2.2.2'),
+    });
+  });
+  await page.goto('/board?debug=1');
+  await expect(page.locator('#pod')).toHaveText('Pod：pod-a');
+  await expect(page.locator('#version')).toHaveText('服務版本：v2.2.1');
+  release();
+  await expect(page.locator('#pod')).toHaveText('Pod：pod-b');
+  await expect(page.locator('#version')).toHaveText('服務版本：v2.2.2');
+});
+
 // Board 製作中 on a fixed-height screen: every pending order is either a
 // fully visible strip or counted in the line 「還有 N 張」 (#making-more),
 // which is itself fully visible.
@@ -553,6 +594,7 @@ test('board EventSource fires shutdown when the app gets SIGTERM', async ({ page
       .toBe(uid);
     await page.goto(`${base}/board?debug=1`);
     await expect(page.locator('#version')).toContainText('服務版本：v');
+    await expect(page.locator('#pod')).toHaveText('Pod：' + uid);
     app.kill('SIGTERM');
     await expect
       .poll(() => page.evaluate(() => (window as any).__events.filter((e: string) => e === 'shutdown').length), {

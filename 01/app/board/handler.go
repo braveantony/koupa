@@ -184,7 +184,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// 3. and 4.
 	sent = start
-	if err := sw.write(encodeHello(start, h.Cfg.Version)); err != nil {
+	if err := sw.write(encodeHello(start, h.Cfg.Version, h.Cfg.PodName, h.Cfg.PodUID)); err != nil {
 		closed(reasonWriteError, err)
 		return
 	}

@@ -11,8 +11,13 @@ import (
 // Event encoding (plan A4). Each function returns one complete block so
 // it goes out in a single Write: heartbeats never land inside an event.
 
+// helloData names the service version and the Pod holding this
+// connection (same field names as /api/whoami), so the board can show
+// which Pod it is connected to after every reconnect.
 type helloData struct {
 	Version string `json:"version"`
+	PodName string `json:"pod_name"`
+	PodUID  string `json:"pod_uid"`
 }
 
 type readyData struct {
@@ -21,8 +26,8 @@ type readyData struct {
 }
 
 // encodeHello: id is the connection's start point.
-func encodeHello(start int64, version string) []byte {
-	d, _ := json.Marshal(helloData{Version: version})
+func encodeHello(start int64, version, podName, podUID string) []byte {
+	d, _ := json.Marshal(helloData{Version: version, PodName: podName, PodUID: podUID})
 	return block("hello", strconv.FormatInt(start, 10), d)
 }
 

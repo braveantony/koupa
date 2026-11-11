@@ -21,8 +21,8 @@ YAML 不寫死 IP，`measure.sh` 會自動查 Gateway 的 IP。
 
 | 映像檔 | 用途 | 在哪裡被拉取 |
 |---|---|---|
-| `ghcr.io/braveantony/koupa:v1.2.1` | App 舊版（v1 這條線的目前版本） | 叢集節點 |
-| `ghcr.io/braveantony/koupa:v2.2.1` | App 新版（v2 這條線，有售完功能） | 叢集節點 |
+| `ghcr.io/braveantony/koupa:v1.2.2` | App 舊版（v1 這條線的目前版本） | 叢集節點 |
+| `ghcr.io/braveantony/koupa:v2.2.2` | App 新版（v2 這條線，有售完功能） | 叢集節點 |
 | `ghcr.io/braveantony/rush-hour:<版本>` | 量測工具 | 主機 |
 
 - 都事先建置好，設為公開，不需要登入就能拉取；
@@ -44,10 +44,10 @@ YAML 不寫死 IP，`measure.sh` 會自動查 Gateway 的 IP。
 
 **發布順序**（`k8s/base` 和 `images.env` 合併後就指向新版本號，所以中間不能拖）：
 
-1. 在分支上調高 `images.env` 兩條線的版本號，`k8s/base` 跟著改（`scripts/check-manifests.sh` 會檢查一致）；
+1. 在分支上調高 `images.env` 兩條線的版本號，`k8s/base` 跟著改（`scripts/check-manifests.sh` 會檢查一致），並在 [`01/docs/releases/`](../releases/README.md) 寫這一版的 release notes（digest 先寫 `TBD`）；
 2. 合併到 main；
 3. **馬上**在 main 的乾淨工作目錄 `podman login ghcr.io`、`make publish`；
-4. 把印出的 digest 記進下表、commit；
+4. 把印出的 digest 記進下表和這一版的 release notes，commit；
 5. 最後才公告新版本。
 
 在第 3 步完成之前，用到這個 commit 的人跑 `setup.sh` 會在改動叢集之前就停下來，顯示「映像檔 v1.2.0 還沒發布」；`measure.sh` 的 preflight 也會因為解析不到 tag 而不開始量測。
@@ -60,6 +60,7 @@ YAML 不寫死 IP，`measure.sh` 會自動查 Gateway 的 IP。
 | `v1.1.0`／`v2.1.0` | 奶茶店風格的畫面改版、飲料照片、純 HTTP 下點餐的修正（從 commit `a2d5fbf` 建置） | `sha256:e767bd6d12d316733c826da07b387674791c4f7e1e11cff8d5f1b8aa0459bdea` | `sha256:082a7412ec4de56f160c7d1bbe91162a7f119a4e0742421345d866c609648cf4` |
 | `v1.2.0`／`v2.2.0` | 杯封膜風格的畫面（PR #8）；2026-11-11 從 main `b82c589` 建置 | `sha256:58ba573aa03db542eb0943966237bc4836b341ca72bc9de20c1e6aca9fd40312` | `sha256:fab97b7b17a46ba624294939858d95587745a0caa9cc76f53c55ed0a7215d278` |
 | `v1.2.1`／`v2.2.1` | 修正：叫號看板等待中的「等待叫號…」不再折成兩行；2026-11-11 從 main `e45d813` 建置 | `sha256:15f1957398ce8bbbb37788092801486a969fb05710ac42c8dae63b37e6e50813` | `sha256:ad777087eb8f2279027a8fc0a7794f54de9ac326c7cd895e6257bd6bf74b2a57` |
+| `v1.2.2`／`v2.2.2` | 修正：看板 debug 列的 Pod 跟著 SSE 連線更新（[release notes](../releases/v1.2.2.md)）；PR 合併後從 main 建置 | 發布後補上 | 發布後補上 |
 
 `v1.1.0` 和 `v1.2.0` 之間曾經推過一版有錯的建置（`5f97bce7…`／`90065b38…`），沒有給版本號，不要使用。
 

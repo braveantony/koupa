@@ -12,7 +12,7 @@
 #           "data: ...", "data:", "retry: N" or a ": comment"
 #         - every event block ends with a blank line (also the last one)
 #         - the first event is hello: id = integer start, data = JSON
-#           {"version": ...}
+#           {"version": ...} (since v1.2.2/v2.2.2 also "pod_name", "pod_uid")
 #         - ready: id = integer ready_seq, strictly increasing and above the
 #           start; data = JSON {"number": string, "order_id": integer}
 #         - with --expect-shutdown: the stream ends with exactly one
