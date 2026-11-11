@@ -1,6 +1,6 @@
 # Koupa 酷杯 01：講師手冊
 
-學生講義是 [README.md](README.md)；範例應用本身（組成、部署、確認連得到、清除）見[Koupa 酷杯範例應用](docs/koupa-app.md)。這份手冊寫給講師：每一步背後的原理、上課節奏、常見提問、口頭補充，以及課前和改版後要做的驗證。所有數字都來自 [實測紀錄 2026-11-10](docs/measurements/2026-11-10.md)，只代表 tkha（單一主機上的 3 個 control plane＋3 個 worker）。
+學生講義是 [README.md](README.md)，每一步的操作在 [`docs/steps/`](docs/steps/)；範例應用本身（組成、部署、確認連得到、清除）見[Koupa 酷杯範例應用](docs/koupa-app.md)。這份手冊寫給講師：每一步背後的原理、上課節奏、常見提問、口頭補充，以及課前和改版後要做的驗證。所有數字都來自 [實測紀錄 2026-11-10](docs/measurements/2026-11-10.md)，只代表 tkha（單一主機上的 3 個 control plane＋3 個 worker）。
 
 ## 先看一張圖：整堂課只在講這件事
 
@@ -171,7 +171,7 @@ kubectl -n koupa get httproute koupa -o jsonpath='{.spec.rules[*].retry}{.spec.r
 | 記錄版本與 Envoy 設定 | 版本記進實測紀錄；`kubectl -n kube-system exec <cilium agent Pod> -c cilium-agent -- cilium-dbg envoy admin config > envoy-config.json`（Pod 名稱用 `kubectl -n kube-system get pods -l k8s-app=cilium` 查） | — |
 | App 改了：發布新版本 | 照[設計文件 6.2](docs/design-v2/06-reference.md#62-映像檔) 的發布順序：在 `images.env` 調高兩條線的版本號（新功能加 MINOR、只修 bug 加 PATCH，例如 `v1.2.0`／`v2.2.0` → `v1.2.1`／`v2.2.1`）、`k8s/base` 的映像檔跟著改；合併到 main 之後**馬上**在 main 上 `podman login ghcr.io`、`make publish`（`scripts/publish-images.sh`：從 HEAD 的乾淨匯出建置；tag 已經存在、或沒辦法確定它不存在，都會拒絕；推送後確認 registry 上的 digest 就是剛推的，印出 digest），把 digest 記進 6.2 的版本表；發布新版要寫 release notes（[`docs/releases/`](docs/releases/README.md)，一個版本一個檔案，digest 也補進去），最後才公告。同一時間只能有一個人發布（腳本用 `/tmp/koupa-publish-images.lock` 擋住同一台主機上的第二個執行，跨主機靠作業規定）。離線或開發用叢集的映像檔是自己載入節點的，可以用 `KOUPA_SKIP_REGISTRY_CHECK=1 ./setup.sh` 跳過「映像檔已發布」的檢查（會印警告）。tag 不再覆蓋，所以不用在 worker 上 `crictl pull`、也不用 `rollout restart`：`./setup.sh` 套用新的映像檔字串就會 rolling update。Rush Hour 改了先調高 `RUSH_HOUR_VERSION`，再 `make push-rush-hour`（走同一支腳本：從 HEAD 建置，版本已經存在或查不到 registry 都會拒絕）；`experiments/critical/build-images.sh` | — |
 | 自動化測試 | `make test`；`for t in test/measure/test-*.sh; do bash "$t"; done`；`for o in base step-1 step-2 step-3 step-4 step-5 calibrate test-hooks idle-lab; do scripts/check-manifests.sh $o; done`；`experiments/verify/compare-tools_test.sh`；`experiments/critical/test/test-run-summary.sh`；`experiments/ingress/test/ownership.sh` | 全部通過；時間未記錄 |
-| 閒置斷線小實驗 | README 的小實驗步驟，外加 HTTPRoute 暫時加 `timeouts.request: 60s` 的一組（做完要移除） | 約 15 分鐘 |
+| 閒置斷線小實驗 | [小實驗](docs/steps/00-idle-lab.md)的步驟，外加 HTTPRoute 暫時加 `timeouts.request: 60s` 的一組（做完要移除） | 約 15 分鐘 |
 | 關鍵時機實驗 | `experiments/critical/run.sh` | 12／12 PASS，約 7 分鐘 |
 | 入口重試和延遲抵達 | `experiments/ingress/run.sh` | 2026-11-09 通過（5 個案例 35 項）；時間未記錄 |
 | `calibrate` | `./measure.sh calibrate --runs 8`（達到 5 個有效樣本就停） | 3 次 run、7 個有效樣本，約 10 分鐘 |
@@ -212,7 +212,7 @@ control 要全部 0 而且沒有未知，步驟 0 要量到問題。這不取代
 **對方要做的事**：
 
 1. 在一套全新的叢集上（符合 README 第 1 節的條件，沒有跑過 Koupa），clone 課程定稿的 commit；
-2. 只看 `01/README.md` 操作，不看這份手冊、不問講師：部署、小實驗、`control`、步驟 0～5（各 5 次）、`rollback`、`drain`、`scale-down`；
+2. 只看 `01/README.md` 和它連到的 [`docs/steps/`](docs/steps/) 操作，不看這份手冊、不問講師：部署、小實驗、`control`、步驟 0～5（各 5 次）、`rollback`、`drain`、`scale-down`；
 3. 每個卡住、看不懂或和 README 描述不同的地方，記下來（哪一節、做了什麼、看到什麼）。
 
 **對方要交回的東西**：
