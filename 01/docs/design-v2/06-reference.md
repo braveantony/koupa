@@ -60,7 +60,7 @@ YAML 不寫死 IP，`measure.sh` 會自動查 Gateway 的 IP。
 | `v1.1.0`／`v2.1.0` | 奶茶店風格的畫面改版、飲料照片、純 HTTP 下點餐的修正（從 commit `a2d5fbf` 建置） | `sha256:e767bd6d12d316733c826da07b387674791c4f7e1e11cff8d5f1b8aa0459bdea` | `sha256:082a7412ec4de56f160c7d1bbe91162a7f119a4e0742421345d866c609648cf4` |
 | `v1.2.0`／`v2.2.0` | 杯封膜風格的畫面（PR #8）；2026-11-11 從 main `b82c589` 建置 | `sha256:58ba573aa03db542eb0943966237bc4836b341ca72bc9de20c1e6aca9fd40312` | `sha256:fab97b7b17a46ba624294939858d95587745a0caa9cc76f53c55ed0a7215d278` |
 | `v1.2.1`／`v2.2.1` | 修正：叫號看板等待中的「等待叫號…」不再折成兩行；2026-11-11 從 main `e45d813` 建置 | `sha256:15f1957398ce8bbbb37788092801486a969fb05710ac42c8dae63b37e6e50813` | `sha256:ad777087eb8f2279027a8fc0a7794f54de9ac326c7cd895e6257bd6bf74b2a57` |
-| `v1.2.2`／`v2.2.2` | 修正：看板 debug 列的 Pod 跟著 SSE 連線更新（[release notes](../releases/v1.2.2.md)）；PR 合併後從 main 建置 | 發布後補上 | 發布後補上 |
+| `v1.2.2`／`v2.2.2` | 修正：看板 debug 列的 Pod 跟著 SSE 連線更新（[release notes](../releases/v1.2.2.md)）；2026-11-11 從 main `99278da` 建置 | `sha256:d31ec3254d7f13c8e546f5aefe122ed649893c3e2a197df0b536d8bf8ad76683` | `sha256:aeffaf1de09b1743fbafe092063bea9a998ab3a25a87821f7082b276feb6fe05` |
 
 `v1.1.0` 和 `v1.2.0` 之間曾經推過一版有錯的建置（`5f97bce7…`／`90065b38…`），沒有給版本號，不要使用。
 
