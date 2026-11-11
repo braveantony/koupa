@@ -367,6 +367,30 @@ function initBoard() {
     li.dataset.orderId = o.order_id;
     return li;
   }
+  // How many of the list's first strips lie entirely inside its clip box:
+  // the padding box of the list and of the 製作中 section (both clip).
+  // Fractional pixels: a strip clipped by any amount does not fit.
+  function clipBox(e) {
+    const r = e.getBoundingClientRect();
+    const cs = getComputedStyle(e);
+    return {
+      top: r.top + parseFloat(cs.borderTopWidth),
+      bottom: r.bottom - parseFloat(cs.borderBottomWidth),
+    };
+  }
+  function fitted(ul) {
+    const a = clipBox(ul);
+    const b = clipBox(ul.parentElement);
+    const top = Math.max(a.top, b.top);
+    const bottom = Math.min(a.bottom, b.bottom);
+    const items = ul.children;
+    let fit = 0;
+    for (; fit < items.length; fit++) {
+      const r = items[fit].getBoundingClientRect();
+      if (r.top < top || r.bottom > bottom) break;
+    }
+    return fit;
+  }
   // Every pending order is either a fully visible strip or counted in
   // 「還有 N 張」 (#making-more). That line sits below the clipped list in
   // its own reserved slot, so it is never clipped itself.
@@ -380,21 +404,16 @@ function initBoard() {
     ul.style.flex = ''; // measure in the full list box (see app.css)
     const listed = Math.min(orders.length, MAX_LISTED);
     for (const o of orders.slice(0, listed)) ul.appendChild(strip(o));
-    // Show the count line before measuring when it may be needed: it takes
-    // its height from the list box.
+    // Pass 1 without the count line: if every listed strip fits and none is
+    // left over, there is nothing to count. Otherwise show the line (it takes
+    // its height from the list box) and fit again.
+    moreLine.hidden = true;
+    let fit = fitted(ul);
+    if (fit === orders.length) return;
+    moreLine.hidden = false;
     moreLine.textContent = '還有 ' + orders.length + ' 張';
-    moreLine.hidden = !(listed < orders.length || ul.scrollHeight > ul.clientHeight);
-    if (moreLine.hidden) return;
-    // Keep only strips that are entirely inside the list box (a partly
-    // clipped row does not count); the rest are counted.
-    const r = ul.getBoundingClientRect();
-    const bottom = r.top + ul.clientTop + ul.clientHeight;
-    const items = Array.from(ul.children);
-    let fit = 0;
-    while (fit < items.length && items[fit].getBoundingClientRect().bottom <= bottom) fit++;
+    fit = fitted(ul);
     while (ul.children.length > fit) ul.lastChild.remove();
-    // A rounding-only overflow: everything fits, so no count line.
-    if (fit === orders.length) moreLine.hidden = true;
     moreLine.textContent = '還有 ' + (orders.length - fit) + ' 張';
     // The kept strips fit, so the box can shrink to them and the count
     // line follows the last strip instead of the bottom of the column.
