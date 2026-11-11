@@ -158,7 +158,7 @@ def draining(step):
                4: 'RESUME_FROM_LAST_ID=1：用 Last-Event-ID 接著收'}
     d = Diagram(f'步驟 {step}：{titles[step]}', subs[step], changes[step],
                 [(290, '終止開始：0 秒'), (620, '8 秒：SIGTERM'),
-                 (1030, '約 11～13 秒：重連' if step == 2 else '約 9 秒：重連')], LANES, 970)
+                 (1030, '約 11～13 秒：重連' if step == 2 else '約 9 秒：重連')], LANES, 1004 if step == 4 else 970)
     d.span(0, 220, 570, '入口得知舊 Pod 要下線', 'SIGTERM 之前就不再送單給它')
     d.span(0, 590, 1195, '新訂單送給其他 Ready Pod', '已經連著的看板不受影響')
     d.span(1, 220, 570, 'preStop 等 8 秒', '程式仍運作、看板仍連著', 'change' if step == 2 else 'normal')
@@ -168,7 +168,7 @@ def draining(step):
         d.span(1, 590, 1195, '送 shutdown；等處理中的請求完成', '最多等 15 秒，之後結束', 'change' if step == 3 else 'normal')
     d.span(2, 220, 880, '已通過 readinessProbe → 可以接單')
     d.span(2, 900, 1195, '先補號，再即時推送' if step == 4 else '接受看板重連',
-           '補送最後 id 之後的叫號' if step == 4 else '', 'change' if step == 4 else 'normal')
+           '補送這個編號之後的叫號' if step == 4 else '', 'change' if step == 4 else 'normal')
     d.span(3, 220, 570, '持續收到叫號', '仍在原本的舊 Pod')
     d.span(3, 590, 880, '約 3～5 秒：漏號' if step == 2 else ('約 1 秒：暫停接收' if step == 4 else '約 1 秒：漏號'),
            '瀏覽器預設的重連等待' if step == 2 else ('自動重連' if step == 3 else '帶回 Last-Event-ID'), 'problem' if step < 4 else 'change')
@@ -176,8 +176,8 @@ def draining(step):
            '實測漏號 0' if step == 4 else '缺的叫號不會補回', 'change' if step == 4 else 'normal')
     if step == 2:
         d.note(754, '實測送出失敗降到 0；漏號仍約 80 個／台', True)
-        d.note(798, '實測：入口最晚約 1.5 秒後就不再送單給舊 Pod；')
-        d.note(834, '保守推估上限 2.127 秒，進位成 3 秒再加 5 秒緩衝 = 8 秒。')
+        d.note(798, '較早一次校正：最晚在 Pod 開始被關掉後約 1.5 秒，仍觀察到入口送單給它。')
+        d.note(834, '最新一次校正推估 2.127 秒，進位成 3 秒再加 5 秒緩衝 = 8 秒（在 tkha 校正）。')
         d.note(872, '看板：斷線後約 3～5 秒重新連上（依瀏覽器）。')
     elif step == 3:
         d.note(754, '3～5 秒的斷線縮短為約 1 秒（App 用 retry: 指定 1 秒）', True)
@@ -186,9 +186,10 @@ def draining(step):
         d.note(872, '漏號約 22 個是每次升級、每台看板的量測值，不是保證。')
     else:
         d.note(754, '斷線期間的漏號消失；斷線本身仍會發生', True)
-        d.note(798, 'Last-Event-ID = 最後收到的 ready_seq（叫號流水號），不是取餐號碼。')
-        d.note(834, '實測：重連前收到 362 個 → 下一秒 404 個；先補送，再接即時叫號。')
-        d.note(872, '自動重連會帶上 Last-Event-ID；重新整理網頁不會帶，所以從「現在」收。')
+        d.note(792, 'Last-Event-ID：通常是最後收到的叫號流水號（ready_seq，不是取餐號碼）；')
+        d.note(830, '還沒收到叫號時是連上時的起始編號。')
+        d.note(868, '實測：重連前收到 362 個 → 下一秒 404 個；先補送，再接即時叫號。')
+        d.note(906, '自動重連會帶上 Last-Event-ID；重新整理網頁不會帶，所以從「現在」收。')
     d.save(f'step-{step}.svg')
 
 
@@ -211,7 +212,7 @@ def idempotency():
     d.span(3, 220, 520, '存訂單與 client_ref')
     d.span(3, 540, 850, '原訂單保留')
     d.span(3, 870, 1195, '只有一張訂單', '用 client_ref 找到原訂單', 'change')
-    d.note(754, '重複訂單消失：重送回傳原訂單，不變成兩張', True)
+    d.note(754, '重複訂單消失：紀錄保留期間（至少 24 小時）重送，回傳原訂單', True)
     d.text(58, 810, '沒有這個開關時（步驟 4 以前），這次重送會變成兩張訂單。', 20, True, color=RED)
     d.note(864, '預設負載下很少碰到，講師用關鍵時機實驗示範。')
     d.save('step-5.svg')

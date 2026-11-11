@@ -1,9 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="970" viewBox="0 0 1240 970" role="img" aria-labelledby="title desc" font-family="Noto Sans TC, PingFang TC, Microsoft JhengHei, WenQuanYi Zen Hei, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="1004" viewBox="0 0 1240 1004" role="img" aria-labelledby="title desc" font-family="Noto Sans TC, PingFang TC, Microsoft JhengHei, WenQuanYi Zen Hei, sans-serif">
 <title id="title">步驟 4：重連後，把漏掉的叫號補回來</title>
 <desc id="desc">解決：實測漏號 0　還剩：結果未知時，重送可能重複下單。時間由左往右，非等比例。</desc>
 <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#52657b"/></marker>
 <pattern id="hatch" width="9" height="9" patternUnits="userSpaceOnUse"><rect width="9" height="9" fill="#fff0f0"/><path d="M-2,2 L2,-2 M0,9 L9,0 M7,11 L11,7" stroke="#e6a9ae" stroke-width="1"/></pattern></defs>
-<rect width="1240" height="970" fill="white"/>
+<rect width="1240" height="1004" fill="white"/>
 <text x="32" y="49" font-size="28" fill="#26364a" text-anchor="start" font-weight="700">步驟 4：重連後，把漏掉的叫號補回來</text>
 <text x="32" y="86" font-size="21" fill="#26364a" text-anchor="start">解決：實測漏號 0　還剩：結果未知時，重送可能重複下單</text>
 <rect x="32" y="108" width="1176" height="48" rx="8" fill="#eaf3ff"/>
@@ -22,13 +22,13 @@
 <text x="42" y="540" font-size="22" fill="#26364a" text-anchor="start" font-weight="700">新 Pod</text>
 <rect x="24" y="598" width="1192" height="104" rx="8" fill="#f5f7fa"/>
 <text x="42" y="656" font-size="22" fill="#26364a" text-anchor="start" font-weight="700">看板</text>
-<path d="M42,918 H100" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
-<text x="115" y="925" font-size="18" fill="#26364a" text-anchor="start">主要過程</text>
-<rect x="260" y="902" width="32" height="28" rx="8" fill="#eaf3ff"/>
-<text x="303" y="925" font-size="18" fill="#26364a" text-anchor="start">本步改動</text>
-<rect x="470" y="902" width="32" height="28" rx="8" fill="url(#hatch)"/>
-<text x="513" y="925" font-size="18" fill="#26364a" text-anchor="start">問題時窗</text>
-<text x="730" y="925" font-size="18" fill="#24764c" text-anchor="start">✓ 相較前一步消失的問題</text>
+<path d="M42,952 H100" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="115" y="959" font-size="18" fill="#26364a" text-anchor="start">主要過程</text>
+<rect x="260" y="936" width="32" height="28" rx="8" fill="#eaf3ff"/>
+<text x="303" y="959" font-size="18" fill="#26364a" text-anchor="start">本步改動</text>
+<rect x="470" y="936" width="32" height="28" rx="8" fill="url(#hatch)"/>
+<text x="513" y="959" font-size="18" fill="#26364a" text-anchor="start">問題時窗</text>
+<text x="730" y="959" font-size="18" fill="#24764c" text-anchor="start">✓ 相較前一步消失的問題</text>
 <text x="230" y="284" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">入口得知舊 Pod 要下線</text>
 <path d="M230,299 H558" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
 <text x="230" y="330" font-size="18" fill="#26364a" text-anchor="start">SIGTERM 之前就不再送單給它</text>
@@ -46,7 +46,7 @@
 <rect x="900" y="490" width="295" height="88" rx="8" fill="#eaf3ff"/>
 <text x="910" y="516" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">先補號，再即時推送</text>
 <path d="M910,531 H1183" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
-<text x="910" y="562" font-size="18" fill="#26364a" text-anchor="start">補送最後 id 之後的叫號</text>
+<text x="910" y="562" font-size="18" fill="#26364a" text-anchor="start">補送這個編號之後的叫號</text>
 <text x="230" y="632" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">持續收到叫號</text>
 <path d="M230,647 H558" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
 <text x="230" y="678" font-size="18" fill="#26364a" text-anchor="start">仍在原本的舊 Pod</text>
@@ -59,7 +59,8 @@
 <path d="M910,647 H1183" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
 <text x="910" y="678" font-size="18" fill="#26364a" text-anchor="start">實測漏號 0</text>
 <text x="42" y="754" font-size="20" fill="#24764c" text-anchor="start" font-weight="700">✓ 斷線期間的漏號消失；斷線本身仍會發生</text>
-<text x="42" y="798" font-size="20" fill="#26364a" text-anchor="start">Last-Event-ID = 最後收到的 ready_seq（叫號流水號），不是取餐號碼。</text>
-<text x="42" y="834" font-size="20" fill="#26364a" text-anchor="start">實測：重連前收到 362 個 → 下一秒 404 個；先補送，再接即時叫號。</text>
-<text x="42" y="872" font-size="20" fill="#26364a" text-anchor="start">自動重連會帶上 Last-Event-ID；重新整理網頁不會帶，所以從「現在」收。</text>
+<text x="42" y="792" font-size="20" fill="#26364a" text-anchor="start">Last-Event-ID：通常是最後收到的叫號流水號（ready_seq，不是取餐號碼）；</text>
+<text x="42" y="830" font-size="20" fill="#26364a" text-anchor="start">還沒收到叫號時是連上時的起始編號。</text>
+<text x="42" y="868" font-size="20" fill="#26364a" text-anchor="start">實測：重連前收到 362 個 → 下一秒 404 個；先補送，再接即時叫號。</text>
+<text x="42" y="906" font-size="20" fill="#26364a" text-anchor="start">自動重連會帶上 Last-Event-ID；重新整理網頁不會帶，所以從「現在」收。</text>
 </svg>

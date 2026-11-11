@@ -61,7 +61,7 @@
 <text x="880" y="632" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">只有一張訂單</text>
 <path d="M880,647 H1183" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
 <text x="880" y="678" font-size="18" fill="#26364a" text-anchor="start">用 client_ref 找到原訂單</text>
-<text x="42" y="754" font-size="20" fill="#24764c" text-anchor="start" font-weight="700">✓ 重複訂單消失：重送回傳原訂單，不變成兩張</text>
+<text x="42" y="754" font-size="20" fill="#24764c" text-anchor="start" font-weight="700">✓ 重複訂單消失：紀錄保留期間（至少 24 小時）重送，回傳原訂單</text>
 <text x="58" y="810" font-size="20" fill="#ad3945" text-anchor="start" font-weight="700">沒有這個開關時（步驟 4 以前），這次重送會變成兩張訂單。</text>
 <text x="42" y="864" font-size="20" fill="#26364a" text-anchor="start">預設負載下很少碰到，講師用關鍵時機實驗示範。</text>
 </svg>
