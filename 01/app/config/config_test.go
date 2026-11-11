@@ -21,7 +21,9 @@ func TestLoadVersion(t *testing.T) {
 	for _, tc := range []struct {
 		v  string
 		ok bool
-	}{{"v1", true}, {"v2", true}, {"dev", false}, {"", false}, {"v3", false}} {
+	}{{"v1", true}, {"v2", true}, {"v1.2.0", true}, {"v2.2.0", true}, {"v2.10.0", true}, {"v1.0", true},
+		{"dev", false}, {"", false}, {"v3", false}, {"v3.0.0", false}, {"v0.1.0", false},
+		{"1.2.0", false}, {"v1.2.0.1", false}, {"v1.2.0-rc1", false}, {"v01.2.0", false}} {
 		withVersion(t, tc.v)
 		cfg, err := Load(env(map[string]string{"DATABASE_URL": "u"}))
 		if tc.ok && (err != nil || cfg.Version != tc.v) {
@@ -29,6 +31,32 @@ func TestLoadVersion(t *testing.T) {
 		}
 		if !tc.ok && err == nil {
 			t.Errorf("Version=%q: want error", tc.v)
+		}
+	}
+}
+
+func TestMajor(t *testing.T) {
+	for _, tc := range []struct {
+		v     string
+		major int
+		sold  bool
+	}{
+		{"v1.2.0", 1, false}, {"v1", 1, false}, {"v1.0.0", 1, false},
+		{"v2.2.0", 2, true}, {"v2", 2, true}, {"v2.0", 2, true}, {"v2.10.3", 2, true},
+		{"v3.0.0", 3, true}, {"v10.0.0", 10, true}, {"v0.9.0", 0, false},
+		{"dev", 0, false}, {"", 0, false}, {"2.2.0", 0, false}, {"v2.x", 0, false},
+		{"v2.2.0-rc1", 0, false}, {"v2.2.0.1", 0, false}, {"v02.0.0", 0, false},
+		{"v", 0, false}, {"v2.", 0, false}, {" v2.2.0", 0, false}, {"V2.2.0", 0, false},
+		{"v99999999999999999999", 0, false},
+	} {
+		if got := Major(tc.v); got != tc.major {
+			t.Errorf("Major(%q) = %d, want %d", tc.v, got, tc.major)
+		}
+		if got := HasSoldOut(tc.v); got != tc.sold {
+			t.Errorf("HasSoldOut(%q) = %v, want %v", tc.v, got, tc.sold)
+		}
+		if got := (Config{Version: tc.v}).SoldOut(); got != tc.sold {
+			t.Errorf("Config{Version: %q}.SoldOut() = %v, want %v", tc.v, got, tc.sold)
 		}
 	}
 }

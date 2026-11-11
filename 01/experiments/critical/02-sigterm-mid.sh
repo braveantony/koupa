@@ -9,6 +9,7 @@
 #   GRACEFUL_SHUTDOWN=1: wait for the Pod's SIGTERM line -> 2s -> release
 #     -> the client gets its success response.
 . "$(dirname "$0")/lib.sh"
+crit_init
 exp=02-sigterm-mid
 build_tools || exit 1
 fail=0

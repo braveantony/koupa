@@ -71,7 +71,7 @@ check "TERM: exits 143 within 10 s (rc=$rc, ${took}s)" [ "$rc" = 143 ]
 [ "$rc" = 143 ] || tail -20 "$T/out" | sed 's/^/    /'
 run=$(latest_run)
 check_interrupted_run "$run" TERM
-check "TERM: cluster image recorded as v2" grep -q 'koupa:v2' "$run/interrupted.json"
+check "TERM: cluster image recorded as v2" grep -qF "$IMG_V2" "$run/interrupted.json"
 check "TERM: says what it left" grep -q 'cluster left' "$T/out"
 
 # 2. INT with rush-hour in a podman container: the container is removed.
@@ -105,7 +105,7 @@ check "wait: exits 143 within 3 s (rc=$rc, ${took}s)" [ "$rc" = 143 ] && [ "$too
 check "wait: image never changed" bash -c '! grep -q "set image" "$1"' _ "$FAKE/calls.log"
 run=$(latest_run)
 check_interrupted_run "$run" TERM
-check "wait: cluster image recorded as v1" grep -q 'koupa:v1' "$run/interrupted.json"
+check "wait: cluster image recorded as v1" grep -qF "$IMG_V1" "$run/interrupted.json"
 
 # 4. A leftover rush-hour container from an earlier run: refuse to start.
 rm -rf "$MEASURE_EVIDENCE_DIR"/*

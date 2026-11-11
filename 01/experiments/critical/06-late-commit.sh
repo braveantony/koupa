@@ -30,6 +30,7 @@
 #    gave up. Rush Hour uses tx-timeout only for that limit and for
 #    commit_unknown attempts (none here).
 . "$(dirname "$0")/lib.sh"
+crit_init
 exp=06-late-commit
 build_tools || exit 1
 COLLECT=$stage/scripts/collect-timeline.sh

@@ -28,12 +28,15 @@
 set -uo pipefail
 # shellcheck source=lib.sh
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
+crit_init # its EXIT trap is replaced by verify_cleanup below
 KUBECTL=kubectl
 # shellcheck source=../../scripts/lib/kube.sh
 . "$stage/scripts/lib/kube.sh"
 
 PW_IMAGE=mcr.microsoft.com/playwright:v1.49.1-noble
-V2_IMAGE=ghcr.io/braveantony/koupa:v2
+# shellcheck source=../../images.env
+. "$stage/images.env"
+V2_IMAGE=$KOUPA_REPO:$KOUPA_V2_TAG
 CURL=$verify_dir/curl-stream.sh
 PW_NAMES=()
 RH_PIDS=()
@@ -115,6 +118,7 @@ phase_gateway() {
 	[ "$d" -gt 0 ] && sleep "$(awk -v d="$d" 'BEGIN{printf "%.3f", d/1000}')"
 	log "second 10: set image $V2_IMAGE (step 5 settings)"
 	date -u +%Y-%m-%dT%H:%M:%S.%NZ >"$dir/change-at.txt"
+	crit_arm
 	kubectl -n "$NS" set image deploy/koupa "koupa=$V2_IMAGE" >&2 || orch_fail "$dir" "set image failed"
 	local deadline=$(($(date +%s) + 120))
 	until [ "$(deploy_status)" = done ] && old_pods_gone; do
@@ -155,6 +159,7 @@ phase_same_pod() {
 	sleep 10
 	log "deleting $p (graceful: preStop, then SIGTERM)"
 	date -u +%Y-%m-%dT%H:%M:%S.%NZ >"$dir/delete-at.txt"
+	crit_arm
 	kubectl -n "$NS" delete pod "$p" --wait=false >&2 || orch_fail "$dir" "delete pod failed"
 	for i in $(seq 1 120); do
 		grep -q '"k":"shutdown"' "$dir/same-pod.json.partial" 2>/dev/null &&

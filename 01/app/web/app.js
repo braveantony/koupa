@@ -17,6 +17,15 @@ function el(tag, className, text) {
   return e;
 }
 
+// The MAJOR of a build version "vMAJOR[.MINOR[.PATCH]]" ("v2.2.0" -> 2),
+// 0 for anything else ("dev"); same rule as config.Major on the server.
+function versionMajor(v) {
+  const m = /^v(0|[1-9][0-9]{0,8})(\.(0|[1-9][0-9]{0,8})){0,2}$/.exec(typeof v === 'string' ? v : '');
+  return m ? Number(m[1]) : 0;
+}
+// The sold-out feature (售完標示) exists from MAJOR 2 on.
+const hasSoldOut = (v) => versionMajor(v) >= 2;
+
 // A random (version 4) UUID. crypto.randomUUID exists only in secure
 // contexts (HTTPS or localhost); the course opens the pages over plain HTTP
 // at the Gateway IP, so build one from crypto.getRandomValues there.
@@ -300,7 +309,7 @@ function initKitchen() {
   }
   async function loadMenu() {
     const who = await getJSON('/api/whoami');
-    if (who.version !== 'v2') return; // v1 has no sold-out feature
+    if (!hasSoldOut(who.version)) return; // the v1 line has no sold-out feature
     $('supply').hidden = false;
     const menu = await getJSON('/api/menu');
     const ul = $('menu');

@@ -12,7 +12,7 @@ out=$("$STAGE/scripts/preflight.sh" step-0 2>&1)
 rc=$?
 check "matching digest passes (rc=$rc)" [ "$rc" -eq 0 ]
 check "image-digest ok line" grep -q "^ok   image-digest:.*$V1" <<<"$out"
-check "preflight resolved the tag with skopeo" grep -q 'skopeo inspect .*docker://ghcr.io/braveantony/koupa:v1' "$FAKE/calls.log"
+check "preflight resolved the tag with skopeo" grep -q "skopeo inspect .*docker://$IMG_V1\$" "$FAKE/calls.log"
 
 out=$("$STAGE/scripts/preflight.sh" step-0 --digest "$V1" 2>&1)
 check "--digest given: passes" [ $? -eq 0 ]
@@ -67,6 +67,12 @@ out=$("$STAGE/scripts/preflight.sh" step-0 2>&1)
 check "unresolvable tag fails" grep -q '^FAIL image-digest: cannot resolve' <<<"$out"
 rm -f "$FAKE/skopeo-fail"
 
+make_live step-0
+touch "$FAKE/unpublished-$KOUPA_V1_TAG"
+out=$("$STAGE/scripts/preflight.sh" step-0 2>&1)
+check "unpublished tag fails (rc=$?)" grep -q "^FAIL image-digest: cannot resolve $IMG_V1 .*映像檔 $KOUPA_V1_TAG 還沒發布" <<<"$out"
+rm -f "$FAKE/unpublished-$KOUPA_V1_TAG"
+
 # measure.sh: resolved once per run, recorded, rush-hour run by image ID.
 unset RUSH_HOUR_BIN
 echo 25 >"$FAKE/rh-backdate"
@@ -78,10 +84,10 @@ check "control: exit 0 (rc=$rc)" [ "$rc" -eq 0 ]
 [ "$rc" -eq 0 ] || tail -15 "$T/out" | sed 's/^/    /'
 run=$(latest_run)
 check "image-digests.json records v1, v2 and rush-hour image ID" python3 -I -c '
-import json, sys
+import json, os, sys
 d = json.load(open(sys.argv[1]))
-ok = (d["koupa"]["ghcr.io/braveantony/koupa:v1"]["digest"] == "sha256:" + "0" * 63 + "1"
-      and d["koupa"]["ghcr.io/braveantony/koupa:v2"]["digest"] == "sha256:" + "0" * 63 + "2"
+ok = (d["koupa"][os.environ["IMG_V1"]]["digest"] == "sha256:" + "0" * 63 + "1"
+      and d["koupa"][os.environ["IMG_V2"]]["digest"] == "sha256:" + "0" * 63 + "2"
       and d["rush_hour"]["image_id"] == "fa4e1d" + "0" * 57 + "1")
 sys.exit(0 if ok else 1)' "$run/image-digests.json"
 check "koupa tags resolved once per run" [ "$(grep -c '^skopeo inspect' "$FAKE/calls.log")" -eq 2 ]
@@ -91,12 +97,12 @@ check "evidence index has image-digests.json" grep -q '^OK      image-digests.js
 check "images.json has the rush-hour image ID" grep -q 'fa4e1d0*1' "$run/images.json"
 
 # Registry moved on: a Pod runs another digest -> no measurement.
-echo "sha256:$(printf '%064d' 7)" >"$FAKE/digest-v1"
+echo "sha256:$(printf '%064d' 7)" >"$FAKE/digest-$KOUPA_V1_TAG"
 touch "$FAKE/apply-stale" # the nodes keep running the old image under the tag
 "$STAGE/measure.sh" control --runs 1 --duration 30 >"$T/out" 2>&1
 rc=$?
 check "digest mismatch: exit 1 (rc=$rc)" [ "$rc" -eq 1 ]
 check "says image-digest" grep -q '量測前核對不符：image-digest' "$T/out"
-rm -f "$FAKE/digest-v1" "$FAKE/apply-stale"
+rm -f "$FAKE/digest-$KOUPA_V1_TAG" "$FAKE/apply-stale"
 export RUSH_HOUR_BIN=$FAKE/bin/rush-hour
 finish

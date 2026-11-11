@@ -40,6 +40,7 @@
 set -uo pipefail
 # shellcheck source=lib.sh
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
+crit_init # its EXIT trap is replaced by verify_cleanup below
 
 DURATION=${VERIFY_DURATION:-30}
 COLLECTING=""

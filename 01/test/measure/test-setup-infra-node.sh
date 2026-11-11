@@ -8,6 +8,7 @@ trap 'rm -rf "$T"' EXIT
 FAKE=$T/fake
 mkdir -p "$FAKE/bin"
 export FAKE REAL_KUBECTL PATH=$FAKE/bin:$PATH
+fake_registry "$FAKE/bin"
 cat >"$FAKE/bin/kubectl" <<'K'
 #!/usr/bin/env bash
 # Fake kubectl for setup.sh: 3 workers, the koupa-db volume on worker-1

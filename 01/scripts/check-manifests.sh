@@ -8,6 +8,9 @@
 # 2 = usage or render error.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# The image every overlay renders: KOUPA_REPO:KOUPA_V1_TAG (images.env).
+# shellcheck source=../images.env
+. ./images.env
 
 step=${1:-}
 case "$step" in
@@ -27,7 +30,7 @@ rendered=$(kubectl kustomize "$dir") || { echo "FAIL $step: kubectl kustomize $d
 printf '%s\n' "$rendered" | python3 -I -c '
 import re, sys, yaml
 
-step = sys.argv[1]
+step, want_repo, want_tag = sys.argv[1:4]
 docs = [d for d in yaml.safe_load_all(sys.stdin) if d]
 
 # ABSENT = the field must not be set; any other value must match exactly.
@@ -48,7 +51,7 @@ BASE = {
     "hooksPort": ABSENT,
     "readinessProbe": ABSENT,
     "preStopCalibrated": ABSENT,
-    "imageTag": "v1",
+    "imageTag": want_tag,  # KOUPA_V1_TAG in images.env
 }
 # Step 1 readiness: GET /healthz on 8080 every 2 s, one failure or success
 # flips it, no initial delay (Task 23c, env-findings section 9).
@@ -145,8 +148,9 @@ check(8080 in ports, "containerPort 8080")
 
 # Image.
 image = c.get("image", "")
-check(image.startswith("ghcr.io/braveantony/koupa:"), "image is ghcr.io/braveantony/koupa (" + image + ")")
-check(image.rsplit(":", 1)[-1] == exp["imageTag"], "image tag is " + exp["imageTag"])
+check(image.startswith(want_repo + ":"), "image is " + want_repo + " (" + image + ")")
+check(image.rsplit(":", 1)[-1] == exp["imageTag"], "image tag is " + exp["imageTag"] + " (images.env KOUPA_V1_TAG)"
+      + ("" if image.rsplit(":", 1)[-1] == exp["imageTag"] else " (got " + image.rsplit(":", 1)[-1] + ")"))
 
 # Table-driven fields.
 def actual(field):
@@ -242,4 +246,4 @@ if failures:
     print("FAIL %s: %d check(s) failed" % (step, len(failures)))
     sys.exit(1)
 print("PASS " + step)
-' "$step"
+' "$step" "$KOUPA_REPO" "$KOUPA_V1_TAG"

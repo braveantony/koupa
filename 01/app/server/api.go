@@ -134,7 +134,7 @@ func (s *Server) handlePlaceOrder(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	res, txr, err := store.PlaceOrder(ctx, s.deps.Pool, req, store.PlaceOptions{
 		Idempotency:    s.cfg.IdempotencyKey,
-		CheckSoldOut:   s.cfg.Version == "v2",
+		CheckSoldOut:   s.cfg.SoldOut(),
 		LockTimeout:    s.cfg.LockTimeout,
 		DuplicateOrder: s.deps.DuplicateOrder,
 		DuplicateDone:  s.deps.DuplicateDone,

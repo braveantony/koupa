@@ -23,6 +23,7 @@ export CRIT_SUMMARY=$CRIT_EVIDENCE/summary.txt
 mkdir -p "$CRIT_EVIDENCE"
 : >"$CRIT_SUMMARY"
 child=""
+started=0 # 1 once an experiment was started: only then is there anything to restore
 exp_dir=${CRIT_EXP_DIR:-$here}
 
 parent_cleanup() {
@@ -47,7 +48,7 @@ parent_cleanup() {
 	else
 		restore_ok() { (CRIT_NO_RESTORE=1 && . "$here/lib.sh" && restore_step5); }
 	fi
-	if ! restore_ok 2>>"$CRIT_EVIDENCE/run.log"; then
+	if [ "$started" = 1 ] && ! restore_ok 2>>"$CRIT_EVIDENCE/run.log"; then
 		echo "FAIL restore" >>"$CRIT_SUMMARY"
 		rc=1
 	fi
@@ -65,6 +66,7 @@ for n in "${sel[@]}"; do
 	cur=$(ls "$exp_dir/$n"-*.sh 2>/dev/null | head -1)
 	[ -n "$cur" ] || { echo "FAIL no-experiment-$n" >>"$CRIT_SUMMARY"; continue; }
 	echo "=== $(basename "$cur")" >&2
+	started=1
 	CRIT_NO_RESTORE=1 setsid timeout 1800 "$cur" 2>>"$CRIT_EVIDENCE/run.log" &
 	child=$!
 	wait "$child"

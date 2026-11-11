@@ -9,6 +9,14 @@
 #                   failing against the cluster as it is)
 #   KOUPA_NS        namespace (default koupa)
 # Image tags: experiments/critical/images.env (written by build-images.sh).
+#
+# Sourcing this file has no side effect on any cluster: it installs no trap.
+# An entry point calls crit_init to install the EXIT/INT/TERM traps; the
+# cleanup restores step 5 only once crit_arm has run, which every helper
+# that changes the cluster (apply_overlay, pull_secret_up, pull_secret_down,
+# crit_test_pod) calls in this shell (never in a pipeline or subshell,
+# where the assignment would be lost) before its first write. Scripts that change the cluster with their
+# own kubectl calls call crit_arm first.
 
 set -uo pipefail
 
@@ -20,7 +28,11 @@ NS=${KOUPA_NS:-koupa}
 CRIT_EVIDENCE=${CRIT_EVIDENCE:-$stage/evidence/critical-$(date -u +%Y%m%dT%H%M%SZ)}
 CRIT_BIN=$stage/bin/crit
 RH_BIN=$stage/bin/rush-hour
-V1_IMAGE=ghcr.io/braveantony/koupa:v1
+# shellcheck source=../../images.env
+. "$stage/images.env"
+V1_IMAGE=$KOUPA_REPO:$KOUPA_V1_TAG
+# shellcheck source=../../scripts/lib/image-sed.sh
+. "$stage/scripts/lib/image-sed.sh"
 HOOK_NAMES=(order.before_commit order.after_commit request.mid sse.after_hello)
 APP_SELECTOR=app.kubernetes.io/name=koupa
 TEST_POD_SELECTOR=app.kubernetes.io/name=crit-slow-board
@@ -34,6 +46,18 @@ now_rfc() { date -u +%Y-%m-%dT%H:%M:%S.%NZ; }
 HOOKS=""         # comma-separated hook control addresses (port-forwards)
 BG_PIDS=()       # port-forwards and log followers
 TEST_PODS=()     # Pods this script created (deleted at exit)
+CRIT_ARMED=0     # 1 once this process changed the cluster (crit_arm)
+
+# crit_arm: from now on the exit cleanup restores step 5 (unless
+# CRIT_NO_RESTORE=1). Call before the first cluster write.
+crit_arm() { CRIT_ARMED=1; }
+
+# crit_test_pod NAME: remember a Pod this script is about to create (it is
+# deleted at exit) and arm the restore.
+crit_test_pod() {
+	crit_arm
+	TEST_PODS+=("$1")
+}
 
 crit_cleanup() {
 	local rc=$?
@@ -50,13 +74,18 @@ crit_cleanup() {
 	done
 	for p in "${BG_PIDS[@]}"; do kill "$p" 2>/dev/null || true; done
 	wait 2>/dev/null
-	if [ "${CRIT_NO_RESTORE:-0}" != 1 ]; then
+	if [ "$CRIT_ARMED" = 1 ] && [ "${CRIT_NO_RESTORE:-0}" != 1 ]; then
 		restore_step5 || rc=1
 	fi
 	exit "$rc"
 }
-trap crit_cleanup EXIT
-trap 'exit 130' INT TERM
+
+# crit_init: install the cleanup traps. Called by each entry point after
+# sourcing; a script with its own EXIT trap calls crit_cleanup from it.
+crit_init() {
+	trap crit_cleanup EXIT
+	trap 'exit 130' INT TERM
+}
 
 # stop_bg: end port-forwards and followers of the previous setting.
 stop_bg() {
@@ -118,8 +147,9 @@ wait_settled() {
 apply_overlay() {
 	local dir=$1 image=$2 out=$3
 	kubectl kustomize "$dir" >"$out.rendered" || return 1
-	sed "s#ghcr.io/braveantony/koupa:v[0-9][0-9]*#$image#" "$out.rendered" >"$out"
+	set_koupa_image "$image" <"$out.rendered" >"$out" || return 1
 	rm -f "$out.rendered"
+	crit_arm
 	timeout 60 kubectl apply -f "$out" >&2 || return 1
 	timeout 300 kubectl -n "$NS" rollout status deploy/koupa --timeout=280s >&2 || return 1
 	wait_settled 240
@@ -184,6 +214,7 @@ pull_secret_up() {
 		pull_secret_down
 		return
 	fi
+	crit_arm # here, in this shell: not inside the pipeline below (a subshell)
 	python3 -I - "$NS" "$PULL_SECRET" "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/containers/auth.json" <<'PY' |
 import base64, json, sys
 ns, name, path = sys.argv[1:]
@@ -198,6 +229,7 @@ PY
 }
 
 pull_secret_down() {
+	crit_arm
 	timeout 30 kubectl -n "$NS" delete secret "$PULL_SECRET" --ignore-not-found >/dev/null
 }
 

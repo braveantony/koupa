@@ -36,6 +36,8 @@
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 stage=$(cd "$here/../.." && pwd)
+# shellcheck source=../../images.env
+. "$stage/images.env" # KOUPA_V2_TAG: the version the App is built with
 run_id=$(date -u +%Y%m%d%H%M%S)_$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')
 EVID=${INGRESS_EVIDENCE:-$stage/evidence/ingress-$run_id}
 SUMMARY=$EVID/summary.txt
@@ -246,7 +248,7 @@ setup_and_run() {
 	[ -e "$bin" ] && fail_setup "$bin already exists"
 	mkdir -p "$bin" && bin_created=1
 	log "building"
-	(cd "$stage" && CGO_ENABLED=0 scripts/go build -ldflags "-X koupa/app/config.Version=v2" -o "$bin/koupa" ./app &&
+	(cd "$stage" && CGO_ENABLED=0 scripts/go build -ldflags "-X koupa/app/config.Version=$KOUPA_V2_TAG" -o "$bin/koupa" ./app &&
 		CGO_ENABLED=0 scripts/go build -o "$bin/ingress" ./experiments/ingress/cmd/ingress) >"$EVID/build.log" 2>&1 ||
 		fail_setup "build failed (see build.log)"
 
