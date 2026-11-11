@@ -36,8 +36,7 @@ publish:
 retag-history:
 	scripts/publish-images.sh --retag-history
 
-# Refuses to overwrite an existing rush-hour tag: bump RUSH_HOUR_VERSION.
+# Rush Hour, the same way: clean export of HEAD, refuses an existing tag or
+# one whose absence cannot be proven; bump RUSH_HOUR_VERSION first.
 push-rush-hour:
-	@if $(SKOPEO) inspect --format '{{.Digest}}' docker://$(REGISTRY)/rush-hour:$(RUSH_HOUR_VERSION) >/dev/null 2>&1; then \
-		echo "push-rush-hour: $(REGISTRY)/rush-hour:$(RUSH_HOUR_VERSION) already exists; bump RUSH_HOUR_VERSION" >&2; exit 1; fi
-	$(PODMAN) push $(REGISTRY)/rush-hour:$(RUSH_HOUR_VERSION)
+	scripts/publish-images.sh --rush-hour $(RUSH_HOUR_VERSION)

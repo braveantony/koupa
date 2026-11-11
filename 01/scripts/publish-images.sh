@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
-# Publish the koupa images with the versions in images.env; a published tag
-# is never overwritten.
+# Publish the koupa (and rush-hour) images; a published tag is never
+# overwritten.
 #
 #   scripts/publish-images.sh [--dry-run]
 #   scripts/publish-images.sh --retag-history [--dry-run]
+#   scripts/publish-images.sh --rush-hour VERSION [--dry-run]
 #
-# Default mode: builds both lines (KOUPA_V1_TAG, KOUPA_V2_TAG) from a clean
-# export of HEAD (`git archive`, so nothing outside the commit gets in) with
-# VERSION=<tag>, checks that /koupa --version prints the tag, pushes them
-# and prints their manifest digests. It refuses, before building anything,
-# when the working tree under 01/ is not clean, when a tag is not
-# vMAJOR.MINOR.PATCH of its line (v1.x.y / v2.x.y, same MINOR.PATCH), or when
-# a tag already exists on the registry (or its absence cannot be shown).
+# Default mode: builds both koupa lines (KOUPA_V1_TAG, KOUPA_V2_TAG in
+# images.env) from a clean export of HEAD (`git archive`, so nothing outside
+# the commit gets in) with VERSION=<tag>, checks that /koupa --version
+# prints the tag, pushes them and prints their manifest digests. It refuses,
+# before building anything, when the working tree under 01/ is not clean,
+# when a tag is not vMAJOR.MINOR.PATCH of its line (v1.x.y / v2.x.y, same
+# MINOR.PATCH), or when a tag already exists on the registry or its absence
+# cannot be proven (scripts/lib/registry.sh: only skopeo's exact
+# "manifest unknown" for that tag counts as absent; any other error fails).
 #
 # --retag-history: one-off; adds the semver tags of the images published
 # before images.env (table HISTORY below) to their existing digests with
@@ -20,19 +23,35 @@
 # the whole run before anything is copied. The legacy floating tags v1/v2
 # are not touched (deprecated, frozen at v1.1.0/v2.1.0).
 #
+# --rush-hour VERSION: the same for ghcr.io/braveantony/rush-hour:VERSION
+# (rush-hour/Containerfile, from the clean export of HEAD).
+#
 # --dry-run: all the checks, then prints what it would build, push or copy.
+#
+# Immutability is enforced by this procedure, not by the registry: ghcr has
+# no atomic "create this tag only if absent". So only one publisher (the
+# teacher) may publish at a time; a lock file serializes runs on one host.
+# Each tag's absence is checked again right before its push or copy, and
+# right after it the registry digest must equal the digest just pushed
+# (podman --digestfile) or the recorded one; anything else stops loudly.
 #
 # Credentials: podman and skopeo read the registry login that
 # `podman login ghcr.io` stored (REGISTRY_AUTH_FILE or the default
 # auth.json); nothing is ever passed on a command line.
 #
-# Environment (tests): PODMAN, SKOPEO, PUBLISH_STAGE (the 01/ directory).
+# Environment (tests): PODMAN, SKOPEO, PUBLISH_STAGE (the 01/ directory),
+# PUBLISH_LOCK (lock file).
 # Exit: 0 done; 1 refused or failed; 64 usage.
 set -euo pipefail
-stage=${PUBLISH_STAGE:-$(cd "$(dirname "$0")/.." && pwd)}
+here=$(cd "$(dirname "$0")" && pwd)
+stage=${PUBLISH_STAGE:-$(cd "$here/.." && pwd)}
 PODMAN=${PODMAN:-podman}
 SKOPEO=${SKOPEO:-skopeo}
+export SKOPEO
 PLATFORM=linux/amd64
+RUSH_HOUR_REPO=ghcr.io/braveantony/rush-hour
+# shellcheck source=lib/registry.sh
+. "$here/lib/registry.sh"
 
 # tag  manifest digest  (01/docs/design-v2/06-reference.md section 6.2)
 HISTORY=(
@@ -43,7 +62,7 @@ HISTORY=(
 )
 
 usage() {
-	sed -n '5,6p' "$0" | sed 's/^# \{0,1\}/usage: /' >&2
+	sed -n '5,7p' "$0" | sed 's/^# \{0,1\}/usage: /' >&2
 	exit 64
 }
 say() { printf 'publish-images: %s\n' "$*"; }
@@ -52,10 +71,11 @@ die() {
 	exit 1
 }
 
-mode=publish dry_run=0
+mode=publish dry_run=0 rh_version=""
 while [ $# -gt 0 ]; do
 	case $1 in
 	--retag-history) mode=retag; shift ;;
+	--rush-hour) [ $# -ge 2 ] || usage; mode=rush-hour rh_version=$2; shift 2 ;;
 	--dry-run) dry_run=1; shift ;;
 	*) usage ;;
 	esac
@@ -69,36 +89,25 @@ repo=${KOUPA_REPO:?images.env: KOUPA_REPO is not set}
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-# remote_digest REF: prints the manifest digest of REF (docker://...), or
-# "absent" when the registry says it does not exist. Any other error (no
-# network, no permission, ...) fails: absence must be proven, not assumed.
-remote_digest() {
-	local ref=$1 out
-	if out=$("$SKOPEO" inspect --format '{{.Digest}}' "docker://$ref" 2>"$tmp/inspect.err"); then
-		[[ $out =~ ^sha256:[0-9a-f]{64}$ ]] || {
-			echo "unexpected digest for $ref: $out" >&2
-			return 1
-		}
-		echo "$out"
-	elif grep -qiE 'manifest unknown|manifest_unknown|not found|name unknown' "$tmp/inspect.err"; then
-		echo absent
-	else
-		echo "cannot tell whether $ref exists: $(head -c 300 "$tmp/inspect.err" | tr '\n' ' ')" >&2
-		return 1
-	fi
+# One publisher at a time on this host (the registry cannot enforce it).
+lock=${PUBLISH_LOCK:-${XDG_RUNTIME_DIR:-/tmp}/koupa-publish-images.lock}
+exec 9>"$lock"
+flock -n 9 || die "another publish-images.sh is running (lock $lock)"
+
+# digest_of REF: the registry digest or "absent"; dies when it cannot tell.
+digest_of() {
+	registry_digest "$1" "$tmp/inspect.err" || die "refusing: $(cat "$tmp/inspect.err")"
 }
 
-# require_absent TAG...: refuses when any REPO:TAG exists (all are checked).
+# require_absent REF...: refuses when any REF exists (all are checked).
 require_absent() {
-	local t d bad=()
-	for t in "$@"; do
-		d=$(remote_digest "$repo:$t") || die "refusing: $repo:$t could not be checked"
-		if [ "$d" != absent ]; then
-			bad+=("$repo:$t ($d)")
-		fi
+	local r d bad=()
+	for r in "$@"; do
+		d=$(digest_of "$r") || exit 1
+		[ "$d" = absent ] || bad+=("$r ($d)")
 	done
 	[ ${#bad[@]} -eq 0 ] ||
-		die "refusing: already published, tags are never overwritten: ${bad[*]}; bump KOUPA_V1_TAG/KOUPA_V2_TAG in images.env"
+		die "refusing: already published, tags are never overwritten: ${bad[*]}; bump the version"
 }
 
 require_login() {
@@ -107,14 +116,46 @@ require_login() {
 		die "not logged in to $host: run podman login $host first (the token is read from there, never from argv)"
 }
 
+# require_clean_head: sets commit, prefix; refuses a dirty tree under 01/.
+require_clean_head() {
+	git -C "$stage" rev-parse --verify -q HEAD >/dev/null || die "$stage is not in a git repository with a commit"
+	local dirty
+	dirty=$(git -C "$stage" status --porcelain --untracked-files=normal -- . 2>&1) || die "git status failed: $dirty"
+	[ -z "$dirty" ] || die "refusing: the working tree under $stage is not clean; commit first:
+$dirty"
+	commit=$(git -C "$stage" rev-parse HEAD)
+	prefix=$(git -C "$stage" rev-parse --show-prefix)
+}
+
+export_head() {
+	ctx=$tmp/src
+	mkdir -p "$ctx"
+	git -C "$stage" archive --format=tar "HEAD:${prefix}" | tar -x -C "$ctx" || die "git archive of HEAD failed"
+}
+
+# push_new IMAGE: re-check absence, push, verify the registry digest equals
+# the digest podman just pushed.
+push_new() {
+	local img=$1 pushed got
+	require_absent "$img"
+	rm -f "$tmp/digest"
+	"$PODMAN" push --digestfile "$tmp/digest" "$img" || die "push of $img failed"
+	pushed=$(cat "$tmp/digest" 2>/dev/null || true)
+	[[ $pushed =~ ^sha256:[0-9a-f]{64}$ ]] || die "push of $img reported no digest ($pushed)"
+	got=$(digest_of "$img") || exit 1
+	[ "$got" = "$pushed" ] ||
+		die "ALERT: $img is $got on the registry right after pushing $pushed: another publisher wrote it? Stop and check before anyone pulls it"
+	say "pushed $img $got"
+}
+
 # ------------------------------------------------------------ retag-history
 if [ "$mode" = retag ]; then
 	todo=()
 	for row in "${HISTORY[@]}"; do
 		read -r tag digest <<<"$row"
-		src=$(remote_digest "$repo@$digest") || die "refusing: $repo@$digest could not be checked"
+		src=$(digest_of "$repo@$digest") || exit 1
 		[ "$src" = "$digest" ] || die "refusing: $repo@$digest is not on the registry ($src)"
-		have=$(remote_digest "$repo:$tag") || die "refusing: $repo:$tag could not be checked"
+		have=$(digest_of "$repo:$tag") || exit 1
 		if [ "$have" = absent ]; then
 			todo+=("$row")
 		elif [ "$have" = "$digest" ]; then
@@ -137,15 +178,37 @@ if [ "$mode" = retag ]; then
 	require_login
 	for row in "${todo[@]}"; do
 		read -r tag digest <<<"$row"
-		# Checked again right before the copy: never overwrite.
-		have=$(remote_digest "$repo:$tag") || die "refusing: $repo:$tag could not be checked"
-		[ "$have" = absent ] || die "refusing: $repo:$tag appeared meanwhile ($have)"
+		require_absent "$repo:$tag" # again, right before the copy
 		"$SKOPEO" copy --preserve-digests "docker://$repo@$digest" "docker://$repo:$tag" >"$tmp/copy.log" 2>&1 ||
 			die "skopeo copy to $repo:$tag failed: $(tail -c 300 "$tmp/copy.log" | tr '\n' ' ')"
-		got=$(remote_digest "$repo:$tag") || die "cannot read back $repo:$tag"
-		[ "$got" = "$digest" ] || die "$repo:$tag is $got after the copy, want $digest"
+		got=$(digest_of "$repo:$tag") || exit 1
+		[ "$got" = "$digest" ] ||
+			die "ALERT: $repo:$tag is $got right after the copy, want $digest: another publisher wrote it?"
 		say "tagged $repo:$tag $got"
 	done
+	exit 0
+fi
+
+# ---------------------------------------------------------------- rush-hour
+if [ "$mode" = rush-hour ]; then
+	[[ $rh_version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] ||
+		die "refusing: rush-hour version $rh_version is not MAJOR.MINOR.PATCH"
+	img=$RUSH_HOUR_REPO:$rh_version
+	require_clean_head
+	require_absent "$img"
+	if [ "$dry_run" = 1 ]; then
+		say "dry run: would build $img from $commit and push it"
+		exit 0
+	fi
+	require_login
+	export_head
+	say "building $img from $commit"
+	"$PODMAN" build --platform "$PLATFORM" -f "$ctx/rush-hour/Containerfile" \
+		--label "org.opencontainers.image.version=$rh_version" \
+		--label "org.opencontainers.image.revision=$commit" \
+		-t "$img" "$ctx" || die "build of $img failed"
+	push_new "$img"
+	say "done: bump RUSH_HOUR_VERSION / RUSH_HOUR_IMAGE and record the digest (TEACHER.md section 10)"
 	exit 0
 fi
 
@@ -156,24 +219,15 @@ semver='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
 [ "${KOUPA_V1_TAG#v1.}" = "${KOUPA_V2_TAG#v2.}" ] ||
 	die "refusing: KOUPA_V1_TAG=$KOUPA_V1_TAG and KOUPA_V2_TAG=$KOUPA_V2_TAG differ in MINOR.PATCH (both lines move together)"
 
-git -C "$stage" rev-parse --verify -q HEAD >/dev/null || die "$stage is not in a git repository with a commit"
-dirty=$(git -C "$stage" status --porcelain --untracked-files=normal -- . 2>&1) || die "git status failed: $dirty"
-[ -z "$dirty" ] || die "refusing: the working tree under $stage is not clean; commit first:
-$dirty"
-commit=$(git -C "$stage" rev-parse HEAD)
-prefix=$(git -C "$stage" rev-parse --show-prefix)
-
-require_absent "$KOUPA_V1_TAG" "$KOUPA_V2_TAG"
+require_clean_head
+require_absent "$repo:$KOUPA_V1_TAG" "$repo:$KOUPA_V2_TAG"
 
 if [ "$dry_run" = 1 ]; then
 	say "dry run: would build $repo:$KOUPA_V1_TAG and $repo:$KOUPA_V2_TAG from $commit and push them"
 	exit 0
 fi
 require_login
-
-ctx=$tmp/src
-mkdir -p "$ctx"
-git -C "$stage" archive --format=tar "HEAD:${prefix}" | tar -x -C "$ctx" || die "git archive of HEAD failed"
+export_head
 
 for tag in "$KOUPA_V1_TAG" "$KOUPA_V2_TAG"; do
 	img=$repo:$tag
@@ -188,13 +242,6 @@ for tag in "$KOUPA_V1_TAG" "$KOUPA_V2_TAG"; do
 done
 
 for tag in "$KOUPA_V1_TAG" "$KOUPA_V2_TAG"; do
-	img=$repo:$tag
-	# Checked again right before the push: never overwrite.
-	require_absent "$tag"
-	"$PODMAN" push --digestfile "$tmp/digest" "$img" || die "push of $img failed"
-	pushed=$(cat "$tmp/digest")
-	got=$(remote_digest "$img") || die "cannot read back $img"
-	[ "$got" = "$pushed" ] || die "$img is $got on the registry, push reported $pushed"
-	say "pushed $img $got"
+	push_new "$repo:$tag"
 done
-say "done: record the digests in 01/docs/design-v2/06-reference.md section 6.2"
+say "done: record the digests in 01/docs/design-v2/06-reference.md section 6.2, then announce the release"

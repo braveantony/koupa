@@ -88,6 +88,8 @@ RUSH_HOUR_IMAGE=${RUSH_HOUR_IMAGE:-ghcr.io/braveantony/rush-hour:0.1.0}
 . "$stage/images.env"
 IMG_V1=$KOUPA_REPO:$KOUPA_V1_TAG
 IMG_V2=$KOUPA_REPO:$KOUPA_V2_TAG
+# shellcheck source=scripts/lib/image-sed.sh
+. "$stage/scripts/lib/image-sed.sh"
 BANNER='診斷模式：對照組不成立，不可用於比較'
 CHANGE_AT_S=10 # the change is triggered at SENDING_STARTED + 10 s
 ROLLOUT_MARGIN_S=10 # the rollout must be complete at D - 10 s
@@ -732,7 +734,8 @@ PY
 	if ! "$KUBECTL" kustomize "$overlay_dir" >"$cur_dir/manifest/rendered.yaml" 2>>"$cur_dir/measure.log"; then
 		abort_run "kubectl kustomize $overlay_dir 失敗"
 	fi
-	sed -E "s#$KOUPA_REPO:v[0-9]+(\.[0-9]+){0,2}#$img_before#" "$cur_dir/manifest/rendered.yaml" >"$cur_dir/manifest/applied.yaml"
+	set_koupa_image "$img_before" <"$cur_dir/manifest/rendered.yaml" >"$cur_dir/manifest/applied.yaml" 2>>"$cur_dir/measure.log" ||
+		abort_run "無法把 $overlay_dir 的映像檔換成 $img_before"
 	rm -f "$cur_dir/manifest/rendered.yaml"
 	if [ "$mode" = calibrate ]; then
 		calib_prestop=$(python3 -I -c '

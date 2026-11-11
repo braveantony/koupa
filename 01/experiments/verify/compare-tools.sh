@@ -41,6 +41,7 @@
 set -uo pipefail
 # shellcheck source=lib.sh
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
+crit_init # its EXIT trap is replaced by verify_cleanup below
 KUBECTL=kubectl
 # shellcheck source=../../scripts/lib/kube.sh
 . "$stage/scripts/lib/kube.sh"
@@ -81,7 +82,8 @@ k6_run() {
 	dir=$root/k6/$runid
 	mkdir -p "$dir"
 	log "k6 run $runid"
-	kubectl kustomize "$(overlay_of "$step")" | sed -E "s#$KOUPA_REPO:v[0-9]+(\.[0-9]+){0,2}#$IMG_V1#" >"$dir/applied.yaml"
+	kubectl kustomize "$(overlay_of "$step")" | set_koupa_image "$IMG_V1" >"$dir/applied.yaml"
+	crit_arm
 	kubectl apply -f "$dir/applied.yaml" >"$dir/apply.log" 2>&1 || invalid="kubectl apply failed"
 	if [ -z "$invalid" ]; then
 		timeout 320 kubectl -n "$NS" rollout status deploy/koupa --timeout=300s >>"$dir/apply.log" 2>&1 || invalid="rollout to v1 not complete"
@@ -123,6 +125,7 @@ k6_run() {
 		[ "$d" -gt 0 ] && sleep "$(awk -v d="$d" 'BEGIN{printf "%.3f", d/1000}')"
 		change_at=$(now_ms)
 		log "second $CHANGE_AT_S: set image $IMG_V2"
+		crit_arm
 		if kubectl -n "$NS" set image deploy/koupa "koupa=$IMG_V2" >>"$dir/apply.log" 2>&1; then
 			while [ "$(now_ms)" -lt "$dl_ms" ]; do
 				status=$(deploy_status)

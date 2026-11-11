@@ -40,6 +40,8 @@ usage() {
 
 step=${1:-}
 [ $# -ge 1 ] && shift
+# shellcheck source=lib/registry.sh
+. "$stage/scripts/lib/registry.sh"
 # shellcheck source=../images.env
 . "$stage/images.env"
 image=$KOUPA_REPO:$KOUPA_V1_TAG
@@ -62,8 +64,11 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 if [ -z "$digest" ]; then
-	digest=$("${SKOPEO:-skopeo}" inspect --format '{{.Digest}}' "docker://$image" 2>"$tmp/skopeo.err") || digest=""
-	[ -n "$digest" ] || digest="unresolved: $(head -c 300 "$tmp/skopeo.err" | tr '\n' ' ')"
+	if digest=$(registry_digest "$image" "$tmp/skopeo.err"); then
+		[ "$digest" != absent ] || digest="unresolved: 映像檔 ${image##*:} 還沒發布（$image 不在 registry 上；講師要先 make publish）"
+	else
+		digest="unresolved: $(head -c 300 "$tmp/skopeo.err" | tr '\n' ' ')"
+	fi
 fi
 
 "$KUBECTL" kustomize "$dir" >"$tmp/rendered.yaml" 2>"$tmp/err" || {

@@ -67,6 +67,12 @@ out=$("$STAGE/scripts/preflight.sh" step-0 2>&1)
 check "unresolvable tag fails" grep -q '^FAIL image-digest: cannot resolve' <<<"$out"
 rm -f "$FAKE/skopeo-fail"
 
+make_live step-0
+touch "$FAKE/unpublished-$KOUPA_V1_TAG"
+out=$("$STAGE/scripts/preflight.sh" step-0 2>&1)
+check "unpublished tag fails (rc=$?)" grep -q "^FAIL image-digest: cannot resolve $IMG_V1 .*映像檔 $KOUPA_V1_TAG 還沒發布" <<<"$out"
+rm -f "$FAKE/unpublished-$KOUPA_V1_TAG"
+
 # measure.sh: resolved once per run, recorded, rush-hour run by image ID.
 unset RUSH_HOUR_BIN
 echo 25 >"$FAKE/rh-backdate"

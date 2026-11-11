@@ -25,10 +25,32 @@ die() { echo "setup.sh: $*" >&2; exit 1; }
 
 command -v kubectl >/dev/null || die "kubectl not found"
 command -v python3 >/dev/null || die "python3 not found"
+command -v skopeo >/dev/null || die "skopeo not found"
 log "context: $(kubectl config current-context)"
 
 log "checking the step-0 manifest"
 scripts/check-manifests.sh base >/dev/null || { scripts/check-manifests.sh base | grep -v '^ok' >&2; die "k8s/base fails its checks"; }
+
+# The images must be on the registry before anything is changed: k8s/base
+# uses KOUPA_V1_TAG (check-manifests.sh), measure.sh upgrades to KOUPA_V2_TAG.
+# shellcheck source=images.env
+. ./images.env
+# shellcheck source=scripts/lib/registry.sh
+. scripts/lib/registry.sh
+log "checking that the koupa images are published"
+reg_err=$(mktemp)
+for tag in "$KOUPA_V1_TAG" "$KOUPA_V2_TAG"; do
+  if ! d=$(registry_digest "$KOUPA_REPO:$tag" "$reg_err"); then
+    e=$(cat "$reg_err"); rm -f "$reg_err"
+    die "無法確認映像檔 $KOUPA_REPO:$tag 是否已發布（連得到 ghcr.io 嗎？）：$e"
+  fi
+  if [ "$d" = absent ]; then
+    rm -f "$reg_err"
+    die "映像檔 $tag 還沒發布（$KOUPA_REPO:$tag 不在 registry 上）。這個版本要等講師執行 make publish 之後才能部署；請先用已發布版本的 commit，或等發布公告"
+  fi
+  echo "$KOUPA_REPO:$tag $d"
+done
+rm -f "$reg_err"
 
 # --- 0. infra worker ---------------------------------------------------------
 workers=$(kubectl get nodes -l '!node-role.kubernetes.io/control-plane' -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | sort)

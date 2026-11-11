@@ -34,6 +34,8 @@ NS=${KOUPA_NS:-koupa}
 KUBECTL=${KUBECTL:-kubectl}
 # shellcheck source=../images.env
 . "$stage/images.env" # KOUPA_REPO, KOUPA_V1_TAG: the image tag swapped into the manifest
+# shellcheck source=lib/image-sed.sh
+. "$stage/scripts/lib/image-sed.sh"
 
 # all_files: every file of the pack with its size (not the index itself).
 all_files() { (cd "$1" && find . -path ./evidence-index.txt -prune -o -type f -printf '%10s  %P\n' | sort -k2); }
@@ -72,8 +74,8 @@ esac
 
 # Manifests.
 if "$KUBECTL" kustomize "$dir" >"$run/manifest/kustomize.raw.yaml" 2>"$run/manifest/kustomize.err"; then
-	sed -E "s#$KOUPA_REPO:v[0-9]+(\.[0-9]+){0,2}#${image:-$KOUPA_REPO:$KOUPA_V1_TAG}#" \
-		"$run/manifest/kustomize.raw.yaml" >"$run/manifest/kustomize.yaml"
+	set_koupa_image "${image:-$KOUPA_REPO:$KOUPA_V1_TAG}" \
+		<"$run/manifest/kustomize.raw.yaml" >"$run/manifest/kustomize.yaml"
 	rm -f "$run/manifest/kustomize.raw.yaml" "$run/manifest/kustomize.err"
 fi
 {

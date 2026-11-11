@@ -39,7 +39,18 @@ YAML 不寫死 IP，`measure.sh` 會自動查 Gateway 的 IP。
 - **推上 ghcr 的 tag 不再覆蓋**。內容變了就換新的版本號，所以 Deployment 的映像檔字串一定會變，Kubernetes 會照平常的 rolling update 拉新的映像檔；
 - 目前的版本只寫在 `01/images.env`（`KOUPA_V1_TAG`、`KOUPA_V2_TAG`）。`k8s/base` 用 `KOUPA_V1_TAG`（`scripts/check-manifests.sh` 會檢查兩者一致），`measure.sh`、`scripts/preflight.sh`、`scripts/evidence.sh` 和實驗腳本都從這裡讀；
 - App 的版本字串就是完整的 tag（建置時 `VERSION=v1.2.0`），`/api/whoami`、看板的 hello 事件和 `/koupa --version` 都會顯示；有沒有售完功能看 MAJOR（2 以上才有），不是比對整個字串；
-- 發布用 `scripts/publish-images.sh`（`make publish`）：從 HEAD 的乾淨匯出建置兩條線，tag 已經在 ghcr 上就拒絕推送；`--retag-history` 把下表較早的版本號補到既有的 digest 上，同樣不覆蓋。登入資訊用 `podman login` 存的那一份，不放在命令列上。
+- 發布用 `scripts/publish-images.sh`（`make publish`）：從 HEAD 的乾淨匯出建置兩條線，tag 已經在 ghcr 上就拒絕推送；`--retag-history` 把下表較早的版本號補到既有的 digest 上，同樣不覆蓋。登入資訊用 `podman login` 存的那一份，不放在命令列上；
+- 「不覆蓋」是靠這個發布流程做到的，**registry 本身不會擋**：ghcr 沒有「tag 不存在才建立」的原子操作。所以同一時間只能有一個人（講師）發布，腳本也用鎖檔擋住同一台主機上的第二個執行；每個 tag 推送或複製前會再查一次確實不存在（只有 registry 對這個 tag 回「manifest unknown」才算不存在，連不上、沒有權限等其他錯誤一律拒絕），推送後馬上確認 registry 上的 digest 就是剛推的那一個，不一致就大聲報錯停下來。
+
+**發布順序**（`k8s/base` 和 `images.env` 合併後就指向新版本號，所以中間不能拖）：
+
+1. 在分支上調高 `images.env` 兩條線的版本號，`k8s/base` 跟著改（`scripts/check-manifests.sh` 會檢查一致）；
+2. 合併到 main；
+3. **馬上**在 main 的乾淨工作目錄 `podman login ghcr.io`、`make publish`；
+4. 把印出的 digest 記進下表、commit；
+5. 最後才公告新版本。
+
+在第 3 步完成之前，用到這個 commit 的人跑 `setup.sh` 會在改動叢集之前就停下來，顯示「映像檔 v1.2.0 還沒發布」；`measure.sh` 的 preflight 也會因為解析不到 tag 而不開始量測。
 
 **版本紀錄**（manifest digest，`ghcr.io/braveantony/koupa`）：
 

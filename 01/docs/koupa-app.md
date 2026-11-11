@@ -38,7 +38,7 @@ App 有兩個版本，分別放在兩個映像檔（用來啟動容器的程式�
 ## 開始之前
 
 - 一個 tk8s 叢集，至少 3 個 worker（叢集裡執行 App 的節點），control plane 數量不限；叢集已經設定好 Cilium Gateway API、LoadBalancer IP 池，以及 StorageClass `local-path`。
-- 主機（執行這些指令、而且連得到 Gateway IP 的那台電腦）上有 `git`、`kubectl`、`curl`、`python3`（含 PyYAML，`setup.sh` 用它檢查 migration 檔案是否齊全）；之後跑量測還需要 `podman`。
+- 主機（執行這些指令、而且連得到 Gateway IP 的那台電腦）上有 `git`、`kubectl`、`curl`、`python3`（含 PyYAML，`setup.sh` 用它檢查 migration 檔案是否齊全）、`skopeo`（`setup.sh` 用它確認映像檔已經發布）；之後跑量測還需要 `podman`。
 - `kubectl` 的目前 context（kubectl 要操作哪個叢集）指向這個叢集：
 
   ```bash
@@ -223,6 +223,8 @@ git pull
 ```
 
 `setup.sh` 會套用 `k8s/base`。Deployment 的映像檔字串和叢集裡的不一樣，Kubernetes 就會照平常的 rolling update 換掉 Pod；新的 tag 在 worker 上還沒有，所以會到 ghcr 拉。不用先在每個節點 `crictl pull`，也不用 `rollout restart`。
+
+`setup.sh` 在改動叢集之前，會先確認 `images.env` 的兩個版本都已經在 ghcr 上。如果講師還沒發布，它會停下來並顯示「映像檔 v1.2.0 還沒發布」，叢集維持原狀；等發布公告後再跑一次就好。
 
 確認 3 個 Pod 跑的是新版本，而且 digest 和[設計文件 6.2](design-v2/06-reference.md#62-映像檔) 的版本表一樣：
 

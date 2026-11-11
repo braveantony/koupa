@@ -20,19 +20,28 @@ H11=sha256:e767bd6d12d316733c826da07b387674791c4f7e1e11cff8d5f1b8aa0459bdea
 H21=sha256:082a7412ec4de56f160c7d1bbe91162a7f119a4e0742421345d866c609648cf4
 
 # Registry: $FAKE/reg/tag-<tag> holds the tag's digest, $FAKE/reg/blob-<digest>
-# marks a manifest that exists; $FAKE/reg-error makes inspect fail otherwise.
+# marks a manifest that exists. A missing one answers like skopeo: exit 2,
+# "reading manifest <tag|digest> in <repo>: manifest unknown".
+# $FAKE/reg-error: that text on stderr instead, exit $FAKE/reg-error-rc
+# (default 1). $FAKE/appear-<tag>: the tag is absent at the first lookup and
+# appears (digest D(8)) afterwards, as if another publisher pushed it.
 cat >"$FAKE/bin/skopeo" <<'EOF'
 #!/usr/bin/env bash
 echo "skopeo $*" >>"$FAKE/calls.log"
 case $1 in
 inspect)
 	ref=${!#}; ref=${ref#docker://}
-	if [ -f "$FAKE/reg-error" ]; then cat "$FAKE/reg-error" >&2; exit 1; fi
+	if [ -f "$FAKE/reg-error" ]; then cat "$FAKE/reg-error" >&2; exit "$(cat "$FAKE/reg-error-rc" 2>/dev/null || echo 1)"; fi
 	case $ref in
-	*@sha256:*) d=${ref#*@}; [ -f "$FAKE/reg/blob-$d" ] && { echo "$d"; exit 0; } ;;
-	*) t=${ref##*:}; [ -f "$FAKE/reg/tag-$t" ] && { cat "$FAKE/reg/tag-$t"; exit 0; } ;;
+	*@sha256:*) name=${ref%@*} part=${ref#*@}; [ -f "$FAKE/reg/blob-$part" ] && { echo "$part"; exit 0; } ;;
+	*) name=${ref%:*} part=${ref##*:}
+		if [ -f "$FAKE/appear-$part" ]; then
+			if [ -f "$FAKE/appear-$part.seen" ]; then printf 'sha256:%064d\n' 8; exit 0; fi
+			touch "$FAKE/appear-$part.seen"
+		fi
+		[ -f "$FAKE/reg/tag-$part" ] && { cat "$FAKE/reg/tag-$part"; exit 0; } ;;
 	esac
-	echo "time=x level=fatal msg=\"reading manifest in $ref: manifest unknown\"" >&2
+	echo "time=\"x\" level=fatal msg=\"Error parsing image name \\\"docker://$ref\\\": reading manifest $part in $name: manifest unknown\"" >&2
 	exit 2 ;;
 copy)
 	src=${@: -2:1}; dst=${!#}
@@ -66,7 +75,9 @@ push)
 	df=$3 img=$4 t=${4##*:}
 	n=$(($(ls "$FAKE/reg" | wc -l) + 100))
 	d=$(printf 'sha256:%064d' "$n")
-	touch "$FAKE/reg/blob-$d"; echo "$d" >"$FAKE/reg/tag-$t"; printf '%s' "$d" >"$df" ;;
+	touch "$FAKE/reg/blob-$d"; echo "$d" >"$FAKE/reg/tag-$t"; printf '%s' "$d" >"$df"
+	# $FAKE/race: another publisher overwrites the tag right after our push.
+	[ -f "$FAKE/race" ] && printf 'sha256:%064d\n' 999 >"$FAKE/reg/tag-$t" ;;
 esac
 exit 0
 EOF
@@ -79,11 +90,11 @@ echo 'FROM scratch' >"$T/repo/01/app/Containerfile"
 git -C "$T/repo" init -q
 git -C "$T/repo" -c user.name=t -c user.email=t@t add -A
 git -C "$T/repo" -c user.name=t -c user.email=t@t commit -qm init
-export PUBLISH_STAGE=$T/repo/01
+export PUBLISH_STAGE=$T/repo/01 PUBLISH_LOCK=$T/publish.lock
 . "$STAGE/images.env"
 
 reset_reg() {
-	rm -rf "$FAKE/reg" "$FAKE/reg-error" "$FAKE/no-login" "$FAKE"/built-*
+	rm -rf "$FAKE/reg" "$FAKE/reg-error" "$FAKE/reg-error-rc" "$FAKE/no-login" "$FAKE/race" "$FAKE"/appear-* "$FAKE"/built-*
 	mkdir -p "$FAKE/reg"
 	for d in $H10 $H20 $H11 $H21; do touch "$FAKE/reg/blob-$d"; done
 	: >"$FAKE/calls.log"
@@ -104,13 +115,29 @@ check "nothing built or pushed" no_change
 check "the registry tag still has its digest" [ "$(cat "$FAKE/reg/tag-$KOUPA_V2_TAG")" = "$(D 7)" ]
 check "both tags were checked first" bash -c 'grep -q "skopeo inspect .*koupa:$1" "$3" && grep -q "skopeo inspect .*koupa:$2" "$3"' _ "$KOUPA_V1_TAG" "$KOUPA_V2_TAG" "$FAKE/calls.log"
 
-echo "-- publish: a registry error is not taken as absent"
-reset_reg
-echo 'Error: unauthorized: authentication required' >"$FAKE/reg-error"
-run
-check "refused (rc=$rc)" [ "$rc" -eq 1 ]
-check "says it could not check" grep -q "cannot tell whether.*unauthorized" <<<"$out"
-check "nothing built or pushed" no_change
+echo "-- publish: only skopeo's exact manifest-unknown counts as absent"
+# rc|stderr: errors that are not "this manifest does not exist".
+while IFS='|' read -r erc etext; do
+	reset_reg
+	printf '%s\n' "$etext" >"$FAKE/reg-error"
+	echo "$erc" >"$FAKE/reg-error-rc"
+	run
+	check "refused: [$erc] ${etext:0:110} (rc=$rc)" [ "$rc" -eq 1 ]
+	check "  says it cannot tell" grep -q "cannot tell whether .*$REPO:$KOUPA_V1_TAG exists" <<<"$out"
+	check "  nothing built or pushed" no_change
+done <<'ERRS'
+1|time="x" level=fatal msg="Error parsing image name \"docker://ghcr.io/braveantony/koupa:v1.2.0\": unauthorized: authentication required"
+1|time="x" level=fatal msg="Error parsing image name \"docker://ghcr.io/braveantony/koupa:v1.2.0\": credential helper not found: docker-credential-ghcr"
+1|time="x" level=fatal msg="open /run/user/1000/containers/auth.json: no such file or directory (file not found)"
+1|time="x" level=fatal msg="Error parsing image name \"docker://ghcr.io/braveantony/koupa:v1.2.0\": pinging container registry ghcr.io: Get \"https://ghcr.io/v2/\": dial tcp: lookup ghcr.io: no such host"
+1|time="x" level=fatal msg="Error parsing image name \"docker://ghcr.io/braveantony/koupa:v1.2.0\": reading manifest v1.2.0 in ghcr.io/braveantony/koupa: received unexpected HTTP status: 503 Service Unavailable"
+1|time="x" level=fatal msg="Error parsing image name \"docker://ghcr.io/braveantony/koupa:v1.2.0\": Requesting bearer token: received unexpected HTTP status: 404 Not Found"
+1|time="x" level=fatal msg="Error parsing image name \"docker://ghcr.io/braveantony/koupa:v1.2.0\": reading manifest v1.2.0 in ghcr.io/braveantony/koupa: manifest unknown"
+2|time="x" level=fatal msg="Error parsing image name \"docker://ghcr.io/braveantony/koupa:v1.2.0\": reading manifest v1.2.0 in ghcr.io/braveantony/other: manifest unknown"
+2|time="x" level=fatal msg="Error parsing image name \"docker://ghcr.io/braveantony/koupa:v1.2.0\": reading manifest v1.2.00 in ghcr.io/braveantony/koupa: manifest unknown"
+2|time="x" level=fatal msg="Error parsing image name \"docker://ghcr.io/braveantony/koupa:v1.2.0\": reading manifest v1.2.0 in ghcr.io/braveantony/koupa: manifest unknown; also: blob not found"
+2|time="x" level=fatal msg="something else: not found"
+ERRS
 
 echo "-- publish: dirty tree"
 reset_reg
@@ -160,6 +187,52 @@ check "prints both digests" bash -c 'grep -q "pushed .*:$1 sha256:" <<<"$3" && g
 check "no credential on any command line" bash -c '! grep -qiE -- "--creds|--password|-p |token" "$1"' _ "$FAKE/calls.log"
 run
 check "a second publish of the same tags is refused (rc=$rc)" [ "$rc" -eq 1 ]
+
+echo "-- publish: the tag appears between the first check and the push"
+reset_reg
+touch "$FAKE/appear-$KOUPA_V1_TAG"
+run
+check "refused (rc=$rc)" [ "$rc" -eq 1 ]
+check "names it" grep -qF "already published, tags are never overwritten: $REPO:$KOUPA_V1_TAG ($(D 8))" <<<"$out"
+check "nothing pushed" bash -c '! grep -q "^podman push" "$1"' _ "$FAKE/calls.log"
+
+echo "-- publish: another publisher overwrites right after the push"
+reset_reg
+touch "$FAKE/race"
+run
+check "fails (rc=$rc)" [ "$rc" -eq 1 ]
+check "alerts loudly" grep -q "ALERT: $REPO:$KOUPA_V1_TAG is $(D 999) on the registry right after pushing" <<<"$out"
+check "stops before the second push" [ "$(grep -c '^podman push' "$FAKE/calls.log")" -eq 1 ]
+
+echo "-- publish: one publisher at a time (lock held)"
+reset_reg
+( flock 9; sleep 3 ) 9>"$PUBLISH_LOCK" &
+sleep 0.5
+run --dry-run
+check "refused while locked (rc=$rc)" bash -c '[ "$1" -eq 1 ] && grep -q "another publish-images.sh is running" <<<"$2"' _ "$rc" "$out"
+wait
+
+echo "-- rush-hour: same rules"
+reset_reg
+mkdir -p "$T/repo/01/rush-hour" && echo 'FROM scratch' >"$T/repo/01/rush-hour/Containerfile"
+git -C "$T/repo" -c user.name=t -c user.email=t@t add -A
+git -C "$T/repo" -c user.name=t -c user.email=t@t commit -qm rush-hour
+D 3 >"$FAKE/reg/tag-0.1.0"
+run --rush-hour 0.1.0
+check "existing 0.1.0 refused (rc=$rc)" [ "$rc" -eq 1 ]
+check "  nothing built or pushed" no_change
+reset_reg
+echo 'Error: unauthorized' >"$FAKE/reg-error"
+run --rush-hour 0.2.0
+check "registry error refused (rc=$rc)" bash -c '[ "$1" -eq 1 ] && grep -q "cannot tell whether" <<<"$2"' _ "$rc" "$out"
+check "  nothing built or pushed" no_change
+reset_reg
+run --rush-hour 0.2
+check "bad version refused (rc=$rc)" [ "$rc" -eq 1 ]
+reset_reg
+run --rush-hour 0.2.0
+check "absent 0.2.0 built and pushed (rc=$rc)" bash -c '[ "$1" -eq 0 ] && grep -q "pushed ghcr.io/braveantony/rush-hour:0.2.0 sha256:" <<<"$2"' _ "$rc" "$out"
+check "  built from rush-hour/Containerfile of the export" grep -q "^podman build .*rush-hour/Containerfile .*-t ghcr.io/braveantony/rush-hour:0.2.0 " "$FAKE/calls.log"
 
 echo "-- retag-history: a tag on another digest stops everything"
 reset_reg
