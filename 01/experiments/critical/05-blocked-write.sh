@@ -12,6 +12,7 @@
 #   within the grace period -> wait for the Pod to end.
 # Expected (mechanism on; the design has no "off" expectation for this row).
 . "$(dirname "$0")/lib.sh"
+crit_init
 exp=05-blocked-write
 SHUTDOWN_TIMEOUT_S=15 GRACE_S=40
 # Margin on "ended within SHUTDOWN_TIMEOUT": both times are the App's own
@@ -29,7 +30,7 @@ run() {
 	ip=$(kubectl -n "$NS" get pod "$target" -o jsonpath='{.status.podIP}')
 	[ -n "$ip" ] || return 1
 	sb=crit-slow-board-$(date +%H%M%S)
-	TEST_PODS+=("$sb")
+	crit_test_pod "$sb"
 	cat >"$d/slow-board-pod.yaml" <<YAML
 apiVersion: v1
 kind: Pod

@@ -9,6 +9,15 @@ set -uo pipefail
 
 STAGE=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 REAL_KUBECTL=$(command -v kubectl || true)
+# The images measure.sh uses: KOUPA_REPO:KOUPA_V1_TAG / KOUPA_V2_TAG.
+# shellcheck source=../../images.env
+. "$STAGE/images.env"
+IMG_V1=$KOUPA_REPO:$KOUPA_V1_TAG
+IMG_V2=$KOUPA_REPO:$KOUPA_V2_TAG
+# shellcheck source=../../scripts/lib/image-sed.sh
+. "$STAGE/scripts/lib/image-sed.sh"
+KOUPA_REPO_RE=$(ere_escape "$KOUPA_REPO")
+export KOUPA_REPO KOUPA_V1_TAG KOUPA_V2_TAG IMG_V1 IMG_V2 KOUPA_REPO_RE
 FAILS=0
 NAME=$(basename "$0" .sh)
 
@@ -32,6 +41,24 @@ finish() {
 	fi
 	echo "FAIL $NAME ($FAILS)"
 	exit 1
+}
+
+# fake_registry DIR: a fake skopeo in DIR (for setup.sh tests): every tag
+# exists, except one listed in $FAKE/unpublished (absent: skopeo's exit 2
+# "manifest unknown"); $FAKE/registry-down makes every lookup fail.
+fake_registry() {
+	cat >"$1/skopeo" <<'SKOPEO'
+#!/usr/bin/env bash
+echo "skopeo $*" >>"$FAKE/calls.log"
+ref=${!#}; ref=${ref#docker://}
+[ -f "$FAKE/registry-down" ] && { echo 'level=fatal msg="pinging container registry ghcr.io: dial tcp: lookup ghcr.io: no such host"' >&2; exit 1; }
+if grep -qxF "$ref" "$FAKE/unpublished" 2>/dev/null; then
+	echo "level=fatal msg=\"Error parsing image name \\\"docker://$ref\\\": reading manifest ${ref##*:} in ${ref%:*}: manifest unknown\"" >&2
+	exit 2
+fi
+printf 'sha256:%064d\n' 1
+SKOPEO
+	chmod +x "$1/skopeo"
 }
 
 setup_fakes() {
@@ -72,7 +99,7 @@ kustomize) exec "$REAL_KUBECTL" "$@" ;;
 apply)
 	cat >"$FAKE/applied.yaml"
 	# Like a real apply + finished rollout: the Deployment runs the applied image.
-	img=$(grep -o 'ghcr.io/braveantony/koupa:v[0-9]*' "$FAKE/applied.yaml" | head -1)
+	img=$(sed -nE "s#^ *image: ($KOUPA_REPO_RE:v[0-9]+(\.[0-9]+){0,2})\$#\1#p" "$FAKE/applied.yaml" | head -1)
 	[ -f "$FAKE/deploy.json" ] && python3 -I -c '
 import json, sys
 d = json.load(open(sys.argv[1]))
@@ -234,17 +261,24 @@ exit 0
 EOF
 
 	# Fake skopeo inspect --format '{{.Digest}}' docker://IMAGE: the digest
-	# in $FAKE/digest-<tag> (default: v1 = make_live's imageID, others ...02);
-	# $FAKE/skopeo-fail makes it fail.
+	# in $FAKE/digest-<tag> (default: the v1 line = make_live's imageID,
+	# others ...02);
+	# $FAKE/skopeo-fail makes it fail; $FAKE/unpublished-<tag>: the tag is
+	# not on the registry (skopeo's exit 2, "manifest unknown").
 	cat >"$FAKE/bin/skopeo" <<'EOF'
 #!/usr/bin/env bash
 [ -n "${FAKE_QUIET:-}" ] || echo "skopeo $*" >>"$FAKE/calls.log"
 [ -f "$FAKE/skopeo-fail" ] && { echo "fake skopeo: registry unreachable" >&2; exit 1; }
 ref=${!#}
+ref=${ref#docker://}
 tag=${ref##*:}
+if [ -f "$FAKE/unpublished-$tag" ]; then
+	echo "level=fatal msg=\"Error parsing image name \\\"docker://$ref\\\": reading manifest $tag in ${ref%:*}: manifest unknown\"" >&2
+	exit 2
+fi
 if [ -f "$FAKE/digest-$tag" ]; then cat "$FAKE/digest-$tag"; exit 0; fi
 case $tag in
-v1) printf 'sha256:%064d\n' 1 ;;
+v1 | v1.*) printf 'sha256:%064d\n' 1 ;;
 *) printf 'sha256:%064d\n' 2 ;;
 esac
 EOF
@@ -490,7 +524,7 @@ docs = [d for d in yaml.safe_load_all(open(fake + "/rendered.yaml")) if d]
 dep = [d for d in docs if d["kind"] == "Deployment"][0]
 pod = dep["spec"]["template"]["spec"]
 c = pod["containers"][0]
-c["image"] = "ghcr.io/braveantony/koupa:v1"
+c["image"] = os.environ["IMG_V1"]
 pod.setdefault("terminationGracePeriodSeconds", 30)
 for e in c.get("env", []):
     fr = e.get("valueFrom", {}).get("fieldRef")

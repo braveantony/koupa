@@ -10,7 +10,7 @@ mk_run() {
 	run=$MEASURE_EVIDENCE_DIR/control-20260101-000000-r1-abcd
 	rm -rf "$run"
 	mkdir -p "$run/app" "$run/manifest"
-	echo '{"run_id":"control-20260101-000000-r1-abcd","overlay":"control","image_before":"ghcr.io/braveantony/koupa:v1","base_url":"http://172.22.0.201","rush_hour":{"kind":"bin","ref":"/bin/true"}}' >"$run/params.json"
+	echo '{"run_id":"control-20260101-000000-r1-abcd","overlay":"control","image_before":"'"$IMG_V1"'","base_url":"http://172.22.0.201","rush_hour":{"kind":"bin","ref":"/bin/true"}}' >"$run/params.json"
 	echo '{"koupa":{}}' >"$run/image-digests.json"
 	sed 's/@RUN@/control-20260101-000000-r1-abcd/g' "$FAKE/scorecard.json" >"$run/scorecard.json"
 	echo x >"$run/scorecard.txt"; echo x >"$run/manifest/applied.yaml"; echo '{}' >"$run/rollout.json"

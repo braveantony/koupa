@@ -119,6 +119,29 @@ test('v2: sold-out item is disabled on the order page', async ({ page, request }
   }
 });
 
+// The kitchen's sold-out panel follows the MAJOR of the build version (the
+// semver image tag), not an exact "v2".
+test('kitchen shows the sold-out panel from MAJOR version 2 on', async ({ page }) => {
+  for (const [version, shown] of [['v2.2.0', true], ['v2', true], ['v3.0.0', true],
+    ['v1.2.0', false], ['v1', false], ['dev', false]] as const) {
+    let menuAsked = 0;
+    await page.unrouteAll();
+    await page.route('**/api/whoami', (r) =>
+      r.fulfill({ json: { pod_uid: 'pw-uid', pod_name: 'pw-pod', version } }));
+    await page.route('**/api/menu', (r) => { menuAsked++; return r.continue(); });
+    await page.goto('/kitchen?debug=1');
+    await expect(page.locator('#version')).toHaveText('服務版本：' + version);
+    if (shown) {
+      await expect(page.locator('#supply'), version).toBeVisible();
+      await expect(page.locator('#menu li')).toHaveCount(4);
+    } else {
+      await page.waitForTimeout(300);
+      await expect(page.locator('#supply'), version).toBeHidden();
+      expect(menuAsked, version + ': /api/menu asked').toBe(0);
+    }
+  }
+});
+
 test('order page shows a photo per drink; debug info only with ?debug=1', async ({ page }) => {
   await page.goto('/');
   const cards = page.locator('#menu li');

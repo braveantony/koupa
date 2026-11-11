@@ -9,6 +9,7 @@
 # the reported attempt after the close, request_end after the release).
 # Expected: IDEMPOTENCY_KEY=0 duplicate orders; =1 the same ticket back.
 . "$(dirname "$0")/lib.sh"
+crit_init
 exp=01-retry-after-commit
 build_tools || exit 1
 fail=0

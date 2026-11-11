@@ -22,19 +22,23 @@ Koupa 酷杯是一家虛構的手搖飲店。客人在點餐頁下單，拿到�
 
 App 有兩個版本，分別放在兩個映像檔（用來啟動容器的程式包）裡，功能上的差別只有一項：
 
-| 版本 | 映像檔 | 內容 |
+| 版本 | 映像檔（目前） | 內容 |
 |---|---|---|
-| v1 | `ghcr.io/braveantony/koupa:v1` | 點餐、廚房、叫號看板 |
-| v2 | `ghcr.io/braveantony/koupa:v2` | v1 再加上**售完標示**：廚房頁可以把品項設成售完；點餐頁重新載入菜單後，會把該品項顯示為灰色、不能點。已經開著的舊畫面如果照樣送出含售完品項的訂單，伺服器會回傳 422，拒絕這張訂單 |
+| v1 | `ghcr.io/braveantony/koupa:v1.2.0` | 點餐、廚房、叫號看板 |
+| v2 | `ghcr.io/braveantony/koupa:v2.2.0` | v1 再加上**售完標示**：廚房頁可以把品項設成售完；點餐頁重新載入菜單後，會把該品項顯示為灰色、不能點。已經開著的舊畫面如果照樣送出含售完品項的訂單，伺服器會回傳 422，拒絕這張訂單 |
 
 售完標示只用到菜單表已經有的 `available` 欄位，不用改資料表結構。量測時做的版本變更就是「v1 升級到 v2」。
+
+課程說的 v1、v2 是兩條版本線，映像檔的 tag 用 Kubernetes 那種語意化版本 `v主版本.次版本.修補版本`：主版本 1 是 v1（沒有售完標示），主版本 2 是 v2；加新功能時次版本加一，只修 bug 時修補版本加一。兩條線一起改版，例如這次畫面改版是 `v1.2.0` 和 `v2.2.0`。**推上 ghcr 的 tag 不會再被覆蓋**：內容變了就換新的版本號。目前的版本號只寫在 [`images.env`](../images.env) 一個地方，`k8s/base`、`measure.sh` 和其他腳本都從這裡讀。歷次版本和 digest 見[設計文件 6.2](design-v2/06-reference.md#62-映像檔)。
+
+舊的 `koupa:v1`、`koupa:v2` 是同一個 tag 一直被覆蓋的舊做法，已經停用：它們停在 `v1.1.0`、`v2.1.0` 的內容，不會再更新，課程裡也不再引用。
 
 菜單有 4 個品項：波霸奶茶 65 元、晚霞紅茶 55 元、綠茶三劍客 55 元、冬瓜檸檬 50 元。品項名稱由 migration `000005_menu_names` 設定；飲料照片的來源見 [`app/web/img/CREDITS.md`](../app/web/img/CREDITS.md)。
 
 ## 開始之前
 
 - 一個 tk8s 叢集，至少 3 個 worker（叢集裡執行 App 的節點），control plane 數量不限；叢集已經設定好 Cilium Gateway API、LoadBalancer IP 池，以及 StorageClass `local-path`。
-- 主機（執行這些指令、而且連得到 Gateway IP 的那台電腦）上有 `git`、`kubectl`、`curl`、`python3`（含 PyYAML，`setup.sh` 用它檢查 migration 檔案是否齊全）；之後跑量測還需要 `podman`。
+- 主機（執行這些指令、而且連得到 Gateway IP 的那台電腦）上有 `git`、`kubectl`、`curl`、`python3`（含 PyYAML，`setup.sh` 用它檢查 migration 檔案是否齊全）、`skopeo`（`setup.sh` 用它確認映像檔已經發布）；之後跑量測還需要 `podman`。
 - `kubectl` 的目前 context（kubectl 要操作哪個叢集）指向這個叢集：
 
   ```bash
@@ -194,16 +198,16 @@ data: {"version":"v1"}
 量測時，`measure.sh` 會自己換版本：步驟 0～5 每次從 v1 開始、量測中升級到 v2，`rollback` 則從 v2 退回 v1；`control`、`drain`、`scale-down` 不換版本。平常不用手動切換。只想在瀏覽器看看 v2 的售完功能，可以手動換映像檔：
 
 ```bash
-kubectl -n koupa set image deployment/koupa koupa=ghcr.io/braveantony/koupa:v2
+kubectl -n koupa set image deployment/koupa koupa=ghcr.io/braveantony/koupa:v2.2.0
 kubectl -n koupa rollout status deployment/koupa
 ```
 
-重新整理廚房頁，下方會多出「品項供應」區，每個品項旁邊有「設為售完」按鈕；打開 `/board?debug=1`，底部資訊列會顯示「服務版本：v2」。
+重新整理廚房頁，下方會多出「品項供應」區，每個品項旁邊有「設為售完」按鈕；打開 `/board?debug=1`，底部資訊列會顯示「服務版本：v2.2.0」。售完功能看的是主版本：`v2.x.y` 都有，`v1.x.y` 都沒有。
 
 看完換回 v1。售完狀態存在資料庫裡，換映像檔不會恢復；如果剛才把品項設成售完，先在廚房頁按「恢復供應」再換：
 
 ```bash
-kubectl -n koupa set image deployment/koupa koupa=ghcr.io/braveantony/koupa:v1
+kubectl -n koupa set image deployment/koupa koupa=ghcr.io/braveantony/koupa:v1.2.0
 kubectl -n koupa rollout status deployment/koupa
 ```
 
@@ -211,33 +215,29 @@ v1 不檢查售完，所以 rolling update 期間，客人如果被分到還沒�
 
 ## 更新到新版映像檔
 
-課程發布新版 App 時，映像檔的 tag 還是 `v1`、`v2`。Deployment 沒有設定 `imagePullPolicy`，所以預設是 `IfNotPresent`：worker 上已經有 `v1`，就不會再去 ghcr 拉；重跑 `setup.sh` 時設定也沒有變，現有的 Pod 不會重建。已經部署過舊版的叢集，要照下面的順序更新（`<叢集名稱>` 換成 `kubectl config current-context` 印出的名稱）：
+課程發布新版 App 時，版本號一定會變（例如 `v1.1.0` 變成 `v1.2.0`），`k8s/base` 裡的映像檔字串也跟著變。所以只要：
 
 ```bash
-# 1. 讓每個 worker 重新拉映像檔（tk8s 的節點是主機上的 podman container）
-for n in 1 2 3; do
-  for t in v1 v2; do
-    sudo podman exec <叢集名稱>-worker-$n crictl pull ghcr.io/braveantony/koupa:$t
-  done
-done
-
-# 2. 套用新的 migration 和設定
 git pull
 ./setup.sh
-
-# 3. 重建 Pod，讓它們用新的映像檔
-kubectl -n koupa rollout restart deployment/koupa
-kubectl -n koupa rollout status deployment/koupa
 ```
 
-確認 3 個 Pod 的 digest 和[實測紀錄的補記](measurements/2026-11-10.md#2-映像檔與-digest)列的一樣：
+`setup.sh` 會套用 `k8s/base`。Deployment 的映像檔字串和叢集裡的不一樣，Kubernetes 就會照平常的 rolling update 換掉 Pod；新的 tag 在 worker 上還沒有，所以會到 ghcr 拉。不用先在每個節點 `crictl pull`，也不用 `rollout restart`。
+
+`setup.sh` 在改動叢集之前，會先確認 `images.env` 的兩個版本都已經在 ghcr 上。如果講師還沒發布，它會停下來並顯示「映像檔 v1.2.0 還沒發布」，叢集維持原狀；等發布公告後再跑一次就好。
+
+離線環境或開發用的叢集，如果映像檔是自己載入節點的（不從 ghcr 拉），可以用 `KOUPA_SKIP_REGISTRY_CHECK=1 ./setup.sh` 跳過這個檢查；`setup.sh` 會印出警告，節點上必須已經有 `images.env` 那兩個版本的映像檔，否則 Pod 會卡在拉不到映像檔。
+
+確認 3 個 Pod 跑的是新版本，而且 digest 和[設計文件 6.2](design-v2/06-reference.md#62-映像檔) 的版本表一樣：
 
 ```bash
 kubectl -n koupa get pods -l app.kubernetes.io/name=koupa \
-  -o jsonpath='{range .items[*]}{.metadata.name}{"  "}{.status.containerStatuses[0].imageID}{"\n"}{end}'
+  -o jsonpath='{range .items[*]}{.metadata.name}{"  "}{.spec.containers[0].image}{"  "}{.status.containerStatuses[0].imageID}{"\n"}{end}'
 ```
 
-`measure.sh` 的 preflight 也會比對 digest：Pod 跑的不是 tag 目前指向的版本，就會停下來，不會開始量測。
+`measure.sh` 的 preflight 也會比對 digest：Pod 跑的不是 tag 目前指向的版本，就會停下來，不會開始量測。tag 不再被覆蓋之後，這個檢查平常不會失敗；它留著是為了抓出 registry 或節點和紀錄不一致的情況。
+
+> **還在用舊 tag `v1`／`v2` 的叢集**：以前的做法是 tag 不變、內容被覆蓋，Deployment 沒有設定 `imagePullPolicy`（預設 `IfNotPresent`），節點上已經有 `v1` 就不會再拉，所以要先在每個 worker `crictl pull`、再 `rollout restart`。現在不用這樣做：直接照上面 `git pull`、`./setup.sh`，映像檔字串從 `koupa:v1` 換成 `koupa:v1.2.0`，就會自己 rolling update 到新版。
 
 ## 接下來
 

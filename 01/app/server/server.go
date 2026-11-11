@@ -100,7 +100,7 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("POST /orders", s.handlePlaceOrder)
 	mux.HandleFunc("GET /api/orders", s.handlePending)
 	mux.HandleFunc("POST /orders/{id}/ready", s.handleReady)
-	if s.cfg.Version == "v2" {
+	if s.cfg.SoldOut() {
 		mux.HandleFunc("POST /api/menu/{id}/available", s.handleAvailable)
 	}
 	if s.deps.Broadcaster != nil {

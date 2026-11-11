@@ -7,6 +7,7 @@
 # Expected with RESUME_FROM_LAST_ID off and on: no miss, no duplicate (this
 # tests the backfill / live hand-over of design 4.2, not step 4).
 . "$(dirname "$0")/lib.sh"
+crit_init
 exp=03-handoff
 build_tools || exit 1
 fail=0

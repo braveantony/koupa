@@ -15,6 +15,7 @@
 # Also A10's companion case: the same evidence with P's SIGTERM line
 # deleted (coverage recomputed by `rush-hour coverage`) must be 「未知」.
 . "$(dirname "$0")/lib.sh"
+crit_init
 exp=07-state-samples
 build_tools || exit 1
 COLLECT=$stage/scripts/collect-timeline.sh

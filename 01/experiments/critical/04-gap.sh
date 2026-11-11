@@ -6,6 +6,7 @@
 #   -> board reconnects with Last-Event-ID -> did it get the call?
 # Expected: RESUME_FROM_LAST_ID=0 the call is missed; =1 it is backfilled.
 . "$(dirname "$0")/lib.sh"
+crit_init
 exp=04-gap
 build_tools || exit 1
 fail=0
