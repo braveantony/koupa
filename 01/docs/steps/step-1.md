@@ -125,7 +125,7 @@ diff <(kubectl kustomize k8s/base) <(kubectl kustomize k8s/steps/step-1)
 
 ![步驟 1 的機制](img/step-1.svg)
 
-- **沒有 `readinessProbe` 時**：container 一啟動，Pod 就算 Ready，入口馬上把訂單送過去。在 tkha 上約 3 成的新 Pod 啟動後 5 秒才準備好（第一個 DNS 查詢被丟掉，要等 5 秒後重送），這段時間送過去的訂單全部失敗。
+- **沒有 `readinessProbe` 時**：container 一啟動，Pod 就算 Ready，入口馬上把訂單送過去。在 tkha 上約 3 成的新 Pod 啟動後 5 秒才準備好（第一個 DNS 查詢被丟掉，要等 5 秒後重新查詢），這段時間送過去的訂單全部失敗。
 - **加上之後**：`/healthz` 通過才 Ready，入口才會把它列為可以接收訂單的 Pod。Kubernetes 的 rolling update（逐步把舊 Pod 換成新 Pod）也會等新 Pod Ready 才關下一個舊 Pod，所以升級變慢。
 - **剩下的送出失敗**：主要在**舊 Pod** 上。程式收到 SIGTERM（Kubernetes 通知程式關機的訊號）就立刻結束，但入口還沒收到更新，又把訂單送給它。這個問題留給步驟 2 處理。
 - **漏號沒有改善**：看板連在舊 Pod 上，程式一結束就斷線。看板透過入口重新連線時，可能連到另一個還沒換掉的舊 Pod，所以會斷兩次。每次重連都從「現在」開始收，斷線期間的叫號就漏掉了。這個問題留給步驟 3、4 處理。
