@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="660" viewBox="0 0 1240 660" role="img" aria-labelledby="title desc" font-family="Noto Sans TC, PingFang TC, Microsoft JhengHei, WenQuanYi Zen Hei, sans-serif">
+<title id="title">小實驗：看板沒叫號，也能保持連線嗎？</title>
+<desc id="desc">解決：閒置斷線　還剩：心跳不能修好升級時的斷線。時間由左往右，非等比例。</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#52657b"/></marker>
+<pattern id="hatch" width="9" height="9" patternUnits="userSpaceOnUse"><rect width="9" height="9" fill="#fff0f0"/><path d="M-2,2 L2,-2 M0,9 L9,0 M7,11 L11,7" stroke="#e6a9ae" stroke-width="1"/></pattern></defs>
+<rect width="1240" height="660" fill="white"/>
+<text x="32" y="49" font-size="28" fill="#26364a" text-anchor="start" font-weight="700">小實驗：看板沒叫號，也能保持連線嗎？</text>
+<text x="32" y="86" font-size="21" fill="#26364a" text-anchor="start">解決：閒置斷線　還剩：心跳不能修好升級時的斷線</text>
+<rect x="32" y="108" width="1176" height="48" rx="8" fill="#eaf3ff"/>
+<text x="50" y="140" font-size="22" fill="#26364a" text-anchor="start" font-weight="700">SSE_HEARTBEAT=15s：每 15 秒送一行 : hb</text>
+<text x="32" y="190" font-size="19" fill="#26364a" text-anchor="start" font-weight="700">時間 →</text>
+<path d="M210,202 H1190" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="240" y="185" font-size="18" fill="#26364a" text-anchor="middle">0 秒</text>
+<text x="490" y="185" font-size="18" fill="#26364a" text-anchor="middle">15、30…秒</text>
+<text x="810" y="185" font-size="18" fill="#26364a" text-anchor="middle">300 秒</text>
+<text x="1120" y="185" font-size="18" fill="#26364a" text-anchor="middle">420 秒</text>
+<text x="32" y="220" font-size="16" fill="#26364a" text-anchor="start">非等比例</text>
+<rect x="24" y="250" width="1192" height="104" rx="8" fill="#f5f7fa"/>
+<text x="42" y="308" font-size="22" fill="#26364a" text-anchor="start" font-weight="700">沒有心跳</text>
+<rect x="24" y="366" width="1192" height="104" rx="8" fill="#f5f7fa"/>
+<text x="42" y="424" font-size="22" fill="#26364a" text-anchor="start" font-weight="700">有心跳</text>
+<path d="M42,608 H100" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="115" y="615" font-size="18" fill="#26364a" text-anchor="start">主要過程</text>
+<rect x="260" y="592" width="32" height="28" rx="8" fill="#eaf3ff"/>
+<text x="303" y="615" font-size="18" fill="#26364a" text-anchor="start">本步改動</text>
+<rect x="470" y="592" width="32" height="28" rx="8" fill="url(#hatch)"/>
+<text x="513" y="615" font-size="18" fill="#26364a" text-anchor="start">問題時窗</text>
+<text x="730" y="615" font-size="18" fill="#24764c" text-anchor="start">✓ 相較前一步消失的問題</text>
+<text x="230" y="284" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">hello → 一直沒有資料</text>
+<path d="M230,299 H758" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="230" y="330" font-size="18" fill="#26364a" text-anchor="start">入口等了 300 秒</text>
+<rect x="785" y="258" width="410" height="34" rx="8" fill="url(#hatch)"/>
+<text x="795" y="284" font-size="21" fill="#ad3945" text-anchor="start" font-weight="700">入口切斷：閒置逾時</text>
+<path d="M795,299 H1183" fill="none" stroke="#ad3945" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="795" y="330" font-size="18" fill="#26364a" text-anchor="start">response_flags=SI；curl 結束碼 18</text>
+<rect x="220" y="374" width="550" height="88" rx="8" fill="#eaf3ff"/>
+<text x="230" y="400" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">hello → : hb → : hb → …</text>
+<path d="M230,415 H758" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="230" y="446" font-size="18" fill="#26364a" text-anchor="start">每 15 秒一行；沒有叫號也有資料</text>
+<text x="795" y="400" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">420 秒仍連著</text>
+<path d="M795,415 H1183" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="795" y="446" font-size="18" fill="#26364a" text-anchor="start">curl 的 --max-time 到期，結束碼 28</text>
+<text x="42" y="508" font-size="20" fill="#26364a" text-anchor="start">瀏覽器：「SSE 連線中斷…」</text>
+<text x="42" y="542" font-size="20" fill="#26364a" text-anchor="start">瀏覽器約 3～5 秒後自動重連（Chromium 3 秒、Firefox 5 秒）</text>
+<text x="42" y="578" font-size="20" fill="#24764c" text-anchor="start" font-weight="700">✓ 有心跳後：300 秒閒置斷線消失</text>
+</svg>
