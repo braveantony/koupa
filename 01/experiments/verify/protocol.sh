@@ -33,7 +33,9 @@ KUBECTL=kubectl
 . "$stage/scripts/lib/kube.sh"
 
 PW_IMAGE=mcr.microsoft.com/playwright:v1.49.1-noble
-V2_IMAGE=ghcr.io/braveantony/koupa:v2
+# shellcheck source=../../images.env
+. "$stage/images.env"
+V2_IMAGE=$KOUPA_REPO:$KOUPA_V2_TAG
 CURL=$verify_dir/curl-stream.sh
 PW_NAMES=()
 RH_PIDS=()

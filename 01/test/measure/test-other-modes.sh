@@ -7,19 +7,19 @@ echo 15 >"$FAKE/rh-backdate"
 after() { awk -v a="$1" -v b="$2" '$0 ~ a {s=1} s && $0 ~ b {f=1} END {exit !f}' "$FAKE/calls.log"; }
 
 # rollback: step-5 settings, applied with v2, the change sets v1.
-make_live step-5 'c["image"] = "ghcr.io/braveantony/koupa:v2"'
+make_live step-5 'c["image"] = os.environ["IMG_V2"]'
 "$STAGE/measure.sh" rollback --runs 1 --duration 30 >"$T/out" 2>&1
 rc=$?
 run=$(latest_run)
 check "rollback: exit 0 (rc=$rc)" [ "$rc" -eq 0 ]
 [ "$rc" -eq 0 ] || tail -20 "$T/out" | sed 's/^/    /'
-check "rollback: applied image v2" grep -q 'ghcr.io/braveantony/koupa:v2' "$run/manifest/applied.yaml"
+check "rollback: applied image v2" grep -q "image: $IMG_V2\$" "$run/manifest/applied.yaml"
 check "rollback: applied has the step-5 env" grep -q 'IDEMPOTENCY_KEY' "$run/manifest/applied.yaml"
-check "rollback: change sets v1" grep -q '^kubectl .*set image deploy/koupa koupa=ghcr.io/braveantony/koupa:v1' "$FAKE/calls.log"
+check "rollback: change sets v1" grep -q "^kubectl .*set image deploy/koupa koupa=$IMG_V1\$" "$FAKE/calls.log"
 check "rollback: params before v2, after v1, overlay step-5" python3 -I -c '
-import json, sys
+import json, os, sys
 p = json.load(open(sys.argv[1]))
-sys.exit(0 if p["image_before"].endswith(":v2") and p["image_after"].endswith(":v1") and p["overlay"] == "step-5" and p["mode"] == "rollback" else 1)' "$run/params.json"
+sys.exit(0 if p["image_before"] == os.environ["IMG_V2"] and p["image_after"] == os.environ["IMG_V1"] and p["overlay"] == "step-5" and p["mode"] == "rollback" else 1)' "$run/params.json"
 
 # scale-down: replicas 2 at the change, back to 3 afterwards, checked.
 rm -rf "$MEASURE_EVIDENCE_DIR"/*

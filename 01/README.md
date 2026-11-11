@@ -94,7 +94,7 @@ podman pull ghcr.io/braveantony/rush-hour:0.1.0
 
 只有修改 Rush Hour 程式的人才需要自己建置（`make images` 會連 App 映像檔一起建置）。
 
-App 的映像檔 `ghcr.io/braveantony/koupa:v1`、`:v2` 是公開的，節點會自己拉取，不用建置。
+App 的映像檔 `ghcr.io/braveantony/koupa:v1.2.0`（v1）、`:v2.2.0`（v2）是公開的，節點會自己拉取，不用建置。版本號的規則見[設計文件 6.2](docs/design-v2/06-reference.md#62-映像檔)。
 
 ## 2. 部署
 

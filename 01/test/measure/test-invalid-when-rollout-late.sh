@@ -12,7 +12,7 @@ rc=$?
 check "exit status 2 (rc=$rc)" [ "$rc" -eq 2 ]
 run=$(latest_run)
 check "run directory exists" [ -n "$run" ]
-check "set image to v2 was called" grep -q 'set image deploy/koupa koupa=ghcr.io/braveantony/koupa:v2' "$FAKE/calls.log"
+check "set image to v2 was called" grep -q "set image deploy/koupa koupa=$IMG_V2\$" "$FAKE/calls.log"
 check "scorecard line 1 says invalid" bash -c 'head -1 "$1" | grep -q "^本次量測無效：.*rollout"' _ "$run/scorecard.txt"
 check "scorecard.json invalid" python3 -I -c 'import json,sys; s=json.load(open(sys.argv[1])); sys.exit(0 if s["invalid"] and any("rollout" in r for r in s["invalid_reasons"]) else 1)' "$run/scorecard.json"
 check "no main scores printed" bash -c '! grep -q "【主要成績】" "$1"' _ "$run/scorecard.txt"

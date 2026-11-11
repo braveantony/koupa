@@ -32,6 +32,8 @@ set -uo pipefail
 stage=$(cd "$(dirname "$0")/.." && pwd)
 NS=${KOUPA_NS:-koupa}
 KUBECTL=${KUBECTL:-kubectl}
+# shellcheck source=../images.env
+. "$stage/images.env" # KOUPA_REPO, KOUPA_V1_TAG: the image tag swapped into the manifest
 
 # all_files: every file of the pack with its size (not the index itself).
 all_files() { (cd "$1" && find . -path ./evidence-index.txt -prune -o -type f -printf '%10s  %P\n' | sort -k2); }
@@ -70,7 +72,7 @@ esac
 
 # Manifests.
 if "$KUBECTL" kustomize "$dir" >"$run/manifest/kustomize.raw.yaml" 2>"$run/manifest/kustomize.err"; then
-	sed "s#ghcr.io/braveantony/koupa:v[0-9][0-9]*#${image:-ghcr.io/braveantony/koupa:v1}#" \
+	sed -E "s#$KOUPA_REPO:v[0-9]+(\.[0-9]+){0,2}#${image:-$KOUPA_REPO:$KOUPA_V1_TAG}#" \
 		"$run/manifest/kustomize.raw.yaml" >"$run/manifest/kustomize.yaml"
 	rm -f "$run/manifest/kustomize.raw.yaml" "$run/manifest/kustomize.err"
 fi

@@ -7,7 +7,8 @@
 # mode: step-0 .. step-5, control, calibrate, rollback, drain, scale-down, all.
 #
 # One run, every time from A8 step 1 (plan A8):
-#   1. render the step's overlay, set the image to v1, kubectl apply
+#   1. render the step's overlay, set the image to v1 (KOUPA_V1_TAG in
+#      images.env), kubectl apply
 #   2. wait for the rollout and for old Pods to be gone, then
 #      scripts/preflight.sh (seven checks, incl. every Pod's image digest =
 #      what the v1 tag resolves to now); any mismatch stops: no measurement
@@ -15,7 +16,8 @@
 #      Gateway IP
 #   4. start rush-hour (podman, host network); it sends once the 3 boards
 #      got hello and prints SENDING_STARTED <unix-nano>
-#   5. at SENDING_STARTED + 10 s: set image v2 (control: nothing). The
+#   5. at SENDING_STARTED + 10 s: set image v2 (KOUPA_V2_TAG; control:
+#      nothing). The
 #      rollout must be complete at D - 10 s, otherwise the run is invalid
 #   6. at D rush-hour winds down by itself (A9) and writes its scorecard
 #   7. stop the collectors, complete the evidence pack (scripts/evidence.sh)
@@ -81,8 +83,11 @@ KUBECTL=${KUBECTL:-kubectl}
 EVIDENCE=${MEASURE_EVIDENCE_DIR:-$stage/evidence}
 COLLECT=${COLLECT_TIMELINE:-$stage/scripts/collect-timeline.sh}
 RUSH_HOUR_IMAGE=${RUSH_HOUR_IMAGE:-ghcr.io/braveantony/rush-hour:0.1.0}
-IMG_V1=ghcr.io/braveantony/koupa:v1
-IMG_V2=ghcr.io/braveantony/koupa:v2
+# The two lines' current versions (semver tags, never overwritten).
+# shellcheck source=images.env
+. "$stage/images.env"
+IMG_V1=$KOUPA_REPO:$KOUPA_V1_TAG
+IMG_V2=$KOUPA_REPO:$KOUPA_V2_TAG
 BANNER='診斷模式：對照組不成立，不可用於比較'
 CHANGE_AT_S=10 # the change is triggered at SENDING_STARTED + 10 s
 ROLLOUT_MARGIN_S=10 # the rollout must be complete at D - 10 s
@@ -727,7 +732,7 @@ PY
 	if ! "$KUBECTL" kustomize "$overlay_dir" >"$cur_dir/manifest/rendered.yaml" 2>>"$cur_dir/measure.log"; then
 		abort_run "kubectl kustomize $overlay_dir 失敗"
 	fi
-	sed "s#ghcr.io/braveantony/koupa:v[0-9][0-9]*#$img_before#" "$cur_dir/manifest/rendered.yaml" >"$cur_dir/manifest/applied.yaml"
+	sed -E "s#$KOUPA_REPO:v[0-9]+(\.[0-9]+){0,2}#$img_before#" "$cur_dir/manifest/rendered.yaml" >"$cur_dir/manifest/applied.yaml"
 	rm -f "$cur_dir/manifest/rendered.yaml"
 	if [ "$mode" = calibrate ]; then
 		calib_prestop=$(python3 -I -c '
@@ -931,7 +936,8 @@ json.dump({"mode": "$mode", "change": "$desc",
                         "DoNotSchedule with the worker cordoned), so 3 available is not required"
                         ) if "$change" == "drain" else "Deployment rollout status done before D - 10 s",
     "invalid_reason": """$rollout_invalid""" or None,
-    "${img_after##*:}_digest_check" if "$img_after" else "digest_check":
+    # keyed by the line (v1/v2), not the full tag: v2_digest_check
+    ("$img_after".rsplit(":", 1)[-1].split(".")[0] + "_digest_check") if "$img_after" else "digest_check":
         json.load(open(sys.argv[2])) if __import__("os").path.exists(sys.argv[2]) else None},
     open(sys.argv[1], "w"), indent=2, ensure_ascii=False)
 PY

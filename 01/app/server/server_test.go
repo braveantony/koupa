@@ -286,6 +286,42 @@ func TestSoldOutEndpointV1Is404(t *testing.T) {
 	}
 }
 
+// TestSoldOutGateFollowsMajor: the sold-out route and the 422 check follow
+// the MAJOR of the build version (semver image tags), not an exact string.
+func TestSoldOutGateFollowsMajor(t *testing.T) {
+	for _, tc := range []struct {
+		version string
+		soldOut bool
+	}{
+		{"v1.2.0", false}, {"v1", false}, {"dev", false}, {"", false},
+		{"v2.2.0", true}, {"v2", true}, {"v2.10.3", true}, {"v3.0.0", true},
+	} {
+		t.Run(tc.version, func(t *testing.T) {
+			pool := testdb.New(t)
+			admin := newEnv(t, testConfig("v2.0.0"), pool)
+			if resp := admin.do(t, "POST", "/api/menu/1/available", "", `{"available":false}`, nil); resp.StatusCode != 200 {
+				t.Fatalf("admin: mark item 1 sold out: status %d", resp.StatusCode)
+			}
+			e := newEnv(t, testConfig(tc.version), pool)
+			var who map[string]string
+			e.do(t, "GET", "/api/whoami", "", "", &who)
+			if who["version"] != tc.version {
+				t.Errorf("whoami version %q, want the full %q", who["version"], tc.version)
+			}
+			wantRoute, wantOrder := http.StatusNotFound, http.StatusCreated
+			if tc.soldOut {
+				wantRoute, wantOrder = http.StatusOK, http.StatusUnprocessableEntity
+			}
+			if resp := e.do(t, "POST", "/api/menu/2/available", "", `{"available":true}`, nil); resp.StatusCode != wantRoute {
+				t.Errorf("sold-out route: status %d, want %d", resp.StatusCode, wantRoute)
+			}
+			if resp := e.do(t, "POST", "/orders", "", orderBody("g-1", 1, 1), nil); resp.StatusCode != wantOrder {
+				t.Errorf("order of a sold-out item: status %d, want %d", resp.StatusCode, wantOrder)
+			}
+		})
+	}
+}
+
 // fakeBroadcaster lets a test control readiness.
 type fakeBroadcaster struct {
 	ready     chan struct{}

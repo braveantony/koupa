@@ -8,19 +8,21 @@
 #
 # The kubelet pulls them when an experiment overlay is applied, through the
 # pull secret lib.sh creates while the package is private (no credential is
-# ever put on a command line). koupa:v1 / :v2 are not touched.
+# ever put on a command line). The koupa images (images.env) are not touched.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 stage=$(cd "$here/../.." && pwd)
 repo=ghcr.io/braveantony/koupa-experiments
 cd "$stage"
+# shellcheck source=../../images.env
+. "$stage/images.env" # the app is the v1 line, built as KOUPA_V1_TAG
 if ! git diff --quiet HEAD -- app internal go.mod go.sum; then
 	echo "build-images: app/, internal/ or go.mod differ from HEAD; commit first" >&2
 	exit 1
 fi
 app=$repo:app-$(git rev-parse --short HEAD)
 sb=$repo:slow-board-$(sha256sum experiments/critical/slow-board/main.go experiments/critical/slow-board/Containerfile | sha256sum | cut -c1-12)
-timeout 900 podman build -q --platform linux/amd64 -f app/Containerfile --build-arg VERSION=v1 -t "$app" .
+timeout 900 podman build -q --platform linux/amd64 -f app/Containerfile --build-arg "VERSION=$KOUPA_V1_TAG" -t "$app" .
 timeout 900 podman build -q --platform linux/amd64 -f experiments/critical/slow-board/Containerfile -t "$sb" .
 timeout 600 podman push -q "$app"
 timeout 600 podman push -q "$sb"

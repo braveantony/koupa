@@ -46,8 +46,10 @@ KUBECTL=kubectl
 . "$stage/scripts/lib/kube.sh"
 
 K6_IMAGE=docker.io/grafana/k6:0.55.0
-IMG_V1=ghcr.io/braveantony/koupa:v1
-IMG_V2=ghcr.io/braveantony/koupa:v2
+# shellcheck source=../../images.env
+. "$stage/images.env"
+IMG_V1=$KOUPA_REPO:$KOUPA_V1_TAG
+IMG_V2=$KOUPA_REPO:$KOUPA_V2_TAG
 DURATION=60 CHANGE_AT_S=10 MARGIN_S=10
 root=$VERIFY_EVIDENCE/tools
 K6_NAME=""
@@ -79,7 +81,7 @@ k6_run() {
 	dir=$root/k6/$runid
 	mkdir -p "$dir"
 	log "k6 run $runid"
-	kubectl kustomize "$(overlay_of "$step")" | sed "s#ghcr.io/braveantony/koupa:v[0-9][0-9]*#$IMG_V1#" >"$dir/applied.yaml"
+	kubectl kustomize "$(overlay_of "$step")" | sed -E "s#$KOUPA_REPO:v[0-9]+(\.[0-9]+){0,2}#$IMG_V1#" >"$dir/applied.yaml"
 	kubectl apply -f "$dir/applied.yaml" >"$dir/apply.log" 2>&1 || invalid="kubectl apply failed"
 	if [ -z "$invalid" ]; then
 		timeout 320 kubectl -n "$NS" rollout status deploy/koupa --timeout=300s >>"$dir/apply.log" 2>&1 || invalid="rollout to v1 not complete"

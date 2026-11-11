@@ -4,14 +4,39 @@ package config
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
 
-// Version is set at build time: -ldflags "-X koupa/app/config.Version=v1".
-// Load accepts only "v1" or "v2".
+// Version is set at build time to the image tag, e.g.
+// -ldflags "-X koupa/app/config.Version=v1.2.0" (images.env). Load accepts
+// vMAJOR[.MINOR[.PATCH]] with MAJOR 1 (the base app) or 2 (with sold-out).
 var Version = "dev"
+
+var versionRE = regexp.MustCompile(`^v(0|[1-9][0-9]{0,8})(\.(0|[1-9][0-9]{0,8})){0,2}$`)
+
+// Major returns the MAJOR of a version "vMAJOR[.MINOR[.PATCH]]" ("v2.2.0"
+// and "v2" give 2), or 0 for anything else ("dev", "", "2.0.0", "v2.x").
+func Major(v string) int {
+	m := versionRE.FindStringSubmatch(v)
+	if m == nil {
+		return 0
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// HasSoldOut reports whether version v has the sold-out feature (售完標示):
+// every MAJOR from 2 on. An unparsable version ("dev") has not.
+func HasSoldOut(v string) bool { return Major(v) >= 2 }
+
+// SoldOut reports whether this build has the sold-out feature.
+func (c Config) SoldOut() bool { return HasSoldOut(c.Version) }
 
 // Mutation holds the test-only fault injection counters (TEST_MUTATION).
 type Mutation struct {
@@ -55,8 +80,8 @@ func Load(getenv func(string) string) (Config, error) {
 		Version:     Version,
 		DBTimeout:   60 * time.Second,
 	}
-	if Version != "v1" && Version != "v2" {
-		return Config{}, fmt.Errorf("build version %q is not v1 or v2 (set -ldflags -X koupa/app/config.Version=v1)", Version)
+	if m := Major(Version); m != 1 && m != 2 {
+		return Config{}, fmt.Errorf("build version %q is not v1.x.y or v2.x.y (set -ldflags -X koupa/app/config.Version=v1.2.0)", Version)
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("DATABASE_URL is required")

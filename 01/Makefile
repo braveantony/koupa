@@ -12,16 +12,32 @@ test:
 REGISTRY := ghcr.io/braveantony
 PLATFORM := linux/amd64
 PODMAN := podman
-# Rush Hour image tag; bump on every change (never "latest").
+SKOPEO := skopeo
+# koupa versions (KOUPA_REPO, KOUPA_V1_TAG, KOUPA_V2_TAG): images.env, the
+# single source of truth. Tags are semver and never overwritten.
+include images.env
+# Rush Hour image tag; bump on every change (never "latest", never reused).
 RUSH_HOUR_VERSION := 0.1.0
 
-.PHONY: images push
+.PHONY: images publish retag-history push-rush-hour
+# Local builds from the working tree (nothing is pushed). The full tag goes
+# into the binary: /koupa --version and /api/whoami show it.
 images:
-	$(PODMAN) build --platform $(PLATFORM) -f app/Containerfile --build-arg VERSION=v1 -t $(REGISTRY)/koupa:v1 .
-	$(PODMAN) build --platform $(PLATFORM) -f app/Containerfile --build-arg VERSION=v2 -t $(REGISTRY)/koupa:v2 .
+	$(PODMAN) build --platform $(PLATFORM) -f app/Containerfile --build-arg VERSION=$(KOUPA_V1_TAG) -t $(KOUPA_REPO):$(KOUPA_V1_TAG) .
+	$(PODMAN) build --platform $(PLATFORM) -f app/Containerfile --build-arg VERSION=$(KOUPA_V2_TAG) -t $(KOUPA_REPO):$(KOUPA_V2_TAG) .
 	$(PODMAN) build --platform $(PLATFORM) -f rush-hour/Containerfile -t $(REGISTRY)/rush-hour:$(RUSH_HOUR_VERSION) .
 
-push:
-	$(PODMAN) push $(REGISTRY)/koupa:v1
-	$(PODMAN) push $(REGISTRY)/koupa:v2
+# Build both koupa lines from a clean export of HEAD and push them; refuses
+# when a tag already exists on the registry.
+publish:
+	scripts/publish-images.sh
+
+# One-off: tag the earlier koupa digests v1.0.0/v2.0.0/v1.1.0/v2.1.0.
+retag-history:
+	scripts/publish-images.sh --retag-history
+
+# Refuses to overwrite an existing rush-hour tag: bump RUSH_HOUR_VERSION.
+push-rush-hour:
+	@if $(SKOPEO) inspect --format '{{.Digest}}' docker://$(REGISTRY)/rush-hour:$(RUSH_HOUR_VERSION) >/dev/null 2>&1; then \
+		echo "push-rush-hour: $(REGISTRY)/rush-hour:$(RUSH_HOUR_VERSION) already exists; bump RUSH_HOUR_VERSION" >&2; exit 1; fi
 	$(PODMAN) push $(REGISTRY)/rush-hour:$(RUSH_HOUR_VERSION)

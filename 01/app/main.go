@@ -24,6 +24,12 @@ import (
 const startupTimeout = 30 * time.Second
 
 func main() {
+	// --version prints the build version (the image tag) and exits; it
+	// needs no configuration.
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		fmt.Println(config.Version)
+		return
+	}
 	cfg, err := config.Load(os.Getenv)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "koupa: config:", err)

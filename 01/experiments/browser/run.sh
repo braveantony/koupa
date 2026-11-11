@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Run the Playwright page tests against a locally built koupa (v2).
+# Run the Playwright page tests against a locally built koupa (the v2 line,
+# version KOUPA_V2_TAG from images.env).
 # Needs the test database (scripts/test-db.sh) to be up. Creates a fresh
 # database cloned from koupa_template, starts the app on a free local port,
 # runs the tests and cleans up. The shutdown test starts its own instance.
@@ -15,7 +16,10 @@ cleanup() {
 }
 trap cleanup EXIT
 psql_su -c "CREATE DATABASE $DB TEMPLATE koupa_template OWNER koupa" >&2
-(cd "$ROOT" && scripts/go build -ldflags "-X koupa/app/config.Version=v2" -o bin/koupa ./app)
+# The v2 line's current tag (images.env), as the image build passes it.
+# shellcheck source=../../images.env
+. "$ROOT/images.env"
+(cd "$ROOT" && scripts/go build -ldflags "-X koupa/app/config.Version=$KOUPA_V2_TAG" -o bin/koupa ./app)
 PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
 UID_MAIN="pw-main-$$-$PORT"
 export DATABASE_URL="postgres://koupa:koupa@127.0.0.1:55432/$DB?sslmode=disable" # also used by the shutdown test's own instance

@@ -4,11 +4,14 @@
 #   scripts/preflight.sh <step-0..step-5|control|calibrate> [--image IMAGE] [--digest DIGEST]
 #
 # (rollback, drain and scale-down run with the step-5 settings: measure.sh
-# calls this with step-5; rollback with --image .../koupa:v2.)
+# calls this with step-5; rollback with --image KOUPA_REPO:KOUPA_V2_TAG.)
 # Run after the step's manifest is applied and the rollout has finished.
-# IMAGE (default ghcr.io/braveantony/koupa:v1) is the image the Pods must run;
-# DIGEST is what its registry tag resolves to now (measure.sh resolves it
-# once per run; without --digest: `skopeo inspect docker://IMAGE`).
+# IMAGE (default KOUPA_REPO:KOUPA_V1_TAG from images.env) is the image the
+# Pods must run; DIGEST is what its registry tag resolves to now (measure.sh
+# resolves it once per run; without --digest: `skopeo inspect
+# docker://IMAGE`). The tags are semver and never overwritten, so the digest
+# of a tag does not change; the check still catches a node or registry that
+# disagrees (and clusters still on the deprecated floating v1/v2 tags).
 # The seven checks, each printed as "ok <name>: ..." or "FAIL <name>: ...":
 #   generation     Deployment observedGeneration == generation
 #   replicaset     every koupa Pod belongs to the current ReplicaSet, runs, is
@@ -37,7 +40,9 @@ usage() {
 
 step=${1:-}
 [ $# -ge 1 ] && shift
-image=ghcr.io/braveantony/koupa:v1
+# shellcheck source=../images.env
+. "$stage/images.env"
+image=$KOUPA_REPO:$KOUPA_V1_TAG
 digest=""
 while [ $# -gt 0 ]; do
 	case $1 in

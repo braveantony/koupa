@@ -21,15 +21,37 @@ YAML 不寫死 IP，`measure.sh` 會自動查 Gateway 的 IP。
 
 | 映像檔 | 用途 | 在哪裡被拉取 |
 |---|---|---|
-| `ghcr.io/braveantony/koupa:v1` | App 舊版 | 叢集節點 |
-| `ghcr.io/braveantony/koupa:v2` | App 新版（售完功能） | 叢集節點 |
+| `ghcr.io/braveantony/koupa:v1.2.0` | App 舊版（v1 這條線的目前版本） | 叢集節點 |
+| `ghcr.io/braveantony/koupa:v2.2.0` | App 新版（v2 這條線，有售完功能） | 叢集節點 |
 | `ghcr.io/braveantony/rush-hour:<版本>` | 量測工具 | 主機 |
 
 - 都事先建置好，設為公開，不需要登入就能拉取；
 - 架構為 `linux/amd64`；
 - 標籤固定，不使用 `latest`；
 - 課前分別在主機和節點上確認拉得到。
-- 目前 Rush Hour 的版本是 `0.1.0`；各映像檔的 digest 記在[實測紀錄](../measurements/2026-11-10.md#2-映像檔與-digest)：表格是量測時用的 digest，表格下方的補記是畫面改版後重建的目前 digest（`koupa:v1` `sha256:e767bd6d…`、`koupa:v2` `sha256:082a7412…`）。
+- 目前 Rush Hour 的版本是 `0.1.0`（manifest digest 記在[實測紀錄](../measurements/2026-11-10.md#2-映像檔與-digest)）。
+
+**版本規則**：koupa 的 tag 用 Kubernetes 那種語意化版本 `vMAJOR.MINOR.PATCH`。
+
+- MAJOR 是版本線：`1` 是基本的 App（沒有售完標示），`2` 是加上售完標示的 App。課程說的「v1 升級到 v2」就是從 1 這條線換到 2 這條線；
+- MINOR 加一表示有新功能（包括畫面改版），PATCH 加一表示只修 bug；
+- 兩條線一起改版，MINOR.PATCH 相同（例如 `v1.2.0` 和 `v2.2.0`）；
+- **推上 ghcr 的 tag 不再覆蓋**。內容變了就換新的版本號，所以 Deployment 的映像檔字串一定會變，Kubernetes 會照平常的 rolling update 拉新的映像檔；
+- 目前的版本只寫在 `01/images.env`（`KOUPA_V1_TAG`、`KOUPA_V2_TAG`）。`k8s/base` 用 `KOUPA_V1_TAG`（`scripts/check-manifests.sh` 會檢查兩者一致），`measure.sh`、`scripts/preflight.sh`、`scripts/evidence.sh` 和實驗腳本都從這裡讀；
+- App 的版本字串就是完整的 tag（建置時 `VERSION=v1.2.0`），`/api/whoami`、看板的 hello 事件和 `/koupa --version` 都會顯示；有沒有售完功能看 MAJOR（2 以上才有），不是比對整個字串；
+- 發布用 `scripts/publish-images.sh`（`make publish`）：從 HEAD 的乾淨匯出建置兩條線，tag 已經在 ghcr 上就拒絕推送；`--retag-history` 把下表較早的版本號補到既有的 digest 上，同樣不覆蓋。登入資訊用 `podman login` 存的那一份，不放在命令列上。
+
+**版本紀錄**（manifest digest，`ghcr.io/braveantony/koupa`）：
+
+| 版本 | 內容 | v1 這條線 | v2 這條線 |
+|---|---|---|---|
+| `v1.0.0`／`v2.0.0` | 第一階段 App，2026-11-10 量測用的版本（從 commit `1b58e14` 建置） | `sha256:e34801f1457f6026984c3b9095cd32eecb91f158d32b8475e5374a554ccd9fb3` | `sha256:935764966ab0f6d68e1b292bf18befcdf33310ceed073d17fa77a43ded69b891` |
+| `v1.1.0`／`v2.1.0` | 奶茶店風格的畫面改版、飲料照片、純 HTTP 下點餐的修正（從 commit `a2d5fbf` 建置） | `sha256:e767bd6d12d316733c826da07b387674791c4f7e1e11cff8d5f1b8aa0459bdea` | `sha256:082a7412ec4de56f160c7d1bbe91162a7f119a4e0742421345d866c609648cf4` |
+| `v1.2.0`／`v2.2.0` | 杯封膜風格的畫面（PR #8）；PR 合併後從 main 建置 | 尚未發布 | 尚未發布 |
+
+`v1.1.0` 和 `v1.2.0` 之間曾經推過一版有錯的建置（`5f97bce7…`／`90065b38…`），沒有給版本號，不要使用。
+
+**舊的浮動 tag**：`koupa:v1`、`koupa:v2` 是以前「同一個 tag 重複覆蓋」的做法，已經停用。它們停在現在的位置（等於 `v1.1.0`、`v2.1.0`），不會再更新，程式和文件也都不再引用。實測紀錄裡寫的 `koupa:v1`、`koupa:v2` 是當時的名字，對應的版本見[實測紀錄第 2 節](../measurements/2026-11-10.md#2-映像檔與-digest)的補記。
 
 學生不用安裝 Go，也不用自己建置映像檔。
 

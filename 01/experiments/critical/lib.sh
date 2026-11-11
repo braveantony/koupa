@@ -20,7 +20,9 @@ NS=${KOUPA_NS:-koupa}
 CRIT_EVIDENCE=${CRIT_EVIDENCE:-$stage/evidence/critical-$(date -u +%Y%m%dT%H%M%SZ)}
 CRIT_BIN=$stage/bin/crit
 RH_BIN=$stage/bin/rush-hour
-V1_IMAGE=ghcr.io/braveantony/koupa:v1
+# shellcheck source=../../images.env
+. "$stage/images.env"
+V1_IMAGE=$KOUPA_REPO:$KOUPA_V1_TAG
 HOOK_NAMES=(order.before_commit order.after_commit request.mid sse.after_hello)
 APP_SELECTOR=app.kubernetes.io/name=koupa
 TEST_POD_SELECTOR=app.kubernetes.io/name=crit-slow-board
@@ -118,7 +120,7 @@ wait_settled() {
 apply_overlay() {
 	local dir=$1 image=$2 out=$3
 	kubectl kustomize "$dir" >"$out.rendered" || return 1
-	sed "s#ghcr.io/braveantony/koupa:v[0-9][0-9]*#$image#" "$out.rendered" >"$out"
+	sed -E "s#$KOUPA_REPO:v[0-9]+(\.[0-9]+){0,2}#$image#" "$out.rendered" >"$out"
 	rm -f "$out.rendered"
 	timeout 60 kubectl apply -f "$out" >&2 || return 1
 	timeout 300 kubectl -n "$NS" rollout status deploy/koupa --timeout=280s >&2 || return 1

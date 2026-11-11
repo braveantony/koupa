@@ -9,6 +9,12 @@ set -uo pipefail
 
 STAGE=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 REAL_KUBECTL=$(command -v kubectl || true)
+# The images measure.sh uses: KOUPA_REPO:KOUPA_V1_TAG / KOUPA_V2_TAG.
+# shellcheck source=../../images.env
+. "$STAGE/images.env"
+IMG_V1=$KOUPA_REPO:$KOUPA_V1_TAG
+IMG_V2=$KOUPA_REPO:$KOUPA_V2_TAG
+export KOUPA_REPO KOUPA_V1_TAG KOUPA_V2_TAG IMG_V1 IMG_V2
 FAILS=0
 NAME=$(basename "$0" .sh)
 
@@ -72,7 +78,7 @@ kustomize) exec "$REAL_KUBECTL" "$@" ;;
 apply)
 	cat >"$FAKE/applied.yaml"
 	# Like a real apply + finished rollout: the Deployment runs the applied image.
-	img=$(grep -o 'ghcr.io/braveantony/koupa:v[0-9]*' "$FAKE/applied.yaml" | head -1)
+	img=$(grep -oE 'ghcr.io/braveantony/koupa:v[0-9]+(\.[0-9]+){0,2}' "$FAKE/applied.yaml" | head -1)
 	[ -f "$FAKE/deploy.json" ] && python3 -I -c '
 import json, sys
 d = json.load(open(sys.argv[1]))
@@ -234,7 +240,8 @@ exit 0
 EOF
 
 	# Fake skopeo inspect --format '{{.Digest}}' docker://IMAGE: the digest
-	# in $FAKE/digest-<tag> (default: v1 = make_live's imageID, others ...02);
+	# in $FAKE/digest-<tag> (default: the v1 line = make_live's imageID,
+	# others ...02);
 	# $FAKE/skopeo-fail makes it fail.
 	cat >"$FAKE/bin/skopeo" <<'EOF'
 #!/usr/bin/env bash
@@ -244,7 +251,7 @@ ref=${!#}
 tag=${ref##*:}
 if [ -f "$FAKE/digest-$tag" ]; then cat "$FAKE/digest-$tag"; exit 0; fi
 case $tag in
-v1) printf 'sha256:%064d\n' 1 ;;
+v1 | v1.*) printf 'sha256:%064d\n' 1 ;;
 *) printf 'sha256:%064d\n' 2 ;;
 esac
 EOF
@@ -490,7 +497,7 @@ docs = [d for d in yaml.safe_load_all(open(fake + "/rendered.yaml")) if d]
 dep = [d for d in docs if d["kind"] == "Deployment"][0]
 pod = dep["spec"]["template"]["spec"]
 c = pod["containers"][0]
-c["image"] = "ghcr.io/braveantony/koupa:v1"
+c["image"] = os.environ["IMG_V1"]
 pod.setdefault("terminationGracePeriodSeconds", 30)
 for e in c.get("env", []):
     fr = e.get("valueFrom", {}).get("fieldRef")
