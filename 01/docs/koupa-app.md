@@ -209,6 +209,36 @@ kubectl -n koupa rollout status deployment/koupa
 
 v1 不檢查售完，所以 rolling update 期間，客人如果被分到還沒換掉的 v1 Pod，售完的品項還是點得到。這是新舊版同時運作的真實狀況，第二階段會再談。
 
+## 更新到新版映像檔
+
+課程發布新版 App 時，映像檔的 tag 還是 `v1`、`v2`。Deployment 沒有設定 `imagePullPolicy`，所以預設是 `IfNotPresent`：worker 上已經有 `v1`，就不會再去 ghcr 拉；重跑 `setup.sh` 時設定也沒有變，現有的 Pod 不會重建。已經部署過舊版的叢集，要照下面的順序更新（`<叢集名稱>` 換成 `kubectl config current-context` 印出的名稱）：
+
+```bash
+# 1. 讓每個 worker 重新拉映像檔（tk8s 的節點是主機上的 podman container）
+for n in 1 2 3; do
+  for t in v1 v2; do
+    sudo podman exec <叢集名稱>-worker-$n crictl pull ghcr.io/braveantony/koupa:$t
+  done
+done
+
+# 2. 套用新的 migration 和設定
+git pull
+./setup.sh
+
+# 3. 重建 Pod，讓它們用新的映像檔
+kubectl -n koupa rollout restart deployment/koupa
+kubectl -n koupa rollout status deployment/koupa
+```
+
+確認 3 個 Pod 的 digest 和[實測紀錄的補記](measurements/2026-11-10.md#2-映像檔與-digest)列的一樣：
+
+```bash
+kubectl -n koupa get pods -l app.kubernetes.io/name=koupa \
+  -o jsonpath='{range .items[*]}{.metadata.name}{"  "}{.status.containerStatuses[0].imageID}{"\n"}{end}'
+```
+
+`measure.sh` 的 preflight 也會比對 digest：Pod 跑的不是 tag 目前指向的版本，就會停下來，不會開始量測。
+
 ## 接下來
 
 App 部署好之後，回到[學生講義](../README.md)：先做閒置看板的小實驗，再依序量測步驟 0～5，看升級時的「送出失敗」、「看板漏號」和「重複訂單」，以及每一步怎麼降低這些問題。
