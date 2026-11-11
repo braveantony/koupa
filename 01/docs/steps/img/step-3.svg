@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="970" viewBox="0 0 1240 970" role="img" aria-labelledby="title desc" font-family="Noto Sans TC, PingFang TC, Microsoft JhengHei, WenQuanYi Zen Hei, sans-serif">
+<title id="title">步驟 3：先通知看板，再收尾</title>
+<desc id="desc">解決：斷線時間縮短　還剩：漏號每台約 20 個、重送可能重複。時間由左往右，非等比例。</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#52657b"/></marker>
+<pattern id="hatch" width="9" height="9" patternUnits="userSpaceOnUse"><rect width="9" height="9" fill="#fff0f0"/><path d="M-2,2 L2,-2 M0,9 L9,0 M7,11 L11,7" stroke="#e6a9ae" stroke-width="1"/></pattern></defs>
+<rect width="1240" height="970" fill="white"/>
+<text x="32" y="49" font-size="28" fill="#26364a" text-anchor="start" font-weight="700">步驟 3：先通知看板，再收尾</text>
+<text x="32" y="86" font-size="21" fill="#26364a" text-anchor="start">解決：斷線時間縮短　還剩：漏號每台約 20 個、重送可能重複</text>
+<rect x="32" y="108" width="1176" height="48" rx="8" fill="#eaf3ff"/>
+<text x="50" y="140" font-size="22" fill="#26364a" text-anchor="start" font-weight="700">GRACEFUL_SHUTDOWN=1；SHUTDOWN_TIMEOUT=15s</text>
+<text x="32" y="190" font-size="19" fill="#26364a" text-anchor="start" font-weight="700">時間 →</text>
+<path d="M210,202 H1190" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="290" y="185" font-size="18" fill="#26364a" text-anchor="middle">終止開始：0 秒</text>
+<text x="620" y="185" font-size="18" fill="#26364a" text-anchor="middle">8 秒：SIGTERM</text>
+<text x="1030" y="185" font-size="18" fill="#26364a" text-anchor="middle">約 9 秒：重連</text>
+<text x="32" y="220" font-size="16" fill="#26364a" text-anchor="start">非等比例</text>
+<rect x="24" y="250" width="1192" height="104" rx="8" fill="#f5f7fa"/>
+<text x="42" y="308" font-size="22" fill="#26364a" text-anchor="start" font-weight="700">入口（Gateway）</text>
+<rect x="24" y="366" width="1192" height="104" rx="8" fill="#f5f7fa"/>
+<text x="42" y="424" font-size="22" fill="#26364a" text-anchor="start" font-weight="700">舊 Pod</text>
+<rect x="24" y="482" width="1192" height="104" rx="8" fill="#f5f7fa"/>
+<text x="42" y="540" font-size="22" fill="#26364a" text-anchor="start" font-weight="700">新 Pod</text>
+<rect x="24" y="598" width="1192" height="104" rx="8" fill="#f5f7fa"/>
+<text x="42" y="656" font-size="22" fill="#26364a" text-anchor="start" font-weight="700">看板</text>
+<path d="M42,918 H100" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="115" y="925" font-size="18" fill="#26364a" text-anchor="start">主要過程</text>
+<rect x="260" y="902" width="32" height="28" rx="8" fill="#eaf3ff"/>
+<text x="303" y="925" font-size="18" fill="#26364a" text-anchor="start">本步改動</text>
+<rect x="470" y="902" width="32" height="28" rx="8" fill="url(#hatch)"/>
+<text x="513" y="925" font-size="18" fill="#26364a" text-anchor="start">問題時窗</text>
+<text x="730" y="925" font-size="18" fill="#24764c" text-anchor="start">✓ 相較前一步消失的問題</text>
+<text x="230" y="284" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">入口得知舊 Pod 要下線</text>
+<path d="M230,299 H558" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="230" y="330" font-size="18" fill="#26364a" text-anchor="start">SIGTERM 之前就不再送單給它</text>
+<text x="600" y="284" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">新訂單送給其他 Ready Pod</text>
+<path d="M600,299 H1183" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="600" y="330" font-size="18" fill="#26364a" text-anchor="start">已經連著的看板不受影響</text>
+<text x="230" y="400" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">preStop 等 8 秒</text>
+<path d="M230,415 H558" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="230" y="446" font-size="18" fill="#26364a" text-anchor="start">程式仍運作、看板仍連著</text>
+<rect x="590" y="374" width="605" height="88" rx="8" fill="#eaf3ff"/>
+<text x="600" y="400" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">送 shutdown；等處理中的請求完成</text>
+<path d="M600,415 H1183" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="600" y="446" font-size="18" fill="#26364a" text-anchor="start">最多等 15 秒，之後結束</text>
+<text x="230" y="516" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">已通過 readinessProbe → 可以接單</text>
+<path d="M230,531 H868" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="910" y="516" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">接受看板重連</text>
+<path d="M910,531 H1183" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="230" y="632" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">持續收到叫號</text>
+<path d="M230,647 H558" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="230" y="678" font-size="18" fill="#26364a" text-anchor="start">仍在原本的舊 Pod</text>
+<rect x="590" y="606" width="290" height="34" rx="8" fill="url(#hatch)"/>
+<text x="600" y="632" font-size="21" fill="#ad3945" text-anchor="start" font-weight="700">約 1 秒：漏號</text>
+<path d="M600,647 H868" fill="none" stroke="#ad3945" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="600" y="678" font-size="18" fill="#26364a" text-anchor="start">自動重連</text>
+<text x="910" y="632" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">從「現在」開始收</text>
+<path d="M910,647 H1183" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="910" y="678" font-size="18" fill="#26364a" text-anchor="start">缺的叫號不會補回</text>
+<text x="42" y="754" font-size="20" fill="#24764c" text-anchor="start" font-weight="700">✓ 突然被切斷改成先通知；約 3 秒的斷線縮短為約 1 秒</text>
+<text x="42" y="798" font-size="20" fill="#26364a" text-anchor="start">preStop 8 ＋ SHUTDOWN_TIMEOUT 15 ＋ 緩衝 5 ＜ 關機寬限 40 秒</text>
+<text x="42" y="834" font-size="20" fill="#26364a" text-anchor="start">看板實測：收到 shutdown／斷線後約 1 秒重連。</text>
+<text x="42" y="872" font-size="20" fill="#26364a" text-anchor="start">漏號約 20 個是每次升級、每台看板的量測值，不是保證。</text>
+</svg>

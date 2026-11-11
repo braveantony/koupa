@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="970" viewBox="0 0 1240 970" role="img" aria-labelledby="title desc" font-family="Noto Sans TC, PingFang TC, Microsoft JhengHei, WenQuanYi Zen Hei, sans-serif">
+<title id="title">步驟 5：重送時，認出是同一張單</title>
+<desc id="desc">解決：同一張單重送不重複建立　還剩：斷線時客人仍可能不知道結果。時間由左往右，非等比例。</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#52657b"/></marker>
+<pattern id="hatch" width="9" height="9" patternUnits="userSpaceOnUse"><rect width="9" height="9" fill="#fff0f0"/><path d="M-2,2 L2,-2 M0,9 L9,0 M7,11 L11,7" stroke="#e6a9ae" stroke-width="1"/></pattern></defs>
+<rect width="1240" height="970" fill="white"/>
+<text x="32" y="49" font-size="28" fill="#26364a" text-anchor="start" font-weight="700">步驟 5：重送時，認出是同一張單</text>
+<text x="32" y="86" font-size="21" fill="#26364a" text-anchor="start">解決：同一張單重送不重複建立　還剩：斷線時客人仍可能不知道結果</text>
+<rect x="32" y="108" width="1176" height="48" rx="8" fill="#eaf3ff"/>
+<text x="50" y="140" font-size="22" fill="#26364a" text-anchor="start" font-weight="700">IDEMPOTENCY_KEY=1：相同 client_ref ＋ 相同訂單內容</text>
+<text x="32" y="190" font-size="19" fill="#26364a" text-anchor="start" font-weight="700">時間 →</text>
+<path d="M210,202 H1190" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="320" y="185" font-size="18" fill="#26364a" text-anchor="middle">第一次送出</text>
+<text x="690" y="185" font-size="18" fill="#26364a" text-anchor="middle">舊 Pod 關閉／回應中斷</text>
+<text x="1060" y="185" font-size="18" fill="#26364a" text-anchor="middle">重送後</text>
+<text x="32" y="220" font-size="16" fill="#26364a" text-anchor="start">非等比例</text>
+<rect x="24" y="250" width="1192" height="104" rx="8" fill="#f5f7fa"/>
+<text x="42" y="308" font-size="22" fill="#26364a" text-anchor="start" font-weight="700">客人</text>
+<rect x="24" y="366" width="1192" height="104" rx="8" fill="#f5f7fa"/>
+<text x="42" y="424" font-size="22" fill="#26364a" text-anchor="start" font-weight="700">入口（Gateway）</text>
+<rect x="24" y="482" width="1192" height="104" rx="8" fill="#f5f7fa"/>
+<text x="42" y="540" font-size="22" fill="#26364a" text-anchor="start" font-weight="700">Pod</text>
+<rect x="24" y="598" width="1192" height="104" rx="8" fill="#f5f7fa"/>
+<text x="42" y="656" font-size="22" fill="#26364a" text-anchor="start" font-weight="700">資料庫</text>
+<path d="M42,918 H100" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="115" y="925" font-size="18" fill="#26364a" text-anchor="start">主要過程</text>
+<rect x="260" y="902" width="32" height="28" rx="8" fill="#eaf3ff"/>
+<text x="303" y="925" font-size="18" fill="#26364a" text-anchor="start">本步改動</text>
+<rect x="470" y="902" width="32" height="28" rx="8" fill="url(#hatch)"/>
+<text x="513" y="925" font-size="18" fill="#26364a" text-anchor="start">問題時窗</text>
+<text x="730" y="925" font-size="18" fill="#24764c" text-anchor="start">✓ 相較前一步消失的問題</text>
+<text x="230" y="284" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">送出訂單</text>
+<path d="M230,299 H508" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="230" y="330" font-size="18" fill="#26364a" text-anchor="start">帶 client_ref</text>
+<rect x="540" y="258" width="310" height="34" rx="8" fill="url(#hatch)"/>
+<text x="550" y="284" font-size="21" fill="#ad3945" text-anchor="start" font-weight="700">沒收到回應：結果未知</text>
+<path d="M550,299 H838" fill="none" stroke="#ad3945" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="550" y="330" font-size="18" fill="#26364a" text-anchor="start">訂單其實已寫入</text>
+<rect x="870" y="258" width="325" height="88" rx="8" fill="#eaf3ff"/>
+<text x="880" y="284" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">重送 → 拿回原號碼牌</text>
+<path d="M880,299 H1183" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="880" y="330" font-size="18" fill="#26364a" text-anchor="start">同一 client_ref、同一內容</text>
+<text x="230" y="400" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">轉送第一次請求</text>
+<path d="M230,415 H508" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="880" y="400" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">重送轉給可用 Pod</text>
+<path d="M880,415 H1183" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="230" y="516" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">舊 Pod：建立訂單</text>
+<path d="M230,531 H508" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="550" y="516" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">寫入成功後，回應中斷</text>
+<path d="M550,531 H838" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="550" y="562" font-size="18" fill="#26364a" text-anchor="start">關鍵時機示意</text>
+<rect x="870" y="490" width="325" height="88" rx="8" fill="#eaf3ff"/>
+<text x="880" y="516" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">查到原訂單 → 回傳</text>
+<path d="M880,531 H1183" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="880" y="562" font-size="18" fill="#26364a" text-anchor="start">不再新增</text>
+<text x="230" y="632" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">存訂單與 client_ref</text>
+<path d="M230,647 H508" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="550" y="632" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">原訂單保留</text>
+<path d="M550,647 H838" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<rect x="870" y="606" width="325" height="88" rx="8" fill="#eaf3ff"/>
+<text x="880" y="632" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">只有一張訂單</text>
+<path d="M880,647 H1183" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="880" y="678" font-size="18" fill="#26364a" text-anchor="start">用 client_ref 找到原訂單</text>
+<text x="42" y="754" font-size="20" fill="#24764c" text-anchor="start" font-weight="700">✓ 重複訂單消失：重送回傳原訂單，不變成兩張</text>
+<text x="58" y="810" font-size="20" fill="#ad3945" text-anchor="start" font-weight="700">沒有這個開關時（步驟 4 以前），這次重送會變成兩張訂單。</text>
+<text x="42" y="864" font-size="20" fill="#26364a" text-anchor="start">預設負載下很少碰到，講師用關鍵時機實驗示範。</text>
+</svg>
