@@ -38,7 +38,7 @@ test('order, kitchen done, board calls the number', async ({ browser, page }) =>
   await row.getByRole('button', { name: '完成' }).click();
   await expect(row).toHaveCount(0);
 
-  await expect(board.locator('#latest')).toContainText(`請 ${number} 號取餐 🧋`);
+  await expect(board.locator('#latest')).toContainText(`請 ${number} 號取餐`);
   await expect(board.locator('#latest .big')).toHaveText(number);
   await expect(board.locator(`#making li[data-number="${number}"]`)).toHaveCount(0);
 });
@@ -247,6 +247,237 @@ test('board ignores a ready event whose id is not newer than the last one', asyn
     .toBe(2);
   await expect(page.locator('#latest .big')).toHaveText('0105');
   await expect(page.locator('#list li')).toHaveText(['0104']);
+});
+
+// Board 製作中 on a fixed-height screen: every pending order is either a
+// fully visible strip or counted in the line 「還有 N 張」 (#making-more),
+// which is itself fully visible.
+const fakeOrders = (n: number) =>
+  Array.from({ length: n }, (_, i) => ({ order_id: 900000 + i, number: String(5001 + i), total: 50, items: [] }));
+
+async function makingState(page: Page) {
+  return page.evaluate(() => {
+    // Fractional clip box: the padding boxes of the list and the section.
+    const clip = (e: Element) => {
+      const r = e.getBoundingClientRect();
+      const cs = getComputedStyle(e);
+      return { top: r.top + parseFloat(cs.borderTopWidth), bottom: r.bottom - parseFloat(cs.borderBottomWidth) };
+    };
+    const ul = document.getElementById('making')!;
+    const a = clip(ul);
+    const b = clip(ul.parentElement!);
+    const top = Math.max(a.top, b.top);
+    const bottom = Math.min(a.bottom, b.bottom);
+    const inView = (r: DOMRect) => r.top >= 0 && r.left >= 0 && r.bottom <= window.innerHeight && r.right <= window.innerWidth;
+    const lis = Array.from(ul.children) as HTMLElement[];
+    const more = document.getElementById('making-more')!;
+    const mr = more.getBoundingClientRect();
+    return {
+      shown: lis.map((li) => li.dataset.number!),
+      more: more.hidden ? null : more.textContent,
+      moreVisible: !more.hidden && mr.height > 0 && inView(mr) && mr.top >= b.top && mr.bottom <= b.bottom,
+      unclipped: lis.every((li) => {
+        const r = li.getBoundingClientRect();
+        return r.top >= top && r.bottom <= bottom;
+      }),
+      allVisible: lis.every((li) => {
+        const r = li.getBoundingClientRect();
+        return r.top >= top && r.bottom <= bottom && inView(r);
+      }),
+    };
+  });
+}
+
+// The invariant, polled: shown strips are the first k orders, all fully
+// visible; the rest (if any) are counted on a fully visible line.
+async function expectAccounted(page: Page, total: number) {
+  // Let a pending resize refit (one animation frame) run first.
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  await expect
+    .poll(async () => {
+      const st = await makingState(page);
+      const prefix = st.shown.every((n, i) => n === String(5001 + i));
+      const counted = total - st.shown.length;
+      const ok = prefix && st.allVisible &&
+        (counted === 0 ? st.more === null : st.more === `還有 ${counted} 張` && st.moreVisible);
+      return ok ? 'ok' : JSON.stringify(st);
+    }, { timeout: 6000 })
+    .toBe('ok');
+  return makingState(page);
+}
+
+for (const [w, h] of [[800, 600], [1280, 720], [1920, 1080], [800, 360], [800, 220], [800, 200]]) {
+  test(`board ${w}x${h}: no pending order is clipped out of sight`, async ({ page }) => {
+    await page.setViewportSize({ width: w, height: h });
+    let n = 200;
+    await page.route('**/api/orders?status=pending*', (route) => route.fulfill({ json: fakeOrders(n) }));
+    await page.goto('/board');
+    const many = await expectAccounted(page, 200);
+    expect(many.more).not.toBeNull();
+    // Boundary: exactly the strips that fit next to the count line -> all
+    // of them shown and no count line; one more -> still all accounted for.
+    const k = many.shown.length;
+    if (k > 0) {
+      n = k;
+      const full = await expectAccounted(page, k);
+      expect(full.shown).toHaveLength(k);
+      expect(full.more).toBeNull();
+    }
+    n = k + 1;
+    await expectAccounted(page, k + 1);
+  });
+}
+
+test('board 800x200: no strip fits, the count line alone counts every order', async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 200 });
+  await page.route('**/api/orders?status=pending*', (route) => route.fulfill({ json: fakeOrders(200) }));
+  await page.goto('/board');
+  const st = await expectAccounted(page, 200);
+  expect(st.shown).toEqual([]);
+  expect(st.more).toBe('還有 200 張');
+});
+
+test('board 800x150: too short to fit, the page scrolls and nothing is clipped', async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 150 });
+  await page.route('**/api/orders?status=pending*', (route) => route.fulfill({ json: fakeOrders(200) }));
+  await page.goto('/board');
+  const more = page.locator('#making-more');
+  await expect(more).toHaveText('還有 140 張'); // 60 strips listed, the rest counted
+  await expect(page.locator('#making li')).toHaveCount(60);
+  expect(await page.evaluate(() => {
+    const ul = document.getElementById('making')!;
+    return ul.scrollHeight <= ul.clientHeight && document.documentElement.scrollHeight > innerHeight;
+  })).toBe(true);
+  await more.scrollIntoViewIfNeeded();
+  await expect(more).toBeInViewport({ ratio: 1 });
+});
+
+// Fractional pixels: sizes come from vh, so sweeping the height moves the
+// strips by fractions of a pixel against the clip edge.
+test('board: the fit holds at every height from 600 to 640 px', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 600 });
+  await page.route('**/api/orders?status=pending*', (route) => route.fulfill({ json: fakeOrders(200) }));
+  await page.goto('/board');
+  for (let h = 600; h <= 640; h++) {
+    await page.setViewportSize({ width: 1280, height: h });
+    await expectAccounted(page, 200);
+  }
+});
+
+test('board: the fit holds at a fractional device pixel ratio', async ({ browser, baseURL }) => {
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 600 }, deviceScaleFactor: 1.25, baseURL });
+  const page = await ctx.newPage();
+  await page.route('**/api/orders?status=pending*', (route) => route.fulfill({ json: fakeOrders(200) }));
+  await page.goto('/board');
+  for (let h = 600; h <= 620; h++) {
+    await page.setViewportSize({ width: 1280, height: h });
+    await expectAccounted(page, 200);
+  }
+  await ctx.close();
+});
+
+test('board: a strip clipped by less than 1 px is counted, not listed', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.route('**/api/orders?status=pending*', (route) => route.fulfill({ json: fakeOrders(4) }));
+  await page.goto('/board');
+  await expect(page.locator('#making li')).toHaveCount(4); // 2 rows of 2
+  // Make the list box 0.3 px shorter than its strips, then refit.
+  const h = await page.evaluate(() => {
+    const ul = document.getElementById('making')!;
+    const cs = getComputedStyle(ul);
+    const last = ul.lastElementChild!.getBoundingClientRect();
+    // overflow clips at the padding edge: end it 0.3 px above the strips' bottom
+    return last.bottom - ul.getBoundingClientRect().top + parseFloat(cs.borderBottomWidth) - 0.3;
+  });
+  await page.addStyleTag({ content: `#making { flex: none !important; height: ${h}px !important; }` });
+  await page.evaluate(() => window.dispatchEvent(new Event('resize')));
+  await expect.poll(async () => (await makingState(page)).more).toBe('還有 2 張');
+  const st = await expectAccounted(page, 4);
+  expect(st.shown).toEqual(['5001', '5002']);
+});
+
+// Below 200 px tall the board scrolls: nothing is clipped, 60 strips are
+// listed and the rest counted.
+async function expectScrolling(page: Page, total: number) {
+  await expect
+    .poll(async () => {
+      const st = await makingState(page);
+      const ok = st.unclipped && st.shown.length === Math.min(60, total) &&
+        (total > 60 ? st.more === `還有 ${total - 60} 張` : st.more === null);
+      return ok ? 'ok' : JSON.stringify(st);
+    }, { timeout: 6000 })
+    .toBe('ok');
+}
+
+test('board 800x199: scroll layout, nothing clipped', async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 199 });
+  await page.route('**/api/orders?status=pending*', (route) => route.fulfill({ json: fakeOrders(200) }));
+  await page.goto('/board');
+  await expectScrolling(page, 200);
+  await page.locator('#making-more').scrollIntoViewIfNeeded();
+  await expect(page.locator('#making-more')).toBeInViewport({ ratio: 1 });
+});
+
+test('board: resize across the 200 px switch (250 -> 199 -> 250)', async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 250 });
+  await page.route('**/api/orders?status=pending*', (route) => route.fulfill({ json: fakeOrders(200) }));
+  await page.goto('/board');
+  const before = await expectAccounted(page, 200);
+  await page.setViewportSize({ width: 800, height: 199 });
+  await expectScrolling(page, 200);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.setViewportSize({ width: 800, height: 250 });
+  await expect.poll(async () => (await makingState(page)).shown.length).toBe(before.shown.length);
+  await expectAccounted(page, 200);
+});
+
+test('board: the 製作中 fit holds across resizes (large -> small -> large)', async ({ page }) => {
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await page.route('**/api/orders?status=pending*', (route) => route.fulfill({ json: fakeOrders(200) }));
+  await page.goto('/board');
+  const large = await expectAccounted(page, 200);
+  await page.setViewportSize({ width: 800, height: 260 });
+  await expect.poll(async () => (await makingState(page)).shown.length).toBeLessThan(large.shown.length);
+  await expectAccounted(page, 200);
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  // The refit runs on the next animation frame; wait for it, then check.
+  await expect.poll(async () => (await makingState(page)).shown.length).toBe(large.shown.length);
+  await expectAccounted(page, 200);
+});
+
+test('board: stale filtering still applies when 製作中 overflows', async ({ page, request }) => {
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto('/board');
+  await page.waitForFunction(() => (window as any).__events.includes('hello'));
+  const o = await apiOrder(request);
+  let captured!: () => void;
+  const gotSnapshot = new Promise<void>((r) => (captured = r));
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  let hold = true;
+  await page.route('**/api/orders?status=pending*', async (route) => {
+    const resp = await route.fetch();
+    const real = await resp.json();
+    const all = [...real, ...fakeOrders(100)]; // real orders first, so o would be in view
+    if (hold && real.some((x: any) => x.order_id === o.order_id)) {
+      hold = false;
+      captured();
+      await gate; // the SSE ready event arrives while this response is held
+    }
+    await route.fulfill({ json: all });
+  });
+  await gotSnapshot;
+  await request.post(`/orders/${o.order_id}/ready`);
+  await expect(page.locator('#latest .big')).toHaveText(o.number);
+  release();
+  const stale = page.locator(`#making li[data-number="${o.number}"]`);
+  for (let i = 0; i < 30; i++) {
+    expect(await stale.count()).toBe(0);
+    const st = await makingState(page);
+    expect(st.allVisible).toBe(true);
+    expect(st.moreVisible).toBe(true);
+    await page.waitForTimeout(100);
+  }
 });
 
 function freePort(): Promise<number> {

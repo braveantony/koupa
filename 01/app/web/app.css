@@ -1,217 +1,347 @@
-/* Shared look for the three pages ("milk tea" palette). No external
-   fonts or assets: the pages must work offline inside the cluster. */
+/* Shared look for the three pages: "sealing film and label sticker".
+   The shop's own consumables are the interface: the printed cobalt film
+   sealed on every cup (round = the cup) and the label-printer sticker on
+   its side (rectangular = information). No external fonts or assets: the
+   pages must work offline inside the cluster. See /DESIGN.md. */
 :root {
-  --bg: #F7F1E8;
+  --ground: #F4F6FB;
   --surface: #FFFFFF;
-  --soft: #EFE3D3;
-  --border: #E5D8C8;
-  --text: #2B2118;
-  --muted: #6B5A4C;
-  --brand: #7A4E2D;
-  --primary: #8B5E3C;
+  --ink: #10182E;
+  --ink-2: #4B5570;
+  --line: #D5DAE6;
+  --film: #1E46B4;
+  --film-deep: #163889;
+  --dot: #F2C230;
+  --primary: var(--film);
   --on-primary: #FFFFFF;
-  --bar: #2B2118;
-  --on-bar: #FFFFFF;
-  --sold-bg: #EDE6DE;
-  --sold-text: #5E5248;
-  --disabled-bg: #5A4A3D;
-  --disabled-text: #C9BCAF;
-  --err-bg: #FBEAE5;
-  --err-border: #E9B8AC;
-  --err-text: #8A2615;
-  --call-bg: #7A4E2D;
-  --on-call: #FFFFFF;
-  --call-line: rgba(255, 255, 255, 0.3);
-  --call-chip: rgba(255, 255, 255, 0.16);
-  --radius: 18px;
-  font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
-  color: var(--text);
-  background: var(--bg);
+  --sold-disc: #C7CCD8;
+  --soft: #E8ECF5;
+  --red: #B42318;
+  --red-bg: #FDECEA;
+  --red-line: #F1B5AE;
+  --drop: 0 1px 0 rgba(16, 24, 46, 0.22), 0 3px 8px rgba(16, 24, 46, 0.08);
+  --lift: 0 4px 14px rgba(16, 24, 46, 0.18);
+  --sans: "PingFang TC", "Noto Sans TC", "Noto Sans CJK TC", "Microsoft JhengHei", "Heiti TC", "WenQuanYi Zen Hei", system-ui, sans-serif;
+  --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", "Noto Sans Mono", monospace;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  font-family: var(--sans);
+  color: var(--ink);
+  background: var(--ground);
+  caret-color: var(--film);
+  scrollbar-color: #9AA3BA var(--ground);
 }
 
 *, *::before, *::after { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
-body { margin: 0; min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); line-height: 1.5; }
+body { margin: 0; min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; background: var(--ground); color: var(--ink); line-height: 1.5; }
+::selection { background: var(--dot); color: var(--ink); }
 button { font: inherit; color: inherit; cursor: pointer; }
 button:disabled { cursor: not-allowed; }
-:focus-visible { outline: 3px solid var(--primary); outline-offset: 2px; }
+:focus-visible { outline: 3px solid var(--film); outline-offset: 2px; }
 [hidden] { display: none !important; }
 ul { margin: 0; padding: 0; list-style: none; }
-h1, h2 { margin: 0; line-height: 1.3; }
-.num { font-variant-numeric: tabular-nums; letter-spacing: 0.04em; }
+h1, h2 { margin: 0; line-height: 1.3; text-wrap: balance; }
+/* Numbers (tickets, prices, quantities) use the sans with tabular lining
+   figures: the system monospace faces draw a dotted or slashed zero that
+   reads like a decimal point at display size. A Latin sans with a real
+   bold comes first so the digits keep their weight where the CJK face
+   has only one. */
+.num {
+  font-family: -apple-system, "Segoe UI", "Liberation Sans", var(--sans);
+  font-variant-numeric: tabular-nums lining-nums; letter-spacing: 0.02em;
+}
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
 
-/* ---- shared header ---- */
+/* ---- the two materials ---- */
+/* Film: the printed sealing film. Used only as a field (header band, a
+   cup disc), never as scattered decoration, and never under text: text on
+   film always sits on a solid sticker or pill. */
+.film {
+  --tile: 48px;
+  --r: 5px;
+  background-color: var(--film);
+  background-image:
+    radial-gradient(circle at calc(var(--tile) / 4) calc(var(--tile) / 4), #FFFFFF 0 var(--r), transparent calc(var(--r) + 0.5px)),
+    radial-gradient(circle at calc(var(--tile) * 3 / 4) calc(var(--tile) * 3 / 4), var(--dot) 0 var(--r), transparent calc(var(--r) + 0.5px));
+  background-size: var(--tile) var(--tile);
+}
+/* Sticker: a label-printer sticker. White, small radius, a 1px drop line,
+   a slight tilt (at most 2deg on lists, 3deg for the one called number). */
+.sticker { background: var(--surface); border-radius: 4px; box-shadow: var(--drop); }
+
+/* The one authored motion: a sticker pressed onto the film. It starts
+   visible (only scale and tilt move), and is off for reduced motion. */
+@keyframes press-on {
+  from { transform: rotate(-7deg) scale(1.08); box-shadow: 0 14px 28px rgba(16, 24, 46, 0.28); }
+  to { transform: rotate(-3deg) scale(1); box-shadow: var(--drop); }
+}
+.press { transform: rotate(-3deg); animation: press-on 320ms var(--ease-out) both; }
+@media (prefers-reduced-motion: reduce) {
+  .press { animation: none; }
+}
+
+/* ---- shared header: a band of film with the brand sticker ---- */
 .site {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 24px;
-  padding: 16px 20px 12px; background: var(--surface); border-bottom: 1px solid var(--border);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px;
+  padding: 18px 20px 16px;
 }
-.brand { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
-.brand-name { font-size: 24px; font-weight: 900; letter-spacing: 0.02em; color: var(--brand); text-decoration: none; }
-.slogan { font-size: 14px; color: var(--muted); }
-.site nav { display: flex; gap: 6px; margin-left: auto; }
+.brand {
+  display: flex; flex-direction: column; padding: 8px 14px; transform: rotate(-1.5deg);
+  background: var(--surface); border-radius: 4px; box-shadow: 0 2px 0 rgba(16, 24, 46, 0.25), 0 4px 10px rgba(16, 24, 46, 0.12);
+}
+.brand-name { font-size: 24px; font-weight: 900; line-height: 1.25; color: var(--ink); text-decoration: none; }
+.slogan { font-family: var(--mono); font-size: 13px; color: var(--ink-2); }
+.site nav { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
 .site nav a {
-  display: inline-flex; align-items: center; min-height: 40px; padding: 6px 16px; border-radius: 999px;
-  font-size: 15px; color: var(--muted); text-decoration: none;
+  display: inline-flex; align-items: center; min-height: 44px; padding: 6px 16px; border-radius: 999px;
+  font-size: 15px; font-weight: 700; color: var(--ink); text-decoration: none;
+  background: rgba(255, 255, 255, 0.94);
 }
-.site nav a:hover { background: var(--soft); color: var(--text); }
-.site nav a[aria-current="page"] { background: var(--primary); color: var(--on-primary); font-weight: 700; }
+.site nav a:hover { background: var(--surface); text-decoration: underline; text-underline-offset: 4px; }
+.site nav a[aria-current="page"] { background: var(--dot); color: var(--ink); font-weight: 900; }
+.site.film :focus-visible {
+  /* Two-colour ring: ink inside, white outside, visible on the white
+     brand sticker, the white pills and the cobalt film alike. */
+  outline: 3px solid #FFFFFF; outline-offset: 3px; box-shadow: 0 0 0 3px var(--ink);
+}
 @media (max-width: 599px) {
+  .site { padding: 16px 16px 14px; }
   .site nav { margin-left: 0; width: 100%; }
 }
 
 main { flex: 1; width: 100%; }
 
 /* ---- messages ---- */
-.notice { margin: 0; padding: 12px 16px; border-radius: 14px; font-size: 15px; }
+.notice { margin: 0; padding: 12px 16px; border-radius: 4px; font-size: 15px; box-shadow: var(--drop); }
 .notice:empty { display: none; }
-.notice.info { background: var(--soft); color: var(--text); }
-.notice.err { background: var(--err-bg); border: 1px solid var(--err-border); color: var(--err-text); font-weight: 700; }
+.notice.info { background: var(--surface); color: var(--ink); font-family: var(--mono); }
+.notice.err { background: var(--red-bg); border: 1px solid var(--red-line); color: var(--red); font-weight: 700; }
 
 /* ---- debug strip (?debug=1 only) ---- */
 .debug {
-  display: flex; flex-wrap: wrap; gap: 0 1em; padding: 3px 12px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px;
-  background: #111; color: #9FE39F;
+  display: flex; flex-wrap: wrap; gap: 0 1em; padding: 4px 12px;
+  font-family: var(--mono); font-size: 12px;
+  background: var(--ink); color: #CFDCFF;
 }
 .debug span:empty { display: none; }
 
 /* ---- order page ---- */
-.order { max-width: 44rem; margin: 0 auto; padding: 16px 16px 0; display: flex; flex-direction: column; gap: 12px; }
-.order h1 { margin: 0 4px; font-size: 19px; font-weight: 700; }
-#menu.cards { display: grid; gap: 12px; }
-@media (min-width: 720px) { #menu.cards { grid-template-columns: 1fr 1fr; } }
-.card {
-  display: flex; align-items: center; gap: 14px; padding: 12px; border-radius: var(--radius);
-  background: var(--surface); border: 1px solid var(--border);
+.order { max-width: 46rem; margin: 0 auto; padding: 22px 16px 0; display: flex; flex-direction: column; gap: 16px; }
+.order h1 { margin: 0 2px; font-size: 20px; font-weight: 900; }
+#menu.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 22px 14px; padding-bottom: 8px; }
+.card { display: flex; flex-direction: column; align-items: center; gap: 10px; min-width: 0; }
+/* The cup: the photo sealed inside a printed film rim. */
+.card .cup {
+  width: min(100%, 168px); aspect-ratio: 1; border-radius: 50%; padding: 7px;
+  background: repeating-conic-gradient(var(--film) 0 10deg, #FFFFFF 10deg 20deg);
 }
-.card img { width: 88px; height: 88px; flex-shrink: 0; border-radius: 14px; object-fit: cover; background: var(--soft); }
-.card .info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.card .name { font-size: 17px; font-weight: 700; }
-.card .price { font-size: 15px; color: var(--muted); }
-.card .sold-label {
-  align-self: flex-start; margin-top: 2px; padding: 2px 8px; border-radius: 6px;
-  font-size: 12px; font-weight: 700; background: var(--sold-bg); color: var(--sold-text);
+.card img { display: block; width: 100%; height: 100%; border-radius: 50%; object-fit: cover; background: var(--soft); }
+.card .label {
+  width: 100%; display: flex; flex-direction: column; gap: 2px; padding: 10px 10px 10px 12px;
+  background: var(--surface); border-radius: 4px; box-shadow: var(--drop);
 }
-.card.sold-out { background: var(--sold-bg); }
-.card.sold-out img { filter: grayscale(1); opacity: 0.55; }
-.card.sold-out .name, .card.sold-out .price { color: var(--sold-text); }
-.stepper { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.card:nth-child(4n+1) .label { transform: rotate(-1.5deg); }
+.card:nth-child(4n+2) .label { transform: rotate(1deg); }
+.card:nth-child(4n+3) .label { transform: rotate(1.5deg); }
+.card:nth-child(4n+4) .label { transform: rotate(-1deg); }
+.card .name { font-size: 17px; font-weight: 900; line-height: 1.35; }
+.card .price { font-family: var(--sans); font-variant-numeric: tabular-nums lining-nums; font-size: 14px; color: var(--ink-2); }
+.card .sold-label { font-family: var(--sans); font-variant-numeric: tabular-nums lining-nums; font-size: 14px; font-weight: 700; color: var(--red); }
+.card.sold-out .cup { background: var(--sold-disc); }
+.card.sold-out img { filter: grayscale(1); opacity: 0.6; }
+.card.sold-out .name { color: var(--ink-2); }
+.stepper { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin-top: 6px; }
 .stepper button {
-  width: 44px; height: 44px; border-radius: 12px; font-size: 22px; line-height: 1;
-  display: inline-flex; align-items: center; justify-content: center;
+  position: relative; width: 44px; height: 44px; flex-shrink: 0; border-radius: 50%;
+  border: 2px solid var(--film); background: var(--surface); color: var(--film);
 }
-.stepper .dec { border: 1px solid var(--border); background: var(--surface); color: var(--text); }
-.stepper .inc { border: none; background: var(--primary); color: var(--on-primary); }
-.stepper button:disabled { opacity: 0.35; }
-.stepper .qty { width: 28px; text-align: center; font-size: 18px; font-weight: 700; }
-@media (max-width: 374px) {
-  .card { gap: 10px; padding: 10px; }
-  .card img { width: 64px; height: 64px; }
-  .stepper button { width: 44px; height: 44px; }
-  .stepper .qty { width: 22px; }
+.stepper .inc { background: var(--film); color: var(--on-primary); }
+.stepper .inc:hover:not(:disabled) { background: var(--film-deep); border-color: var(--film-deep); }
+.stepper .dec:hover:not(:disabled) { background: var(--soft); }
+/* Drawn plus and minus marks, one stroke weight. */
+.stepper button::before, .stepper .inc::after {
+  content: ""; position: absolute; left: 50%; top: 50%; width: 16px; height: 2.5px; border-radius: 2px;
+  background: currentColor; transform: translate(-50%, -50%);
 }
+.stepper .inc::after { transform: translate(-50%, -50%) rotate(90deg); }
+.stepper button:disabled { border-color: var(--line); background: var(--surface); color: #9AA3BA; }
+.stepper .qty { min-width: 2ch; text-align: center; font-family: var(--sans); font-variant-numeric: tabular-nums lining-nums; font-size: 20px; font-weight: 700; }
+#menu.locked .stepper { opacity: 0.7; }
 
 .cart {
-  position: sticky; bottom: 0; margin: 4px -4px 0; padding: 0 0 max(12px, env(safe-area-inset-bottom));
-  display: flex; flex-direction: column; gap: 8px; background: linear-gradient(to bottom, rgba(247, 241, 232, 0), var(--bg) 24px);
+  position: sticky; bottom: 0; margin: 0 -4px; padding: 16px 4px max(14px, env(safe-area-inset-bottom));
+  display: flex; flex-direction: column; gap: 10px;
+  background: linear-gradient(to bottom, rgba(244, 246, 251, 0), var(--ground) 28px);
 }
 .cart-bar {
-  display: flex; align-items: center; gap: 12px; padding: 12px 12px 12px 20px; border-radius: var(--radius);
-  background: var(--bar); color: var(--on-bar); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  display: flex; align-items: center; gap: 12px; padding: 10px 10px 10px 16px; border-radius: 6px;
+  background: var(--surface); color: var(--ink); box-shadow: var(--lift);
 }
-.cart-sum { flex: 1; font-size: 19px; font-weight: 900; }
-.cart-sum .dot { margin: 0 4px; opacity: 0.6; font-weight: 400; }
+.cart-sum { flex: 1; min-width: 0; font-family: var(--sans); font-variant-numeric: tabular-nums lining-nums; font-size: 17px; font-weight: 700; white-space: nowrap; }
+.cart-sum .sep { margin: 0 6px; color: var(--ink-2); font-weight: 400; }
 #submit {
-  min-height: 48px; padding: 0 22px; border-radius: 14px; border: none;
-  font-size: 17px; font-weight: 700; background: var(--primary); color: var(--on-primary);
+  min-height: 48px; padding: 0 22px; border-radius: 999px; border: none; flex-shrink: 0;
+  font-size: 17px; font-weight: 900; background: var(--film); color: var(--on-primary);
 }
-#submit:disabled { background: var(--disabled-bg); color: var(--disabled-text); }
+#submit:hover:not(:disabled) { background: var(--film-deep); }
+#submit:disabled { background: var(--soft); color: var(--ink-2); }
 
-.done { display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 24px 8px 32px; text-align: center; }
-.done .label { font-size: 16px; color: var(--muted); }
-.done .ticket { font-size: clamp(72px, 26vw, 112px); font-weight: 900; line-height: 1; color: var(--brand); }
+/* Confirmation: the ticket number printed big on a sticker over a film disc. */
+.done { display: flex; flex-direction: column; align-items: center; gap: 20px; padding: 8px 0 36px; text-align: center; }
+.done h1 { font-size: 22px; }
+.done-disc {
+  --tile: 44px;
+  width: min(300px, 82vw); aspect-ratio: 1; border-radius: 50%; display: grid; place-items: center; padding: 12px;
+  border: 8px solid var(--surface); outline: 2px solid var(--line);
+}
+.done-disc .sticker { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 14px 24px 16px; border-radius: 6px; }
+.done-disc .tag { font-size: 15px; font-weight: 700; color: var(--ink-2); }
+.done .ticket { font-size: clamp(56px, 18vw, 88px); font-weight: 700; line-height: 1; color: var(--ink); }
 .done p { margin: 0; font-size: 16px; }
 .receipt {
-  width: 100%; max-width: 26rem; padding: 16px 20px; border-radius: 16px; background: var(--surface); border: 1px solid var(--border);
-  display: flex; flex-direction: column; gap: 8px; text-align: left;
+  width: 100%; max-width: 26rem; padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; text-align: left;
+  font-family: var(--sans); font-variant-numeric: tabular-nums lining-nums;
 }
 .receipt li, .receipt .sum { display: flex; justify-content: space-between; gap: 12px; font-size: 15px; }
-.receipt .sum { padding-top: 8px; border-top: 1px solid var(--border); font-size: 17px; font-weight: 700; }
+.receipt .sum { padding-top: 10px; border-top: 1px dashed var(--line); font-size: 17px; font-weight: 700; }
 .btn-secondary {
-  min-height: 48px; padding: 0 28px; border-radius: 14px; border: 1px solid var(--border);
-  background: var(--surface); color: var(--text); font-size: 16px; font-weight: 700;
+  min-height: 48px; padding: 0 28px; border-radius: 999px; border: 2px solid var(--film);
+  background: var(--surface); color: var(--film); font-size: 16px; font-weight: 900;
 }
+.btn-secondary:hover { background: var(--soft); }
 
 /* ---- kitchen page ---- */
-.kitchen { padding: 20px 20px 24px; display: flex; flex-direction: column; gap: 16px; max-width: 80rem; margin: 0 auto; }
-.section-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
-.section-head h1, .section-head h2 { font-size: 22px; font-weight: 700; }
-.pill { padding: 4px 12px; border-radius: 999px; font-size: 15px; font-weight: 700; background: var(--soft); color: var(--brand); }
-.hint { margin-left: auto; font-size: 13px; color: var(--muted); }
-#orders.tickets { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: 16px; align-items: start; }
+.kitchen { padding: 22px 20px 32px; display: flex; flex-direction: column; gap: 18px; max-width: 80rem; margin: 0 auto; }
+.section-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.section-head h1, .section-head h2 { font-size: 22px; font-weight: 900; }
+.pill { padding: 3px 12px; border-radius: 999px; font-size: 15px; font-weight: 700; background: var(--dot); color: var(--ink); }
+.hint { margin-left: auto; font-size: 14px; color: var(--ink-2); }
+#orders.tickets { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: 18px; align-items: start; }
+/* A printed label strip per order. */
 .ticket-card {
-  display: flex; flex-direction: column; gap: 12px; padding: 18px; border-radius: var(--radius);
-  background: var(--surface); border: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 12px; padding: 14px 16px 16px;
+  background: var(--surface); border-radius: 4px; box-shadow: var(--drop);
 }
-.ticket-card .meta { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); }
-.ticket-card .number { font-size: 44px; font-weight: 900; line-height: 1; color: var(--brand); }
-.ticket-card .items { display: flex; flex-direction: column; gap: 6px; font-size: 17px; }
+.ticket-card:nth-child(3n+1) { transform: rotate(-0.6deg); }
+.ticket-card:nth-child(3n+2) { transform: rotate(0.5deg); }
+.ticket-card .meta { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.ticket-card .tag { display: block; font-size: 13px; font-weight: 700; color: var(--ink-2); }
+.ticket-card .number { display: block; font-size: 46px; font-weight: 700; line-height: 1.05; }
+.ticket-card .total { font-family: var(--sans); font-variant-numeric: tabular-nums lining-nums; font-size: 15px; color: var(--ink-2); }
+.ticket-card .items {
+  display: flex; flex-direction: column; gap: 6px; padding: 10px 0; font-size: 17px;
+  border-top: 1px dashed var(--line); border-bottom: 1px dashed var(--line);
+}
 .ticket-card .items li { display: flex; justify-content: space-between; gap: 12px; }
-.ticket-card .items .q { font-weight: 700; white-space: nowrap; }
+.ticket-card .items .q { font-family: var(--sans); font-variant-numeric: tabular-nums lining-nums; font-weight: 700; white-space: nowrap; }
 .ticket-card .done-btn {
-  min-height: 56px; border-radius: 14px; border: none; background: var(--primary); color: var(--on-primary);
-  font-size: 20px; font-weight: 700;
+  min-height: 56px; border-radius: 6px; border: none; background: var(--film); color: var(--on-primary);
+  font-size: 20px; font-weight: 900;
 }
-.empty { margin: 40px 0; text-align: center; font-size: 18px; color: var(--muted); }
-.supply { margin-top: 12px; padding-top: 20px; border-top: 2px dashed var(--border); display: flex; flex-direction: column; gap: 12px; }
-.supply p { margin: 0; font-size: 14px; color: var(--muted); }
-#menu.supply-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr)); gap: 10px; }
+.ticket-card .done-btn:hover:not(:disabled) { background: var(--film-deep); }
+.ticket-card .done-btn:disabled { background: var(--soft); color: var(--ink-2); }
+.empty { margin: 40px 0; text-align: center; font-size: 18px; color: var(--ink-2); }
+.supply { margin-top: 12px; padding-top: 22px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 12px; }
+.supply p { margin: 0; font-size: 15px; color: var(--ink-2); max-width: 65ch; }
+#menu.supply-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr)); gap: 12px; }
 .supply-list li {
-  display: flex; align-items: center; gap: 12px; padding: 10px 12px 10px 16px; border-radius: 14px;
-  background: var(--surface); border: 1px solid var(--border);
+  display: flex; align-items: center; gap: 12px; padding: 8px 8px 8px 14px;
+  background: var(--surface); border-radius: 4px; box-shadow: var(--drop);
 }
-.supply-list .name { flex: 1; font-weight: 700; }
-.supply-list .state { font-size: 13px; color: var(--muted); }
-.supply-list li.sold-out { background: var(--sold-bg); }
-.supply-list li.sold-out .state { color: var(--err-text); font-weight: 700; }
+/* A small cup mark: film blue when on sale, grey when sold out. */
+.supply-list li::before {
+  content: ""; width: 16px; height: 16px; flex-shrink: 0; border-radius: 50%; background: var(--film);
+}
+.supply-list li.sold-out::before { background: var(--sold-disc); }
+.supply-list .name { flex: 1; font-weight: 900; }
+.supply-list .state { font-family: var(--sans); font-variant-numeric: tabular-nums lining-nums; font-size: 14px; color: var(--ink-2); }
+.supply-list li.sold-out .state { color: var(--red); font-weight: 700; }
 .supply-list button {
-  min-height: 44px; padding: 0 14px; border-radius: 12px; border: 1px solid var(--border);
-  background: var(--surface); font-size: 15px; font-weight: 700;
+  min-height: 44px; padding: 0 14px; border-radius: 999px; border: 2px solid var(--film);
+  background: var(--surface); color: var(--film); font-size: 15px; font-weight: 700;
 }
-.supply-list li.sold-out button { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
+.supply-list button:hover { background: var(--soft); }
+.supply-list li.sold-out button { background: var(--film); color: var(--on-primary); }
+.supply-list li.sold-out button:hover { background: var(--film-deep); border-color: var(--film-deep); }
 
 /* ---- board page ---- */
 body[data-page="board"] { height: 100vh; height: 100dvh; }
+/* Same film-band header, shorter so the 16:9 screen keeps its height. */
+body[data-page="board"] .site { padding: 10px clamp(16px, 3vw, 36px); }
+body[data-page="board"] .brand { flex-direction: row; align-items: baseline; gap: 2px 12px; padding: 6px 14px; }
 .board {
-  flex: 1; min-height: 0; display: grid; grid-template-columns: 2fr 3fr; gap: 24px;
-  padding: clamp(12px, 2.5vw, 28px) clamp(12px, 3vw, 36px);
+  flex: 1; min-height: 0; display: grid; grid-template-columns: 2fr 3fr; grid-template-rows: minmax(0, 1fr); gap: clamp(20px, 3vw, 40px);
+  padding: clamp(14px, 3.5vh, 32px) clamp(16px, 3vw, 36px);
 }
-.board section { min-height: 0; display: flex; flex-direction: column; gap: 16px; border-radius: 24px; padding: clamp(16px, 2vw, 28px); }
-.board h2 { font-size: clamp(22px, 2.4vw, 34px); font-weight: 700; }
-.making { background: var(--surface); border: 1px solid var(--border); overflow: hidden; }
-.making h2 { color: var(--muted); }
+.board section { min-height: 0; display: flex; flex-direction: column; gap: clamp(10px, 2vh, 16px); }
+.board h2 { font-size: clamp(24px, 4.2vh, 36px); font-weight: 900; }
+.making { overflow: hidden; padding: 0 2px 6px; } /* room for the stickers' drop shadow */
+/* The list takes the column's remaining height, whatever it holds (basis
+   0, so a long list cannot change the box it is measured in); app.js fits
+   the strips to it. */
 #making {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(clamp(5rem, 9vw, 9rem), 1fr)); gap: 12px;
-  align-content: start; overflow: hidden;
+  flex: 1 1 0; min-height: 0;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); gap: clamp(6px, 1.2vh, 10px) 12px;
+  align-content: start; overflow: hidden; padding: 2px;
 }
 #making li {
-  padding: 8px 0; border-radius: 14px; text-align: center; font-size: clamp(22px, 2.6vw, 38px); font-weight: 700;
-  background: var(--soft); color: var(--text);
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: clamp(4px, 1vh, 10px) 14px clamp(4px, 1vh, 10px) 16px;
+  background: var(--surface); border-radius: 4px; box-shadow: var(--drop);
 }
-.making .empty { margin: auto 0; font-size: clamp(16px, 1.6vw, 22px); }
-.call { background: var(--call-bg); color: var(--on-call); }
-#latest { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; text-align: center; }
-#latest .big { font-size: clamp(72px, min(16vw, 30vh), 260px); font-weight: 900; line-height: 1; }
-#latest .caption { font-size: clamp(18px, 2.2vw, 34px); font-weight: 500; opacity: 0.92; }
-#latest .waiting { font-size: clamp(22px, 3vw, 40px); opacity: 0.85; }
-.recent { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; padding-top: 16px; border-top: 1px solid var(--call-line); }
-.recent .label { font-size: clamp(15px, 1.4vw, 20px); opacity: 0.85; }
+#making .no { font-size: clamp(24px, 4.4vh, 40px); font-weight: 700; line-height: 1.1; }
+#making .st { font-size: clamp(13px, 1.9vh, 16px); color: var(--ink-2); white-space: nowrap; }
+#making:empty { flex: 0 0 auto; }
+/* 還有 N 張: below the list, never clipped (the list gives up the height). */
+.making .more {
+  flex: none; margin: 0; padding: clamp(4px, 1vh, 10px) 14px; text-align: center;
+  font-size: clamp(15px, 2.2vh, 18px); font-weight: 700; color: var(--ink-2);
+  background: var(--surface); border-radius: 4px; box-shadow: var(--drop);
+}
+.making .empty { margin: auto 0; font-size: clamp(16px, 2.6vh, 22px); }
+.call { align-items: center; justify-content: center; }
+/* The big cup: the called number on a tilted sticker over the film. */
+.call-disc {
+  --tile: 64px;
+  --r: 7px;
+  flex-shrink: 1; width: min(100%, 64vh, 520px); aspect-ratio: 1; border-radius: 50%;
+  display: grid; place-items: center; padding: 24px;
+  border: clamp(6px, 1.4vh, 10px) solid var(--surface); outline: 2px solid var(--sold-disc);
+}
+#latest { display: grid; place-items: center; }
+.call-disc .sticker {
+  display: flex; flex-direction: column; align-items: center; padding: clamp(10px, 2.4vh, 18px) clamp(18px, 3vw, 34px);
+  border-radius: 6px; text-align: center;
+}
+.call-disc .pre, .call-disc .post { font-size: clamp(20px, 3.8vh, 30px); font-weight: 900; line-height: 1.2; }
+#latest .big { font-size: clamp(64px, min(10vw, 17vh), 140px); font-weight: 700; line-height: 1.02; }
+#latest .waiting { font-size: clamp(20px, 3.6vh, 30px); font-weight: 700; color: var(--ink-2); transform: rotate(-3deg); }
+.recent { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px 12px; }
+.recent .label { font-size: clamp(16px, 2.6vh, 20px); font-weight: 700; }
 #list { display: flex; flex-wrap: wrap; gap: 10px; }
-#list li { padding: 2px 14px; border-radius: 10px; font-size: clamp(20px, 2vw, 30px); font-weight: 700; background: var(--call-chip); }
+#list li {
+  padding: 2px 12px; font-size: clamp(20px, 3.4vh, 28px); font-weight: 700;
+  background: var(--surface); border-radius: 4px; box-shadow: var(--drop);
+}
+/* Too short for the fixed-height board (header + heading + count line):
+   let the page scroll instead, so nothing is clipped. */
+@media (min-width: 720px) and (max-height: 199px) {
+  body[data-page="board"] { height: auto; }
+  .board { grid-template-rows: none; }
+  #making { flex: none; }
+}
 @media (max-width: 719px) {
   body[data-page="board"] { height: auto; }
-  .board { grid-template-columns: 1fr; gap: 16px; align-content: start; }
+  .board { grid-template-columns: 1fr; grid-template-rows: none; gap: 24px; align-content: start; }
+  #making { flex: none; }
   .call { order: -1; }
-  #latest { padding: 24px 0; }
+  .board h2 { font-size: 26px; }
+  .call-disc { width: min(100%, 360px); }
+  #latest .big { font-size: clamp(60px, 19vw, 96px); }
+  .call-disc .pre, .call-disc .post { font-size: 22px; }
+  #making .no { font-size: 28px; }
+  #making .st { font-size: 14px; }
 }
-#menu.locked .stepper { opacity: 0.6; }

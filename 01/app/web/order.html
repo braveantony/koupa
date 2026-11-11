@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="theme-color" content="#F7F1E8">
+<meta name="theme-color" content="#1E46B4">
 <title>Koupa 酷杯 - 點餐</title>
 <link rel="stylesheet" href="/app.css">
 </head>
 <body data-page="order">
-<header class="site">
+<header class="site film">
   <div class="brand"><a class="brand-name" href="/">Koupa 酷杯</a><span class="slogan">一杯好茶，隨時都在</span></div>
   <nav aria-label="頁面"><a href="/" aria-current="page">點餐</a><a href="/kitchen">廚房</a><a href="/board">叫號看板</a></nav>
 </header>
@@ -20,15 +20,20 @@
   <div class="cart" id="cart">
     <p id="notice" class="notice" aria-live="polite"></p>
     <div class="cart-bar">
-      <div class="cart-sum"><span id="cups">0</span> 杯<span class="dot">・</span>NT$ <span id="total">0</span></div>
+      <div class="cart-sum"><span id="cups">0</span> 杯<span class="sep">/</span>NT$ <span id="total">0</span></div>
       <button id="submit" type="button" disabled>確認點餐</button>
     </div>
   </div>
   <section id="result" class="done" aria-live="polite" hidden>
-    <span class="label">訂單成立，您的號碼牌</span>
-    <span id="ticket" class="ticket num"></span>
+    <h1>訂單成立</h1>
+    <div class="done-disc film">
+      <div class="sticker press">
+        <span class="tag">您的號碼牌</span>
+        <span id="ticket" class="ticket num"></span>
+      </div>
+    </div>
     <p>做好會在店內的叫號螢幕叫號，<br>請留意螢幕上的號碼。</p>
-    <div class="receipt">
+    <div class="receipt sticker">
       <ul id="lines"></ul>
       <div class="sum"><span>合計</span><span>NT$ <span id="paid"></span></span></div>
     </div>

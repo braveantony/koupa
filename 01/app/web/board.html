@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="theme-color" content="#F7F1E8">
+<meta name="theme-color" content="#1E46B4">
 <title>Koupa 酷杯 - 叫號看板</title>
 <link rel="stylesheet" href="/app.css">
 </head>
 <body data-page="board">
-<header class="site">
+<header class="site film">
   <div class="brand"><a class="brand-name" href="/">Koupa 酷杯</a><span class="slogan">一杯好茶，隨時都在</span></div>
   <nav aria-label="頁面"><a href="/">點餐</a><a href="/kitchen">廚房</a><a href="/board" aria-current="page">叫號看板</a></nav>
 </header>
@@ -16,11 +16,14 @@
   <section class="making" aria-labelledby="making-title">
     <h2 id="making-title">製作中</h2>
     <ul id="making"></ul>
+    <p id="making-more" class="more" hidden></p>
     <p id="no-making" class="empty">目前沒有製作中的訂單</p>
   </section>
   <section class="call" aria-labelledby="call-title">
-    <h2 id="call-title">請取餐</h2>
-    <div id="latest" aria-live="polite"><span class="waiting">等待叫號…</span></div>
+    <h2 id="call-title" class="sr-only">請取餐</h2>
+    <div class="call-disc film">
+      <div id="latest" aria-live="polite"><span class="waiting sticker">等待叫號…</span></div>
+    </div>
     <div id="recent" class="recent" hidden><span class="label">剛剛叫過</span><ul id="list"></ul></div>
   </section>
 </main>

@@ -110,29 +110,32 @@ function initOrder() {
       img.width = 800;
       img.height = 800;
       img.decoding = 'async';
-      if (i >= 3) img.loading = 'lazy'; // the first cards are above the fold
-      li.appendChild(img);
-      const info = el('div', 'info');
+      if (i >= 4) img.loading = 'lazy'; // the first row of cups is above the fold
+      // The cup (photo in a round film rim) and its label sticker.
+      const cup = el('div', 'cup');
+      cup.appendChild(img);
+      li.appendChild(cup);
+      const info = el('div', 'label');
       info.appendChild(el('span', 'name', m.name));
       info.appendChild(el('span', 'price', 'NT$ ' + m.price));
       li.appendChild(info);
       const stepper = el('div', 'stepper');
-      const dec = el('button', 'dec', '−');
+      const dec = el('button', 'dec'); // the − and + marks are drawn in CSS
       dec.type = 'button';
       dec.setAttribute('aria-label', '減少一杯 ' + m.name);
       dec.addEventListener('click', () => step(m.id, -1));
       const q = el('span', 'qty', '0');
       q.setAttribute('aria-live', 'polite');
-      const inc = el('button', 'inc', '+');
+      const inc = el('button', 'inc');
       inc.type = 'button';
       inc.setAttribute('aria-label', '增加一杯 ' + m.name);
       inc.addEventListener('click', () => step(m.id, 1));
       stepper.append(dec, q, inc);
-      li.appendChild(stepper);
       if (!m.available) {
         li.classList.add('sold-out');
         info.appendChild(el('span', 'sold-label', '今日售完'));
       }
+      info.appendChild(stepper);
       ul.appendChild(li);
     });
     updateTotal();
@@ -258,8 +261,10 @@ function initKitchen() {
         li.dataset.orderId = o.order_id;
         li.dataset.number = o.number;
         const meta = el('div', 'meta');
-        meta.append(el('span', '', '號碼牌'), el('span', '', 'NT$ ' + o.total));
-        li.append(meta, el('span', 'number num', o.number));
+        const no = el('div');
+        no.append(el('span', 'tag', '號碼牌'), el('span', 'number num', o.number));
+        meta.append(no, el('span', 'total', 'NT$ ' + o.total));
+        li.appendChild(meta);
         const items = el('ul', 'items');
         for (const it of o.items || []) {
           const row = el('li');
@@ -341,7 +346,9 @@ function initKitchen() {
 
 function initBoard() {
   const MAX_RECENT = 5; // the latest number plus 4 earlier ones
-  const MAX_MAKING = 30; // the screen has room for about this many
+  // On a phone the list grows with the page; past this many it ends with a
+  // 還有 N 張 strip. On a fixed-height screen fewer may fit (see renderMaking).
+  const MAX_LISTED = 60;
   window.__events = []; // names of the events seen, for tests and debugging
   const recent = [];
   let lastSeq = 0; // highest ready_seq (SSE event id) shown so far
@@ -352,18 +359,76 @@ function initBoard() {
   let polls = 0;
   const status = (t) => { $('status').textContent = t; };
 
-  function renderMaking(orders) {
-    const ul = $('making');
-    ul.textContent = '';
-    for (const o of orders.slice(0, MAX_MAKING)) {
-      const li = el('li', 'num', o.number);
-      li.dataset.number = o.number;
-      li.dataset.orderId = o.order_id;
-      ul.appendChild(li);
-    }
-    if (orders.length > MAX_MAKING) ul.appendChild(el('li', '', '…'));
-    $('no-making').hidden = orders.length > 0;
+  let making = []; // the orders last drawn under 製作中 (stale ones filtered out)
+  function strip(o) {
+    const li = el('li');
+    li.append(el('span', 'no num', o.number), el('span', 'st', '準備中'));
+    li.dataset.number = o.number;
+    li.dataset.orderId = o.order_id;
+    return li;
   }
+  // How many of the list's first strips lie entirely inside its clip box:
+  // the padding box of the list and of the 製作中 section (both clip).
+  // Fractional pixels: a strip clipped by any amount does not fit.
+  function clipBox(e) {
+    const r = e.getBoundingClientRect();
+    const cs = getComputedStyle(e);
+    return {
+      top: r.top + parseFloat(cs.borderTopWidth),
+      bottom: r.bottom - parseFloat(cs.borderBottomWidth),
+    };
+  }
+  function fitted(ul) {
+    const a = clipBox(ul);
+    const b = clipBox(ul.parentElement);
+    const top = Math.max(a.top, b.top);
+    const bottom = Math.min(a.bottom, b.bottom);
+    const items = ul.children;
+    let fit = 0;
+    for (; fit < items.length; fit++) {
+      const r = items[fit].getBoundingClientRect();
+      if (r.top < top || r.bottom > bottom) break;
+    }
+    return fit;
+  }
+  // Every pending order is either a fully visible strip or counted in
+  // 「還有 N 張」 (#making-more). That line sits below the clipped list in
+  // its own reserved slot, so it is never clipped itself.
+  function renderMaking(orders) {
+    making = orders;
+    // Set the empty line first: while shown it takes height from the list.
+    $('no-making').hidden = orders.length > 0;
+    const ul = $('making');
+    const moreLine = $('making-more');
+    ul.textContent = '';
+    ul.style.flex = ''; // measure in the full list box (see app.css)
+    const listed = Math.min(orders.length, MAX_LISTED);
+    for (const o of orders.slice(0, listed)) ul.appendChild(strip(o));
+    // Pass 1 without the count line: if every listed strip fits and none is
+    // left over, there is nothing to count. Otherwise show the line (it takes
+    // its height from the list box) and fit again.
+    moreLine.hidden = true;
+    let fit = fitted(ul);
+    if (fit === orders.length) return;
+    moreLine.hidden = false;
+    moreLine.textContent = '還有 ' + orders.length + ' 張';
+    fit = fitted(ul);
+    while (ul.children.length > fit) ul.lastChild.remove();
+    moreLine.textContent = '還有 ' + (orders.length - fit) + ' 張';
+    // The kept strips fit, so the box can shrink to them and the count
+    // line follows the last strip instead of the bottom of the column.
+    ul.style.flex = '0 0 auto';
+  }
+  // Refit at most once per frame while the window is being resized.
+  let refit = false;
+  window.addEventListener('resize', () => {
+    if (refit) return;
+    refit = true;
+    requestAnimationFrame(() => {
+      refit = false;
+      renderMaking(making);
+    });
+  });
   // Same 2 s interval as the kitchen page, but one poll at a time: the next
   // one starts 2 s after the previous one finished.
   async function refreshMaking() {
@@ -407,17 +472,21 @@ function initBoard() {
     called.set(d.order_id, polls);
     const latest = $('latest');
     latest.textContent = '';
-    latest.append(el('span', 'big num', d.number), el('span', 'caption', '請 ' + d.number + ' 號取餐 🧋'));
+    // A new sticker each call, so the press-on motion plays once per number.
+    // Its text reads 「請 0058 號取餐」.
+    const sticker = el('div', 'sticker press');
+    sticker.append(el('span', 'pre', '請'), document.createTextNode(' '), el('span', 'big num', d.number),
+      document.createTextNode(' '), el('span', 'post', '號取餐'));
+    latest.appendChild(sticker);
     recent.unshift(d.number);
     recent.length = Math.min(recent.length, MAX_RECENT);
     const ul = $('list');
     ul.textContent = '';
     for (const n of recent.slice(1)) ul.appendChild(el('li', 'num', n));
     $('recent').hidden = recent.length < 2;
-    // The called number leaves 製作中 now rather than at the next poll.
-    const li = document.querySelector('#making li[data-order-id="' + d.order_id + '"]');
-    if (li) li.remove();
-    $('no-making').hidden = $('making').children.length > 0;
+    // The called number leaves 製作中 now rather than at the next poll; a
+    // redraw also keeps the 還有 N 張 count right.
+    renderMaking(making.filter((o) => o.order_id !== d.order_id));
   });
   // The server is going away; just record it and let the browser reconnect.
   es.addEventListener('shutdown', () => {
