@@ -367,32 +367,49 @@ function initBoard() {
     li.dataset.orderId = o.order_id;
     return li;
   }
-  const more = (n) => el('li', 'more', '還有 ' + n + ' 張');
-  // Every pending order is either a visible strip or counted in the last
-  // strip 「還有 N 張」; none is clipped out of sight silently.
+  // Every pending order is either a fully visible strip or counted in
+  // 「還有 N 張」 (#making-more). That line sits below the clipped list in
+  // its own reserved slot, so it is never clipped itself.
   function renderMaking(orders) {
     making = orders;
     // Set the empty line first: while shown it takes height from the list.
     $('no-making').hidden = orders.length > 0;
     const ul = $('making');
+    const moreLine = $('making-more');
     ul.textContent = '';
-    const listed = orders.length > MAX_LISTED ? MAX_LISTED - 1 : orders.length;
+    ul.style.flex = ''; // measure in the full list box (see app.css)
+    const listed = Math.min(orders.length, MAX_LISTED);
     for (const o of orders.slice(0, listed)) ul.appendChild(strip(o));
-    if (listed < orders.length) ul.appendChild(more(orders.length - listed));
-    // On a fixed-height screen the list box can be shorter than its strips.
-    // Keep the strips that are fully visible and turn the last visible slot
-    // into the count of everything not shown.
-    if (ul.scrollHeight > ul.clientHeight + 1) {
-      const bottom = ul.getBoundingClientRect().bottom + 0.5;
-      const items = Array.from(ul.children);
-      let fit = 0;
-      while (fit < items.length && items[fit].getBoundingClientRect().bottom <= bottom) fit++;
-      const keep = Math.min(listed, Math.max(0, fit - 1));
-      while (ul.children.length > keep) ul.lastChild.remove();
-      ul.appendChild(more(orders.length - keep));
-    }
+    // Show the count line before measuring when it may be needed: it takes
+    // its height from the list box.
+    moreLine.textContent = '還有 ' + orders.length + ' 張';
+    moreLine.hidden = !(listed < orders.length || ul.scrollHeight > ul.clientHeight);
+    if (moreLine.hidden) return;
+    // Keep only strips that are entirely inside the list box (a partly
+    // clipped row does not count); the rest are counted.
+    const r = ul.getBoundingClientRect();
+    const bottom = r.top + ul.clientTop + ul.clientHeight;
+    const items = Array.from(ul.children);
+    let fit = 0;
+    while (fit < items.length && items[fit].getBoundingClientRect().bottom <= bottom) fit++;
+    while (ul.children.length > fit) ul.lastChild.remove();
+    // A rounding-only overflow: everything fits, so no count line.
+    if (fit === orders.length) moreLine.hidden = true;
+    moreLine.textContent = '還有 ' + (orders.length - fit) + ' 張';
+    // The kept strips fit, so the box can shrink to them and the count
+    // line follows the last strip instead of the bottom of the column.
+    ul.style.flex = '0 0 auto';
   }
-  window.addEventListener('resize', () => renderMaking(making));
+  // Refit at most once per frame while the window is being resized.
+  let refit = false;
+  window.addEventListener('resize', () => {
+    if (refit) return;
+    refit = true;
+    requestAnimationFrame(() => {
+      refit = false;
+      renderMaking(making);
+    });
+  });
   // Same 2 s interval as the kitchen page, but one poll at a time: the next
   // one starts 2 s after the previous one finished.
   async function refreshMaking() {

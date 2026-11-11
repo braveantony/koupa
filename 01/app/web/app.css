@@ -278,7 +278,7 @@ body[data-page="board"] .brand { flex-direction: row; align-items: baseline; gap
 }
 .board section { min-height: 0; display: flex; flex-direction: column; gap: clamp(10px, 2vh, 16px); }
 .board h2 { font-size: clamp(24px, 4.2vh, 36px); font-weight: 900; }
-.making { overflow: hidden; }
+.making { overflow: hidden; padding: 0 2px 6px; } /* room for the stickers' drop shadow */
 /* The list takes the column's remaining height, whatever it holds (basis
    0, so a long list cannot change the box it is measured in); app.js fits
    the strips to it. */
@@ -295,7 +295,12 @@ body[data-page="board"] .brand { flex-direction: row; align-items: baseline; gap
 #making .no { font-size: clamp(24px, 4.4vh, 40px); font-weight: 700; line-height: 1.1; }
 #making .st { font-size: clamp(13px, 1.9vh, 16px); color: var(--ink-2); white-space: nowrap; }
 #making:empty { flex: 0 0 auto; }
-#making li.more { justify-content: center; font-size: clamp(15px, 2.2vh, 18px); font-weight: 700; color: var(--ink-2); }
+/* 還有 N 張: below the list, never clipped (the list gives up the height). */
+.making .more {
+  flex: none; margin: 0; padding: clamp(4px, 1vh, 10px) 14px; text-align: center;
+  font-size: clamp(15px, 2.2vh, 18px); font-weight: 700; color: var(--ink-2);
+  background: var(--surface); border-radius: 4px; box-shadow: var(--drop);
+}
 .making .empty { margin: auto 0; font-size: clamp(16px, 2.6vh, 22px); }
 .call { align-items: center; justify-content: center; }
 /* The big cup: the called number on a tilted sticker over the film. */
@@ -320,6 +325,13 @@ body[data-page="board"] .brand { flex-direction: row; align-items: baseline; gap
 #list li {
   padding: 2px 12px; font-size: clamp(20px, 3.4vh, 28px); font-weight: 700;
   background: var(--surface); border-radius: 4px; box-shadow: var(--drop);
+}
+/* Too short for the fixed-height board (header + heading + count line):
+   let the page scroll instead, so nothing is clipped. */
+@media (min-width: 720px) and (max-height: 199px) {
+  body[data-page="board"] { height: auto; }
+  .board { grid-template-rows: none; }
+  #making { flex: none; }
 }
 @media (max-width: 719px) {
   body[data-page="board"] { height: auto; }

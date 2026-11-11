@@ -250,7 +250,8 @@ test('board ignores a ready event whose id is not newer than the last one', asyn
 });
 
 // Board 製作中 on a fixed-height screen: every pending order is either a
-// fully visible strip or counted in the last strip 「還有 N 張」.
+// fully visible strip or counted in the line 「還有 N 張」 (#making-more),
+// which is itself fully visible.
 const fakeOrders = (n: number) =>
   Array.from({ length: n }, (_, i) => ({ order_id: 900000 + i, number: String(5001 + i), total: 50, items: [] }));
 
@@ -258,51 +259,96 @@ async function makingState(page: Page) {
   return page.evaluate(() => {
     const ul = document.getElementById('making')!;
     const box = ul.getBoundingClientRect();
+    const boxBottom = box.top + ul.clientTop + ul.clientHeight;
+    const inView = (r: DOMRect) => r.top >= 0 && r.left >= 0 && r.bottom <= window.innerHeight && r.right <= window.innerWidth;
     const lis = Array.from(ul.children) as HTMLElement[];
-    const more = lis.filter((li) => li.classList.contains('more'));
+    const more = document.getElementById('making-more')!;
     return {
-      shown: lis.filter((li) => li.dataset.number).map((li) => li.dataset.number!),
-      more: more.map((li) => li.textContent),
-      moreIsLast: more.length === 0 || lis[lis.length - 1] === more[0],
+      shown: lis.map((li) => li.dataset.number!),
+      more: more.hidden ? null : more.textContent,
+      moreVisible: !more.hidden && inView(more.getBoundingClientRect()) && more.getBoundingClientRect().height > 0,
       allVisible: lis.every((li) => {
         const r = li.getBoundingClientRect();
-        return r.bottom <= box.bottom + 0.5 && r.bottom <= window.innerHeight && r.right <= window.innerWidth;
+        return r.bottom <= boxBottom && inView(r);
       }),
     };
   });
 }
 
-for (const [w, h] of [[800, 600], [1280, 720], [1920, 1080]]) {
+// The invariant, polled: shown strips are the first k orders, all fully
+// visible; the rest (if any) are counted on a fully visible line.
+async function expectAccounted(page: Page, total: number) {
+  await expect
+    .poll(async () => {
+      const st = await makingState(page);
+      const prefix = st.shown.every((n, i) => n === String(5001 + i));
+      const counted = total - st.shown.length;
+      const ok = prefix && st.allVisible &&
+        (counted === 0 ? st.more === null : st.more === `還有 ${counted} 張` && st.moreVisible);
+      return ok ? 'ok' : JSON.stringify(st);
+    }, { timeout: 6000 })
+    .toBe('ok');
+  return makingState(page);
+}
+
+for (const [w, h] of [[800, 600], [1280, 720], [1920, 1080], [800, 360], [800, 220], [800, 200]]) {
   test(`board ${w}x${h}: no pending order is clipped out of sight`, async ({ page }) => {
     await page.setViewportSize({ width: w, height: h });
     let n = 200;
     await page.route('**/api/orders?status=pending*', (route) => route.fulfill({ json: fakeOrders(n) }));
     await page.goto('/board');
-    await expect(page.locator('#making li.more')).toBeVisible();
-    await expect(page.locator('#making li.more')).toBeInViewport({ ratio: 1 });
-    const many = await makingState(page);
-    expect(many.allVisible).toBe(true);
-    expect(many.moreIsLast).toBe(true);
-    expect(many.more).toEqual([`還有 ${200 - many.shown.length} 張`]);
-    expect(many.shown).toEqual(fakeOrders(many.shown.length).map((o) => o.number));
-    expect(many.shown.length).toBeGreaterThan(0);
-
-    // Capacity boundaries: exactly as many as fit -> all shown, no count;
-    // one more -> the last slot becomes 「還有 2 張」.
-    const cap = many.shown.length + 1;
-    n = cap;
-    await expect.poll(async () => (await makingState(page)).shown.length, { timeout: 5000 }).toBe(cap);
-    const full = await makingState(page);
-    expect(full.more).toEqual([]);
-    expect(full.allVisible).toBe(true);
-    n = cap + 1;
-    await expect.poll(async () => (await makingState(page)).more, { timeout: 5000 }).toEqual(['還有 2 張']);
-    const over = await makingState(page);
-    expect(over.shown.length).toBe(cap - 1);
-    expect(over.allVisible).toBe(true);
-    expect(over.moreIsLast).toBe(true);
+    const many = await expectAccounted(page, 200);
+    expect(many.more).not.toBeNull();
+    // Boundary: exactly the strips that fit next to the count line -> all
+    // of them shown and no count line; one more -> still all accounted for.
+    const k = many.shown.length;
+    if (k > 0) {
+      n = k;
+      const full = await expectAccounted(page, k);
+      expect(full.shown).toHaveLength(k);
+      expect(full.more).toBeNull();
+    }
+    n = k + 1;
+    await expectAccounted(page, k + 1);
   });
 }
+
+test('board 800x200: no strip fits, the count line alone counts every order', async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 200 });
+  await page.route('**/api/orders?status=pending*', (route) => route.fulfill({ json: fakeOrders(200) }));
+  await page.goto('/board');
+  const st = await expectAccounted(page, 200);
+  expect(st.shown).toEqual([]);
+  expect(st.more).toBe('還有 200 張');
+});
+
+test('board 800x150: too short to fit, the page scrolls and nothing is clipped', async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 150 });
+  await page.route('**/api/orders?status=pending*', (route) => route.fulfill({ json: fakeOrders(200) }));
+  await page.goto('/board');
+  const more = page.locator('#making-more');
+  await expect(more).toHaveText('還有 140 張'); // 60 strips listed, the rest counted
+  await expect(page.locator('#making li')).toHaveCount(60);
+  expect(await page.evaluate(() => {
+    const ul = document.getElementById('making')!;
+    return ul.scrollHeight <= ul.clientHeight && document.documentElement.scrollHeight > innerHeight;
+  })).toBe(true);
+  await more.scrollIntoViewIfNeeded();
+  await expect(more).toBeInViewport({ ratio: 1 });
+});
+
+test('board: the 製作中 fit holds across resizes (large -> small -> large)', async ({ page }) => {
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await page.route('**/api/orders?status=pending*', (route) => route.fulfill({ json: fakeOrders(200) }));
+  await page.goto('/board');
+  const large = await expectAccounted(page, 200);
+  await page.setViewportSize({ width: 800, height: 260 });
+  const small = await expectAccounted(page, 200);
+  expect(small.shown.length).toBeLessThan(large.shown.length);
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  const again = await expectAccounted(page, 200);
+  expect(again.shown.length).toBe(large.shown.length);
+});
 
 test('board: stale filtering still applies when 製作中 overflows', async ({ page, request }) => {
   await page.setViewportSize({ width: 800, height: 600 });
@@ -334,7 +380,7 @@ test('board: stale filtering still applies when 製作中 overflows', async ({ p
     expect(await stale.count()).toBe(0);
     const st = await makingState(page);
     expect(st.allVisible).toBe(true);
-    expect(st.more).toHaveLength(1);
+    expect(st.moreVisible).toBe(true);
     await page.waitForTimeout(100);
   }
 });
