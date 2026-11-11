@@ -132,7 +132,10 @@ $dirty"
 export_head() {
 	ctx=$tmp/src
 	mkdir -p "$ctx"
-	git -C "$stage" archive --format=tar "HEAD:${prefix}" | tar -x -C "$ctx" || die "git archive of HEAD failed"
+	# Run git archive from the repository root: from a subdirectory it limits
+	# the archive to that subdirectory again, so "HEAD:01/" came out empty.
+	git -C "$(git -C "$stage" rev-parse --show-toplevel)" archive --format=tar "HEAD:${prefix}" | tar -x -C "$ctx" || die "git archive of HEAD failed"
+	[ -f "$ctx/app/Containerfile" ] || die "the export of HEAD has no app/Containerfile"
 }
 
 # push_new IMAGE: re-check absence, push, verify the registry digest equals
