@@ -318,7 +318,7 @@ body[data-page="board"] .brand { flex-direction: row; align-items: baseline; gap
 }
 .call-disc .pre, .call-disc .post { font-size: clamp(20px, 3.8vh, 30px); font-weight: 900; line-height: 1.2; }
 #latest .big { font-size: clamp(64px, min(10vw, 17vh), 140px); font-weight: 700; line-height: 1.02; }
-#latest .waiting { font-size: clamp(20px, 3.6vh, 30px); font-weight: 700; color: var(--ink-2); transform: rotate(-3deg); }
+#latest .waiting { font-size: clamp(20px, 3.6vh, 30px); font-weight: 700; color: var(--ink-2); transform: rotate(-3deg); white-space: nowrap; }
 .recent { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px 12px; }
 .recent .label { font-size: clamp(16px, 2.6vh, 20px); font-weight: 700; }
 #list { display: flex; flex-wrap: wrap; gap: 10px; }
