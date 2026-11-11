@@ -7,8 +7,8 @@
 | 模式 | 第 10 秒做什麼 |
 |---|---|
 | `rollback` | 退版：先套用 v2，第 10 秒把映像檔改回 v1 |
-| `drain` | 清空節點：讓一個 worker 暫停接收新 Pod（cordon），並移走上面的 Pod：`kubectl drain <worker> --ignore-daemonsets` |
-| `scale-down` | 縮減 Pod 數：Pod 從 3 個縮成 2 個，`kubectl scale deploy/koupa --replicas=2` |
+| `drain` | 清空節點：讓一個 worker 暫停接收新 Pod（cordon），並驅逐上面的 Pod（刪掉，由 Deployment 另外補一個）：`kubectl drain <worker> --ignore-daemonsets` |
+| `scale-down` | 縮減 Pod 數：Pod 從 3 個縮成 2 個，`kubectl -n koupa scale deploy/koupa --replicas=2` |
 
 ## 開始之前
 
@@ -21,7 +21,7 @@
 |---|---|---|
 | 終端機 A | `./measure.sh rollback --runs 2`（依序換成 `drain`、`scale-down`） | 必要 |
 | 終端機 B | `kubectl -n koupa get pods -w`；`drain` 時另外開 `kubectl get nodes -w` | 建議 |
-| 瀏覽器（例如 desktop container 裡的 Firefox） | 只開 `http://<IP>/board?debug=1` | 選用，只看不操作 |
+| 瀏覽器（要連得到 Gateway IP，例如主機上的瀏覽器或課程的 desktop container） | 只開 `http://<IP>/board?debug=1` | 選用，只看不操作 |
 
 - 看板要在終端機 A 印出 `sending started` 之前打開。看板只會顯示連線期間叫到的號碼。量測前 `measure.sh` 套用設定時 Pod 也會換一輪，看板先斷線再自動連上是正常的。
 - 客人、廚房和 3 台看板都由 Rush Hour 模擬，瀏覽器只是讓你觀察。**量測期間只看看板，不要操作點餐頁和廚房頁**，因為 Rush Hour 模擬的店員會自己按「完成」，而你自己下的單不在 Rush Hour 的紀錄裡，不會算進成績單。
@@ -61,7 +61,7 @@ second 10: scale deploy/koupa --replicas=2
 **終端機 B**：
 
 - `rollback`：和步驟 5 一樣，新 Pod（這次是 v1）先 `0/1` 再 `1/1`，舊 Pod 停在 `Terminating` 約 8 秒；
-- `drain`：被清空的 worker 上那個 Pod 進入 `Terminating`。worker 暫停接收新 Pod 的期間，替代的 Pod 可能一直 `Pending`，等 worker 恢復接收新 Pod（uncordon）後才排得上去，所以這段時間可能只有 2 個 Pod；`kubectl get nodes -w` 會看到那個 worker 變成 `SchedulingDisabled`，結束後恢復；
+- `drain`：被清空的 worker 上那個 Pod 進入 `Terminating`。worker 暫停接收新 Pod 的期間，替代的 Pod 可能一直 `Pending`（Deployment 規定 koupa Pod 要平均分散在各 worker，另外兩個 worker 已經各有一個，不能再放），等 worker 恢復接收新 Pod（uncordon）後才排得上去，所以這段時間可能只有 2 個 Pod；`kubectl get nodes -w` 會看到那個 worker 變成 `SchedulingDisabled`，結束後恢復；
 - `scale-down`：只有 1 個 Pod 進入 `Terminating`，沒有新 Pod。
 
 **瀏覽器的看板**：連著的 Pod 被關掉時，一樣會先斷線，約 1 秒後重連；`rollback` 時資訊列的服務版本會從 v2 變回 v1。看板連著的 Pod 沒被關掉時，就不會斷線。
@@ -70,7 +70,7 @@ second 10: scale deploy/koupa --replicas=2
 
 講師的結果（2026-11-10，各 5 次）：15 次的成績單都是 0。當時 `preStop` 是 7 秒，改成 8 秒之後沒有重新量測。
 
-| 模式 | 送出失敗 | 重試後仍沒有成功回應 | 漏號 | 重複訂單 |
+| 模式 | 第一次送出沒有成功回應 | 重試後仍沒有成功回應 | 漏號 | 重複訂單 |
 |---|---|---|---|---|
 | `rollback` | 0 | 0 | 0 | 0 |
 | `drain` | 0 | 0 | 0 | 0 |
@@ -80,13 +80,13 @@ second 10: scale deploy/koupa --replicas=2
 
 ## 為什麼會這樣
 
-這三種情況和升級一樣，最後都是「刪除 Pod」：Kubernetes 一樣先通知入口、執行 `preStop`，再送 SIGTERM。步驟 1～5 補上的漏洞和 Pod 為什麼被關掉無關，所以同樣有效。
+這三種情況和升級一樣，最後都是「刪除 Pod」：Kubernetes 一樣同時通知入口和執行 `preStop`，`preStop` 做完才送 SIGTERM。步驟 2～5 處理的都是「Pod 被關掉」，和它為什麼被關掉無關，所以同樣有效（`rollback` 和 `drain` 會有新 Pod，步驟 1 也用得上）。
 
 完整紀錄見[實測紀錄第 9 節](../measurements/2026-11-10.md#9-rollbackdrainscale-down)。
 
 ## 出問題時
 
-- **`drain` 停下來，訊息是「沒有符合 A15 條件的 worker」**：沒有任何一個 worker 可以安全地清空，例如上面有資料庫的 Pod，或是有其他使用 emptyDir（Pod 的暫存目錄）的 Pod。`measure.sh` 不會加 `--delete-emptydir-data`，以免刪掉資料。看證據包的 `drain-target.json` 裡每個 worker 被排除的原因。
+- **`drain` 停下來，訊息是「沒有符合 A15 條件的 worker」**（A15 是實作計畫裡「哪些 worker 可以清空」的條件編號）：沒有任何一個 worker 可以安全地清空，例如上面有資料庫的 Pod，或是有其他使用 emptyDir（Pod 的暫存目錄）的 Pod。`measure.sh` 不會加 `--delete-emptydir-data`，以免刪掉資料。看證據包的 `drain-target.json` 裡每個 worker 被排除的原因。
 - **`drain` 停下來，訊息是「drain 前 koupa Pod 不是每個 worker 剛好一個」**：重新排程 5 次後還是不符合。用 `kubectl -n koupa get pods -o wide` 看 Pod 在哪個 worker，請講師確認。
 - **終端機 A 印出「cluster not restored」或「停止：叢集沒有恢復」**：自動恢復失敗，結束碼 1。照訊息手動恢復，例如 `kubectl uncordon <worker 名稱>` 或 `kubectl -n koupa scale deploy/koupa --replicas=3`，再用 `kubectl get nodes` 和 `kubectl -n koupa get pods -o wide` 確認。細節在證據包的 `restore.json`。
 - **成績單不是 0**：加上 `--verbose` 看診斷資訊，並把證據包交給講師。

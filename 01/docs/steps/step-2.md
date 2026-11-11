@@ -2,7 +2,7 @@
 
 ## 這一步要解決什麼
 
-讓舊 Pod 晚幾秒才收到 SIGTERM，先讓入口停止把新訂單送給它。
+讓舊 Pod 裡的程式晚幾秒才收到 SIGTERM，先讓入口停止把新訂單送給它。
 
 步驟 1 留下的問題：送出失敗的中位數剩 7 張，主要發生在**舊 Pod** 上，因為程式收到 SIGTERM（Kubernetes 通知程式關機的訊號）之後，入口還在把訂單送給它。漏號也還沒改善。
 
@@ -17,7 +17,7 @@
 |---|---|---|
 | 終端機 A | `./measure.sh step-2 --runs 2` | 必要 |
 | 終端機 B | `kubectl -n koupa get pods -w` | 建議 |
-| 瀏覽器（例如 desktop container 裡的 Firefox） | 只開 `http://<IP>/board?debug=1` | 選用，只看不操作 |
+| 瀏覽器（要連得到 Gateway IP，例如主機上的瀏覽器或課程的 desktop container） | 只開 `http://<IP>/board?debug=1` | 選用，只看不操作 |
 
 - 看板要在終端機 A 印出 `sending started` 之前打開。看板只會顯示連線期間叫到的號碼。量測前 `measure.sh` 套用設定時 Pod 也會換一輪，看板先斷線再自動連上是正常的。
 - 客人、廚房和 3 台看板都由 Rush Hour 模擬，瀏覽器只是讓你觀察。**量測期間只看看板，不要操作點餐頁和廚房頁**，因為 Rush Hour 模擬的店員會自己按「完成」，而你自己下的單不在 Rush Hour 的紀錄裡，不會算進成績單。
@@ -40,7 +40,7 @@ template:
               seconds: 8
 ```
 
-`koupa.dev/prestop-calibrated` 只是標記，成績單會依它印出「preStop：8 秒（已依本環境校正）」。關機寬限時間維持預設 30 秒。這一步沒有打開 App 的環境變數開關。
+`koupa.dev/prestop-calibrated` 只是一個 annotation（附在資源上的備註，不影響 Pod 怎麼執行），成績單會依它印出「preStop：8 秒（已依本環境校正）」。關機寬限時間維持預設 30 秒。這一步沒有打開 App 的環境變數開關。
 
 看完整的差異：
 
@@ -88,7 +88,7 @@ diff <(kubectl kustomize k8s/steps/step-1) <(kubectl kustomize k8s/steps/step-2)
 | 第 22 秒 | `SSE 連線中斷，瀏覽器正在重新連線…`（`v87v9` 等完 8 秒，程式結束） |
 | 第 25 秒 | `SSE 已連線`，`服務版本：v2.2.2`，`Pod：koupa-5bf9d54d7f-bqxp2` |
 
-看板在舊 Pod 變成 `Completed` 前後才斷線，不是 `Terminating` 一開始就斷，因為等待的 8 秒內連線還在。斷線約 3 秒，和步驟 0、1 一樣。
+看板在舊 Pod 變成 `Completed` 前後才斷線，不是 `Terminating` 一開始就斷，因為等待的 8 秒內連線還在。斷線約 3～5 秒（瀏覽器自己的預設：Chromium 3 秒、Firefox 5 秒；這次的觀察用 Chromium），和步驟 0、1 一樣。
 
 ## 你應該看到
 
@@ -111,7 +111,7 @@ diff <(kubectl kustomize k8s/steps/step-1) <(kubectl kustomize k8s/steps/step-2)
 
 - Pod 開始被關掉時，「通知入口別再送過來」和「執行 `preStop`，執行完才送 SIGTERM」同時開始。入口要一點時間才收到更新。
 - 等了 8 秒，入口通常已經不再把新訂單送給這個 Pod，這時程式才收到 SIGTERM，訂單就不會送到正在結束的程式。
-- 8 秒是用 `measure.sh calibrate` 在 tkha 上量出來的：推估 Pod 被刪除後最晚 2.127 秒，入口就不再把請求送給它；這個數字無條件進位成整數，再加 5 秒緩衝。換了環境要重新量。
+- 8 秒是用 `measure.sh calibrate` 在 tkha 上量出來的：實際觀察到入口最晚在 Pod 開始被關掉後約 1.5 秒還把請求送給它；保守推估的上限是 2.127 秒。把 2.127 無條件進位成 3，再加 5 秒緩衝，就是 8 秒。換了環境要重新量。
 - **漏號沒有改善**：看板還連在舊 Pod 上，8 秒後程式照樣直接結束，看板斷線、重連，斷線期間的叫號收不到。這個問題留給步驟 3、4 處理。
 
 完整說明見[設計文件 4.6 步驟 2：preStop](../design-v2/04-step-mechanisms.md#46-步驟-2prestop)。

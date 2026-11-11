@@ -17,7 +17,7 @@
 |---|---|---|
 | 終端機 A | `./measure.sh step-3 --runs 2` | 必要 |
 | 終端機 B | `kubectl -n koupa get pods -w` | 建議 |
-| 瀏覽器（例如 desktop container 裡的 Firefox） | 只開 `http://<IP>/board?debug=1` | 選用，只看不操作 |
+| 瀏覽器（要連得到 Gateway IP，例如主機上的瀏覽器或課程的 desktop container） | 只開 `http://<IP>/board?debug=1` | 選用，只看不操作 |
 
 - 看板要在終端機 A 印出 `sending started` 之前打開。看板只會顯示連線期間叫到的號碼。量測前 `measure.sh` 套用設定時 Pod 也會換一輪，看板先斷線再自動連上是正常的。
 - 客人、廚房和 3 台看板都由 Rush Hour 模擬，瀏覽器只是讓你觀察。**量測期間只看看板，不要操作點餐頁和廚房頁**，因為 Rush Hour 模擬的店員會自己按「完成」，而你自己下的單不在 Rush Hour 的紀錄裡，不會算進成績單。
@@ -39,7 +39,7 @@ spec:
 ```
 
 - `GRACEFUL_SHUTDOWN`：收到 SIGTERM 後不再直接結束，先通知每台看板重新連線，並等處理中的請求做完；
-- `SHUTDOWN_TIMEOUT`：收尾的期限，超過就不保證全部完成；
+- `SHUTDOWN_TIMEOUT`：收尾的期限，超過就不再等，程式直接結束；
 - 三段時間加起來要小於關機寬限時間：`preStop` 8 秒＋`SHUTDOWN_TIMEOUT` 15 秒＋緩衝 5 秒＜寬限時間 40 秒，程式才不會收尾到一半被強制結束。
 
 看完整的差異：
@@ -88,7 +88,7 @@ diff <(kubectl kustomize k8s/steps/step-2) <(kubectl kustomize k8s/steps/step-3)
 | 第 19 秒 | `SSE 連線中斷，瀏覽器正在重新連線…`（`sd52k` 等完 8 秒，收到 SIGTERM） |
 | 第 20 秒 | `SSE 已連線`，`服務版本：v2.2.2`，`Pod：koupa-858b4db646-n5zdj` |
 
-斷線時間從步驟 0～2 的 3 秒左右縮短到約 1 秒。斷線前，App 會先送出 `shutdown` 事件，資訊列可能會閃過 `SSE：伺服器即將重啟，等待瀏覽器重新連線…`；這段訊息通常顯示不到 1 秒，這次每秒截一張的截圖沒有拍到，但瀏覽器確實收到了這個事件。
+斷線時間從步驟 0～2 的 3～5 秒縮短到約 1 秒。斷線前，App 會先送出 `shutdown` 事件，資訊列可能會閃過 `SSE：伺服器即將重啟，等待瀏覽器重新連線…`；這段訊息通常顯示不到 1 秒，這次每秒截一張的截圖沒有拍到，但瀏覽器確實收到了這個事件。
 
 ## 你應該看到
 
@@ -107,7 +107,7 @@ diff <(kubectl kustomize k8s/steps/step-2) <(kubectl kustomize k8s/steps/step-3)
 
 ![步驟 3 的機制](img/step-3.svg)
 
-- 程式收到 SIGTERM 後，先對每台看板送 `retry:`（建議瀏覽器多久後重連，預設 1 秒）和 `shutdown` 事件，再結束這條連線；同時等處理中的請求做完。
+- 程式收到 SIGTERM 後，先對每台看板送 `retry:`（指定瀏覽器多久後重連，App 預設 1 秒）和 `shutdown` 事件，再結束這條連線；同時等處理中的請求做完。從這一步開始，App 會用 `retry:` 告訴瀏覽器 1 秒後重連；步驟 0～2 沒有指定，瀏覽器用自己的預設（Chromium 3 秒、Firefox 5 秒）。
 - 看板照 App 指定的時間，1 秒後重新連線，斷線時間變短，漏號跟著變少。
 - **還是會漏號**：重連後仍然從「現在」開始收，斷線那 1 秒左右的叫號收不到。這個問題留給步驟 4 處理。
 

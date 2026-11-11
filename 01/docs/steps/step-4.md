@@ -17,11 +17,11 @@
 |---|---|---|
 | 終端機 A | `./measure.sh step-4 --runs 2` | 必要 |
 | 終端機 B | `kubectl -n koupa get pods -w` | 建議 |
-| 瀏覽器（例如 desktop container 裡的 Firefox） | 只開 `http://<IP>/board?debug=1` | 選用，只看不操作 |
+| 瀏覽器（要連得到 Gateway IP，例如主機上的瀏覽器或課程的 desktop container） | 只開 `http://<IP>/board?debug=1` | 選用，只看不操作 |
 
 - 看板要在終端機 A 印出 `sending started` 之前打開。看板只會顯示連線期間叫到的號碼。量測前 `measure.sh` 套用設定時 Pod 也會換一輪，看板先斷線再自動連上是正常的。
 - 客人、廚房和 3 台看板都由 Rush Hour 模擬，瀏覽器只是讓你觀察。**量測期間只看看板，不要操作點餐頁和廚房頁**，因為 Rush Hour 模擬的店員會自己按「完成」，而你自己下的單不在 Rush Hour 的紀錄裡，不會算進成績單。
-- **量測期間不要重新整理看板**，因為補號只對同一個頁面的自動重連有效，重新整理會建立一條新的連線。
+- **量測期間不要重新整理看板**，因為重新整理後，頁面不記得上次收到哪裡，會從「現在」開始收，不會補號。
 
 ## 改了什麼
 
@@ -64,7 +64,7 @@ diff <(kubectl kustomize k8s/steps/step-3) <(kubectl kustomize k8s/steps/step-4)
 [measure 18:49:55] set image ghcr.io/braveantony/koupa:v2.2.2 complete at second 15.1
 ```
 
-**終端機 B**：和步驟 3 一樣，新 Pod 先 `0/1 Running` 再 `1/1`，舊 Pod 停在 `Terminating` 約 8 秒才變成 `Completed`。這一步沒有改 Kubernetes 的設定，Pod 的變化看不出差別。
+**終端機 B**：和步驟 3 一樣，新 Pod 先 `0/1 Running` 再 `1/1`，舊 Pod 停在 `Terminating` 約 8 秒才變成 `Completed`。這一步只多了一個 App 的環境變數，Pod 啟動和關閉的方式沒有變，所以 Pod 的變化看不出差別。
 
 **瀏覽器的看板**：看畫面底部的資訊列。
 
@@ -93,9 +93,9 @@ diff <(kubectl kustomize k8s/steps/step-3) <(kubectl kustomize k8s/steps/step-4)
 
 ![步驟 4 的機制](img/step-4.svg)
 
-- 瀏覽器的看板自動重連時，會帶上最後收到的叫號事件編號（`Last-Event-ID`，也就是 `ready_seq`，不是畫面上顯示的號碼）。
+- 瀏覽器的看板自動重連時，會帶上最後收到的叫號事件編號（放在 HTTP 標頭 `Last-Event-ID` 裡；內容是 `ready_seq`，也就是每次叫號依序加 1 的流水號，不是畫面上的取餐號碼）。
 - 打開開關後，App 把它當作起點，先從資料庫找出這個編號之後的叫號補送出去，再接上即時送出的叫號，兩者之間不漏、不重複。開關關閉時，App 不理會這個編號，一律從「現在」開始。
-- 只有同一個頁面的自動重連才會帶這個編號；重新整理網頁會建立一條新的連線，從「現在」開始收。
+- 只有同一個頁面的自動重連才會帶這個編號；重新整理網頁後，瀏覽器不會帶，App 就從「現在」開始送。
 
 完整說明見[設計文件 4.8 步驟 4：斷線重連後補號](../design-v2/04-step-mechanisms.md#48-步驟-4斷線重連後補號)。
 
