@@ -39,7 +39,7 @@ readinessProbe:
 
 `/healthz` 要三件事都成立才會回應成功：HTTP 伺服器已經啟動、資料庫有回應、已經向資料庫訂閱叫號通知（PostgreSQL 的 `LISTEN`，和圖上的 listen 不同）。這一步沒有打開 App 的環境變數開關。
 
-看完整的差異（只會多出上面這段）：
+選用：看完整的設定差異，只會多出上面這段（讀法見[量測說明](measure.md#看設定差異選用)）：
 
 ```bash
 diff <(kubectl kustomize k8s/base) <(kubectl kustomize k8s/steps/step-1)
@@ -121,7 +121,7 @@ diff <(kubectl kustomize k8s/base) <(kubectl kustomize k8s/steps/step-1)
   board-2：74
 ```
 
-`board-1` 確定漏掉 78 個，另外 1 個判斷不出來，不會算成 0，也不會算成漏號。`board-2` 沒有未知，74 就是結果。量 2 次以上時，彙整表遇到含未知的項目會寫「無法計算（另有 N 次含未知，未列入）」，不計入中位數。
+`board-1` 確定漏掉 78 個，另外 1 個判斷不出來，不會算成 0，也不會算成漏號。`board-2` 沒有未知，74 就是結果。量 2 次以上時，某一次的某個項目含未知，那一次就不列入該項目的中位數，後面加註「（另有 N 次含未知，未列入）」；每一次都含未知時，才寫「無法計算」。
 
 ## 為什麼會這樣
 

@@ -36,7 +36,7 @@
 - 沒有 `strategy`，用預設的 rolling update：3 個 Pod 時，先多開 1 個新 Pod，等它 Ready 才關掉 1 個舊 Pod；
 - 環境變數只有資料庫連線，以及 Pod 的名稱和 UID，App 的環境變數開關（`GRACEFUL_SHUTDOWN`、`RESUME_FROM_LAST_ID`、`IDEMPOTENCY_KEY`）都沒打開。
 
-看完整的 YAML：
+選用：看完整的 YAML：
 
 ```bash
 kubectl kustomize k8s/base
@@ -67,7 +67,7 @@ kubectl kustomize k8s/base
 
 最後還有一行 `step 0 observed: …`，列出這次量到的問題。結尾有 `Z` 的時間是 UTC，比台灣時間慢 8 小時；證據包的 `timeline.txt` 也用 UTC。
 
-**終端機 B**：新 Pod 從 `ContainerCreating` 直接變成 `1/1 Running`（READY 欄：Pod 裡 1 個 container 中有 1 個 Ready；`0/1` 表示還不能接收流量），沒有 `0/1 Running` 的階段，因為沒有 `readinessProbe`，container 一啟動就算 Ready。接著一個舊 Pod 進入 `Terminating`，1 秒內就變成 `Completed`。
+**終端機 B**：這次實測中，新 Pod 顯示 `ContainerCreating`（正在建立 container）之後，下一個觀察到的狀態就是 `1/1 Running`（READY 欄：Pod 裡 1 個 container 中有 1 個 Ready；`0/1` 表示還不能接收流量）。你的畫面可能略有不同；重點是沒有 `readinessProbe` 時，container 一啟動就算 Ready。接著一個舊 Pod 進入 `Terminating`，1 秒內就變成 `Completed`。
 
 表中用 Pod 名稱的最後 5 碼代表，你的名稱會不同。
 

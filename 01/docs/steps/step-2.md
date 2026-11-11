@@ -30,7 +30,7 @@
 template:
   metadata:
     annotations:
-      koupa.dev/prestop-calibrated: "true"   # 8 秒是在這個環境校正出來的
+      koupa.dev/prestop-calibrated: "true"   # 8 秒是在 tkha 校正出來的
   spec:
     containers:
       - name: koupa
@@ -40,9 +40,9 @@ template:
               seconds: 8
 ```
 
-`koupa.dev/prestop-calibrated` 只是一個 annotation（附在資源上的備註，不影響 Pod 怎麼執行），成績單會依它印出「preStop：8 秒（已依本環境校正）」。關機寬限時間維持預設 30 秒。這一步沒有打開 App 的環境變數開關。
+`koupa.dev/prestop-calibrated` 只是一個 annotation（附在資源上的備註，不影響 Pod 怎麼執行），成績單會依它印出「preStop：8 秒（已依本環境校正）」。這個標記只記錄設定檔宣稱的狀態：課程附帶的 8 秒是在 tkha 校正的，換到你的叢集，成績單仍會印「已依本環境校正」，這時要請講師照[講師手冊第 5 節](../../TEACHER.md#5-prestop-秒數的依據與限制)重新校正並更新標記。關機寬限時間維持預設 30 秒。這一步沒有打開 App 的環境變數開關。
 
-看完整的差異：
+選用：看完整的設定差異（讀法見[量測說明](measure.md#看設定差異選用)）：
 
 ```bash
 diff <(kubectl kustomize k8s/steps/step-1) <(kubectl kustomize k8s/steps/step-2)
@@ -103,7 +103,7 @@ diff <(kubectl kustomize k8s/steps/step-1) <(kubectl kustomize k8s/steps/step-2)
 
 你量的 2 次落在這個範圍，或符合這個趨勢，就算吻合：送出失敗變成 0（或接近 0），漏號**沒有改善**。另一次實測（2026-11-11）是送出失敗 0、每台看板漏號 78～84 個。
 
-成績單第二行會是 `preStop：8 秒（已依本環境校正）`。
+成績單第二行會是 `preStop：8 秒（已依本環境校正）`。不是在 tkha 上量時，這一行照樣會出現，不代表你的叢集已經校正過（見上面「改了什麼」）。
 
 ## 為什麼會這樣
 
@@ -111,7 +111,7 @@ diff <(kubectl kustomize k8s/steps/step-1) <(kubectl kustomize k8s/steps/step-2)
 
 - Pod 開始被關掉時，「通知入口別再送過來」和「執行 `preStop`，執行完才送 SIGTERM」同時開始。入口要一點時間才收到更新。
 - 等了 8 秒，入口通常已經不再把新訂單送給這個 Pod，這時程式才收到 SIGTERM，訂單就不會送到正在結束的程式。
-- 8 秒是用 `measure.sh calibrate` 在 tkha 上量出來的：實際觀察到入口最晚在 Pod 開始被關掉後約 1.5 秒還把請求送給它；保守推估的上限是 2.127 秒。把 2.127 無條件進位成 3，再加 5 秒緩衝，就是 8 秒。換了環境要重新量。
+- 8 秒是用 `measure.sh calibrate` 在 tkha 上量出來的：較早一次校正（2026-11-09）中，最晚在 Pod 開始被關掉後約 1.5 秒仍觀察到入口把請求送給它；最新一次校正（2026-11-10）推估的候選值是 2.127 秒。把 2.127 無條件進位成 3，再加 5 秒緩衝，就是 8 秒。換了環境要重新量。
 - **漏號沒有改善**：看板還連在舊 Pod 上，8 秒後程式照樣直接結束，看板斷線、重連，斷線期間的叫號收不到。這個問題留給步驟 3、4 處理。
 
 完整說明見[設計文件 4.6 步驟 2：preStop](../design-v2/04-step-mechanisms.md#46-步驟-2prestop)。

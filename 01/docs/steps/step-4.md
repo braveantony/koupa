@@ -33,9 +33,9 @@ env:
     value: "1"
 ```
 
-`RESUME_FROM_LAST_ID`：看板重連時會帶上最後收到的叫號事件編號，App 會補送這個編號之後的叫號。
+`RESUME_FROM_LAST_ID`：看板重連時會帶上最後記住的事件編號，App 會補送這個編號之後的叫號。
 
-看完整的差異：
+選用：看完整的設定差異（讀法見[量測說明](measure.md#看設定差異選用)）：
 
 ```bash
 diff <(kubectl kustomize k8s/steps/step-3) <(kubectl kustomize k8s/steps/step-4)
@@ -93,7 +93,7 @@ diff <(kubectl kustomize k8s/steps/step-3) <(kubectl kustomize k8s/steps/step-4)
 
 ![步驟 4 的機制](img/step-4.svg)
 
-- 瀏覽器的看板自動重連時，會帶上最後收到的叫號事件編號（放在 HTTP 標頭 `Last-Event-ID` 裡；內容是 `ready_seq`，也就是每次叫號依序加 1 的流水號，不是畫面上的取餐號碼）。
+- 瀏覽器的看板自動重連時，會帶上最後記住的事件編號（放在 HTTP 標頭 `Last-Event-ID` 裡）。它通常是最後收到的叫號流水號（`ready_seq`，每次叫號依序加 1，不是畫面上的取餐號碼）；連上後還沒收到叫號時，是 `hello` 給的起始流水號。
 - 打開開關後，App 把它當作起點，先從資料庫找出這個編號之後的叫號補送出去，再接上即時送出的叫號，兩者之間不漏、不重複。開關關閉時，App 不理會這個編號，一律從「現在」開始。
 - 只有同一個頁面的自動重連才會帶這個編號；重新整理網頁後，瀏覽器不會帶，App 就從「現在」開始送。
 

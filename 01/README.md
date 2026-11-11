@@ -61,7 +61,7 @@ Pod 是 Kubernetes 執行程式的單位；這裡每個 koupa Pod 都跑一份 A
 
 ## 1. 準備
 
-**在哪裡執行指令**：主機，也就是叢集所在的那台電腦（叢集的節點是這台電腦上用 podman 跑的 container），而且連得到 Gateway IP。先把課程的 repo clone 到主機，再進入 `01/` 目錄：
+**在哪裡執行指令**：主機，也就是叢集所在的那台電腦（叢集的節點是這台電腦上用 podman 跑的 container），而且連得到 Gateway IP。在主機開啟終端機，依序貼上並執行下面兩行：第一行下載課程檔案，第二行進入 `01/` 目錄。
 
 ```bash
 git clone https://github.com/braveantony/koupa.git
