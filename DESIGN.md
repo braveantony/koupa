@@ -31,7 +31,9 @@ No yellow dot ever sits under text: text on film is always on a solid sticker or
 ## Type
 
 - Text: system CJK sans, `"PingFang TC", "Noto Sans TC", "Noto Sans CJK TC", "Microsoft JhengHei", "Heiti TC", "WenQuanYi Zen Hei", system-ui, sans-serif`. Names and headings 900, body 400.
-- Label-printer text (numbers, prices, quantities, statuses, the slogan): `ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", "Noto Sans Mono", monospace` with `tabular-nums`, so ticket digits stay aligned whatever monospace is installed. The class `.num` applies it.
+- Numbers (ticket numbers on the confirmation, kitchen strips, board and 剛剛叫過): `.num` = `-apple-system, "Segoe UI", "Liberation Sans", <CJK sans stack>` with `tabular-nums lining-nums`, bold. A Latin sans with a real bold comes first because the CJK fallbacks may have a single weight. No monospace for numbers: the system monospace faces draw a dotted or slashed zero that reads like a decimal point at display size.
+- Prices, quantities, receipt lines, statuses: the CJK sans stack with `tabular-nums lining-nums`.
+- Monospace (`ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", "Noto Sans Mono", monospace`) only for text without digits: the slogan on the brand sticker, the 送出中… notice, and the `?debug=1` strip.
 - No web fonts and no external requests (enforced by `web_test.go`).
 - Scale: 13–15 small, 17 names/body, 20–22 headings, 46 kitchen number, `clamp(56px, 18vw, 88px)` confirmation number, up to 140px board number (sized by `vw`/`vh`).
 
@@ -39,11 +41,11 @@ No yellow dot ever sits under text: text on film is always on a solid sticker or
 
 - **Film field** (`.film`): `#1E46B4` with a repeating dot print (white and yellow dots, `--tile` 48px / `--r` 5px; 44px on the confirmation disc, 64px / 7px on the board). Used only as a field: the header band on 點餐 and 廚房, the confirmation disc, the board's disc.
 - **Sticker** (`.sticker`): white, radius 4px (6px for the big ones), drop line `0 1px 0 rgba(16,24,46,.22), 0 3px 8px rgba(16,24,46,.08)`. Lists tilt by at most 1.5deg (menu labels -1.5 / 1 / 1.5 / -1deg, kitchen strips ±0.6deg); the called number tilts -3deg.
-- **Header**: film band with the brand sticker (Koupa 酷杯 + slogan in mono, -1.5deg) and nav pills (white 94%, current = yellow). The board header is plain white with a bottom hairline so the disc is the only film on screen.
-- **Menu cup** (`.card`): photo in a circle with a printed film rim (`repeating-conic-gradient` cobalt/white, 7px), label sticker below with name, `NT$` price, then the stepper: 44px round − / + with drawn marks (CSS bars, no glyphs). The quantity is mono 20px.
-- **Cart bar**: sticky white sticker at the bottom, `N 杯 / NT$ X` in mono, pill button 確認點餐 (48px).
-- **Confirmation**: 訂單成立, a film disc with a white rim holding the 您的號碼牌 sticker (number in mono), the 叫號 note, a receipt sticker (mono lines, dashed rule above 合計), outline pill 再點一單.
-- **Kitchen strip** (`.ticket-card`): 號碼牌 + number 46px mono, `NT$` total, items between dashed rules, full-width 完成 button 56px.
+- **Header** (same on all three pages): film band with the brand sticker (Koupa 酷杯 + slogan in mono, -1.5deg) and nav pills (white 94%, current = yellow, 44px). On the board the band is shorter (10px padding, brand and slogan on one line) to keep the 16:9 height.
+- **Menu cup** (`.card`): photo in a circle with a printed film rim (`repeating-conic-gradient` cobalt/white, 7px), label sticker below with name, `NT$` price, then the stepper: 44px round − / + with drawn marks (CSS bars, no glyphs). The quantity is 20px bold tabular.
+- **Cart bar**: sticky white sticker at the bottom, `N 杯 / NT$ X` in tabular figures, pill button 確認點餐 (48px).
+- **Confirmation**: 訂單成立, a film disc with a white rim holding the 您的號碼牌 sticker (bold tabular number), the 叫號 note, a receipt sticker (tabular figures, dashed rule above 合計), outline pill 再點一單.
+- **Kitchen strip** (`.ticket-card`): 號碼牌 + number 46px bold tabular, `NT$` total, items between dashed rules, full-width 完成 button 56px.
 - **Supply sticker**: small cup mark (film blue / grey), name, 供應中 or 今日售完, outline pill toggle (filled when sold out: 恢復供應).
 - **Board**: left 製作中 = label strips in a 2-column grid (number + 準備中), max 16 including a 還有 N 張 strip; right = big disc (`min(100%, 64vh, 520px)`, white rim) with the sticker 請 / number / 號取餐, 剛剛叫過 row of small stickers below. The 請取餐 heading is visually hidden.
 

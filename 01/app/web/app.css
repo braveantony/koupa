@@ -41,7 +41,15 @@ button:disabled { cursor: not-allowed; }
 [hidden] { display: none !important; }
 ul { margin: 0; padding: 0; list-style: none; }
 h1, h2 { margin: 0; line-height: 1.3; text-wrap: balance; }
-.num { font-family: var(--mono); font-variant-numeric: tabular-nums lining-nums; letter-spacing: 0; }
+/* Numbers (tickets, prices, quantities) use the sans with tabular lining
+   figures: the system monospace faces draw a dotted or slashed zero that
+   reads like a decimal point at display size. A Latin sans with a real
+   bold comes first so the digits keep their weight where the CJK face
+   has only one. */
+.num {
+  font-family: -apple-system, "Segoe UI", "Liberation Sans", var(--sans);
+  font-variant-numeric: tabular-nums lining-nums; letter-spacing: 0.02em;
+}
 .sr-only {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
@@ -136,8 +144,8 @@ main { flex: 1; width: 100%; }
 .card:nth-child(4n+3) .label { transform: rotate(1.5deg); }
 .card:nth-child(4n+4) .label { transform: rotate(-1deg); }
 .card .name { font-size: 17px; font-weight: 900; line-height: 1.35; }
-.card .price { font-family: var(--mono); font-size: 14px; color: var(--ink-2); }
-.card .sold-label { font-family: var(--mono); font-size: 14px; font-weight: 700; color: var(--red); }
+.card .price { font-family: var(--sans); font-variant-numeric: tabular-nums lining-nums; font-size: 14px; color: var(--ink-2); }
+.card .sold-label { font-family: var(--sans); font-variant-numeric: tabular-nums lining-nums; font-size: 14px; font-weight: 700; color: var(--red); }
 .card.sold-out .cup { background: var(--sold-disc); }
 .card.sold-out img { filter: grayscale(1); opacity: 0.6; }
 .card.sold-out .name { color: var(--ink-2); }
@@ -156,7 +164,7 @@ main { flex: 1; width: 100%; }
 }
 .stepper .inc::after { transform: translate(-50%, -50%) rotate(90deg); }
 .stepper button:disabled { border-color: var(--line); background: var(--surface); color: #9AA3BA; }
-.stepper .qty { min-width: 2ch; text-align: center; font-family: var(--mono); font-size: 20px; font-weight: 700; }
+.stepper .qty { min-width: 2ch; text-align: center; font-family: var(--sans); font-variant-numeric: tabular-nums lining-nums; font-size: 20px; font-weight: 700; }
 #menu.locked .stepper { opacity: 0.7; }
 
 .cart {
@@ -168,7 +176,7 @@ main { flex: 1; width: 100%; }
   display: flex; align-items: center; gap: 12px; padding: 10px 10px 10px 16px; border-radius: 6px;
   background: var(--surface); color: var(--ink); box-shadow: var(--lift);
 }
-.cart-sum { flex: 1; min-width: 0; font-family: var(--mono); font-size: 17px; font-weight: 700; white-space: nowrap; }
+.cart-sum { flex: 1; min-width: 0; font-family: var(--sans); font-variant-numeric: tabular-nums lining-nums; font-size: 17px; font-weight: 700; white-space: nowrap; }
 .cart-sum .sep { margin: 0 6px; color: var(--ink-2); font-weight: 400; }
 #submit {
   min-height: 48px; padding: 0 22px; border-radius: 999px; border: none; flex-shrink: 0;
@@ -191,7 +199,7 @@ main { flex: 1; width: 100%; }
 .done p { margin: 0; font-size: 16px; }
 .receipt {
   width: 100%; max-width: 26rem; padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; text-align: left;
-  font-family: var(--mono);
+  font-family: var(--sans); font-variant-numeric: tabular-nums lining-nums;
 }
 .receipt li, .receipt .sum { display: flex; justify-content: space-between; gap: 12px; font-size: 15px; }
 .receipt .sum { padding-top: 10px; border-top: 1px dashed var(--line); font-size: 17px; font-weight: 700; }
@@ -218,13 +226,13 @@ main { flex: 1; width: 100%; }
 .ticket-card .meta { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
 .ticket-card .tag { display: block; font-size: 13px; font-weight: 700; color: var(--ink-2); }
 .ticket-card .number { display: block; font-size: 46px; font-weight: 700; line-height: 1.05; }
-.ticket-card .total { font-family: var(--mono); font-size: 15px; color: var(--ink-2); }
+.ticket-card .total { font-family: var(--sans); font-variant-numeric: tabular-nums lining-nums; font-size: 15px; color: var(--ink-2); }
 .ticket-card .items {
   display: flex; flex-direction: column; gap: 6px; padding: 10px 0; font-size: 17px;
   border-top: 1px dashed var(--line); border-bottom: 1px dashed var(--line);
 }
 .ticket-card .items li { display: flex; justify-content: space-between; gap: 12px; }
-.ticket-card .items .q { font-family: var(--mono); font-weight: 700; white-space: nowrap; }
+.ticket-card .items .q { font-family: var(--sans); font-variant-numeric: tabular-nums lining-nums; font-weight: 700; white-space: nowrap; }
 .ticket-card .done-btn {
   min-height: 56px; border-radius: 6px; border: none; background: var(--film); color: var(--on-primary);
   font-size: 20px; font-weight: 900;
@@ -245,7 +253,7 @@ main { flex: 1; width: 100%; }
 }
 .supply-list li.sold-out::before { background: var(--sold-disc); }
 .supply-list .name { flex: 1; font-weight: 900; }
-.supply-list .state { font-family: var(--mono); font-size: 14px; color: var(--ink-2); }
+.supply-list .state { font-family: var(--sans); font-variant-numeric: tabular-nums lining-nums; font-size: 14px; color: var(--ink-2); }
 .supply-list li.sold-out .state { color: var(--red); font-weight: 700; }
 .supply-list button {
   min-height: 44px; padding: 0 14px; border-radius: 999px; border: 2px solid var(--film);
@@ -257,13 +265,9 @@ main { flex: 1; width: 100%; }
 
 /* ---- board page ---- */
 body[data-page="board"] { height: 100vh; height: 100dvh; }
-.site.plain { padding: 12px clamp(16px, 3vw, 36px); background: var(--surface); border-bottom: 1px solid var(--line); }
-.site.plain .brand { flex-direction: row; align-items: baseline; gap: 2px 14px; padding: 0; transform: none; box-shadow: none; }
-.site.plain .brand-name { font-size: clamp(22px, 2.2vw, 30px); }
-.site.plain .slogan { font-size: clamp(13px, 1.1vw, 15px); }
-.site.plain nav a { background: transparent; }
-.site.plain nav a:hover { background: var(--soft); }
-.site.plain nav a[aria-current="page"] { background: var(--dot); }
+/* Same film-band header, shorter so the 16:9 screen keeps its height. */
+body[data-page="board"] .site { padding: 10px clamp(16px, 3vw, 36px); }
+body[data-page="board"] .brand { flex-direction: row; align-items: baseline; gap: 2px 12px; padding: 6px 14px; }
 .board {
   flex: 1; min-height: 0; display: grid; grid-template-columns: 2fr 3fr; gap: clamp(20px, 3vw, 40px);
   padding: clamp(14px, 3.5vh, 32px) clamp(16px, 3vw, 36px);
