@@ -346,7 +346,9 @@ function initKitchen() {
 
 function initBoard() {
   const MAX_RECENT = 5; // the latest number plus 4 earlier ones
-  const MAX_MAKING = 16; // label strips that fit a 16:9 screen (8 rows of 2)
+  // On a phone the list grows with the page; past this many it ends with a
+  // 還有 N 張 strip. On a fixed-height screen fewer may fit (see renderMaking).
+  const MAX_LISTED = 60;
   window.__events = []; // names of the events seen, for tests and debugging
   const recent = [];
   let lastSeq = 0; // highest ready_seq (SSE event id) shown so far
@@ -357,21 +359,40 @@ function initBoard() {
   let polls = 0;
   const status = (t) => { $('status').textContent = t; };
 
+  let making = []; // the orders last drawn under 製作中 (stale ones filtered out)
+  function strip(o) {
+    const li = el('li');
+    li.append(el('span', 'no num', o.number), el('span', 'st', '準備中'));
+    li.dataset.number = o.number;
+    li.dataset.orderId = o.order_id;
+    return li;
+  }
+  const more = (n) => el('li', 'more', '還有 ' + n + ' 張');
+  // Every pending order is either a visible strip or counted in the last
+  // strip 「還有 N 張」; none is clipped out of sight silently.
   function renderMaking(orders) {
+    making = orders;
+    // Set the empty line first: while shown it takes height from the list.
+    $('no-making').hidden = orders.length > 0;
     const ul = $('making');
     ul.textContent = '';
-    // When there are more, the last strip says how many are not shown.
-    const fit = orders.length > MAX_MAKING ? MAX_MAKING - 1 : MAX_MAKING;
-    for (const o of orders.slice(0, fit)) {
-      const li = el('li');
-      li.append(el('span', 'no num', o.number), el('span', 'st', '準備中'));
-      li.dataset.number = o.number;
-      li.dataset.orderId = o.order_id;
-      ul.appendChild(li);
+    const listed = orders.length > MAX_LISTED ? MAX_LISTED - 1 : orders.length;
+    for (const o of orders.slice(0, listed)) ul.appendChild(strip(o));
+    if (listed < orders.length) ul.appendChild(more(orders.length - listed));
+    // On a fixed-height screen the list box can be shorter than its strips.
+    // Keep the strips that are fully visible and turn the last visible slot
+    // into the count of everything not shown.
+    if (ul.scrollHeight > ul.clientHeight + 1) {
+      const bottom = ul.getBoundingClientRect().bottom + 0.5;
+      const items = Array.from(ul.children);
+      let fit = 0;
+      while (fit < items.length && items[fit].getBoundingClientRect().bottom <= bottom) fit++;
+      const keep = Math.min(listed, Math.max(0, fit - 1));
+      while (ul.children.length > keep) ul.lastChild.remove();
+      ul.appendChild(more(orders.length - keep));
     }
-    if (orders.length > fit) ul.appendChild(el('li', 'more', '還有 ' + (orders.length - fit) + ' 張'));
-    $('no-making').hidden = orders.length > 0;
   }
+  window.addEventListener('resize', () => renderMaking(making));
   // Same 2 s interval as the kitchen page, but one poll at a time: the next
   // one starts 2 s after the previous one finished.
   async function refreshMaking() {
@@ -427,10 +448,9 @@ function initBoard() {
     ul.textContent = '';
     for (const n of recent.slice(1)) ul.appendChild(el('li', 'num', n));
     $('recent').hidden = recent.length < 2;
-    // The called number leaves 製作中 now rather than at the next poll.
-    const li = document.querySelector('#making li[data-order-id="' + d.order_id + '"]');
-    if (li) li.remove();
-    $('no-making').hidden = $('making').children.length > 0;
+    // The called number leaves 製作中 now rather than at the next poll; a
+    // redraw also keeps the 還有 N 張 count right.
+    renderMaking(making.filter((o) => o.order_id !== d.order_id));
   });
   // The server is going away; just record it and let the browser reconnect.
   es.addEventListener('shutdown', () => {

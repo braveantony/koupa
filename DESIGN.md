@@ -14,7 +14,7 @@ The shop's own consumables are the interface. Every cup is sealed with a printed
 | Token | Hex | Role |
 |---|---|---|
 | `--ground` | `#F4F6FB` | Page background (cool white, blue-grey) |
-| `--surface` | `#FFFFFF` | Stickers, the board header |
+| `--surface` | `#FFFFFF` | Stickers, nav pills |
 | `--ink` | `#10182E` | Text (17.6:1 on white) |
 | `--ink-2` | `#4B5570` | Secondary text: prices, statuses, hints (7.4:1 on white) |
 | `--line` | `#D5DAE6` | Hairlines, dashed label rules, disc outline |
@@ -39,7 +39,7 @@ No yellow dot ever sits under text: text on film is always on a solid sticker or
 
 ## Components
 
-- **Film field** (`.film`): `#1E46B4` with a repeating dot print (white and yellow dots, `--tile` 48px / `--r` 5px; 44px on the confirmation disc, 64px / 7px on the board). Used only as a field: the header band on 點餐 and 廚房, the confirmation disc, the board's disc.
+- **Film field** (`.film`): `#1E46B4` with a repeating dot print (white and yellow dots, `--tile` 48px / `--r` 5px; 44px on the confirmation disc, 64px / 7px on the board). Used only as a field: the shared header band on all three pages, the confirmation disc, the board's disc.
 - **Sticker** (`.sticker`): white, radius 4px (6px for the big ones), drop line `0 1px 0 rgba(16,24,46,.22), 0 3px 8px rgba(16,24,46,.08)`. Lists tilt by at most 1.5deg (menu labels -1.5 / 1 / 1.5 / -1deg, kitchen strips ±0.6deg); the called number tilts -3deg.
 - **Header** (same on all three pages): film band with the brand sticker (Koupa 酷杯 + slogan in mono, -1.5deg) and nav pills (white 94%, current = yellow, 44px). On the board the band is shorter (10px padding, brand and slogan on one line) to keep the 16:9 height.
 - **Menu cup** (`.card`): photo in a circle with a printed film rim (`repeating-conic-gradient` cobalt/white, 7px), label sticker below with name, `NT$` price, then the stepper: 44px round − / + with drawn marks (CSS bars, no glyphs). The quantity is 20px bold tabular.
@@ -47,7 +47,7 @@ No yellow dot ever sits under text: text on film is always on a solid sticker or
 - **Confirmation**: 訂單成立, a film disc with a white rim holding the 您的號碼牌 sticker (bold tabular number), the 叫號 note, a receipt sticker (tabular figures, dashed rule above 合計), outline pill 再點一單.
 - **Kitchen strip** (`.ticket-card`): 號碼牌 + number 46px bold tabular, `NT$` total, items between dashed rules, full-width 完成 button 56px.
 - **Supply sticker**: small cup mark (film blue / grey), name, 供應中 or 今日售完, outline pill toggle (filled when sold out: 恢復供應).
-- **Board**: left 製作中 = label strips in a 2-column grid (number + 準備中), max 16 including a 還有 N 張 strip; right = big disc (`min(100%, 64vh, 520px)`, white rim) with the sticker 請 / number / 號取餐, 剛剛叫過 row of small stickers below. The 請取餐 heading is visually hidden.
+- **Board**: left 製作中 = label strips in a grid (2 columns when there is room, number + 準備中). On a fixed-height screen the list is fitted to the space it actually has: app.js keeps the strips that are fully visible and turns the last visible slot into 「還有 N 張」, counting every order not shown (recomputed on each poll, call and resize). On a phone the list grows with the page, up to 60 with the same count strip; right = big disc (`min(100%, 64vh, 520px)`, white rim) with the sticker 請 / number / 號取餐, 剛剛叫過 row of small stickers below. The 請取餐 heading is visually hidden.
 
 ## States
 
@@ -55,7 +55,7 @@ No yellow dot ever sits under text: text on film is always on a solid sticker or
 - Disabled buttons: `--soft` fill with `--ink-2` text; disabled steppers keep a white face with a `--line` border.
 - Pending/unknown order: steppers locked (`#menu.locked`, 70% opacity), notice as a red error sticker; 送出中… as a white mono sticker.
 - Empty: centred `--ink-2` line (目前沒有製作中的訂單); the board disc shows a 等待叫號… sticker.
-- Focus: 3px `--film` outline, offset 2px; white outline on the film header.
+- Focus: 3px `--film` outline, offset 2px. In the film header a two-colour ring (3px ink inside, 3px white outside) so it shows on the white brand sticker, the white pills and the film.
 - Browser surfaces: selection = yellow with ink text, caret = film, scrollbar thumb `#9AA3BA` on ground.
 
 ## Motion

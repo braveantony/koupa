@@ -249,6 +249,96 @@ test('board ignores a ready event whose id is not newer than the last one', asyn
   await expect(page.locator('#list li')).toHaveText(['0104']);
 });
 
+// Board 製作中 on a fixed-height screen: every pending order is either a
+// fully visible strip or counted in the last strip 「還有 N 張」.
+const fakeOrders = (n: number) =>
+  Array.from({ length: n }, (_, i) => ({ order_id: 900000 + i, number: String(5001 + i), total: 50, items: [] }));
+
+async function makingState(page: Page) {
+  return page.evaluate(() => {
+    const ul = document.getElementById('making')!;
+    const box = ul.getBoundingClientRect();
+    const lis = Array.from(ul.children) as HTMLElement[];
+    const more = lis.filter((li) => li.classList.contains('more'));
+    return {
+      shown: lis.filter((li) => li.dataset.number).map((li) => li.dataset.number!),
+      more: more.map((li) => li.textContent),
+      moreIsLast: more.length === 0 || lis[lis.length - 1] === more[0],
+      allVisible: lis.every((li) => {
+        const r = li.getBoundingClientRect();
+        return r.bottom <= box.bottom + 0.5 && r.bottom <= window.innerHeight && r.right <= window.innerWidth;
+      }),
+    };
+  });
+}
+
+for (const [w, h] of [[800, 600], [1280, 720], [1920, 1080]]) {
+  test(`board ${w}x${h}: no pending order is clipped out of sight`, async ({ page }) => {
+    await page.setViewportSize({ width: w, height: h });
+    let n = 200;
+    await page.route('**/api/orders?status=pending*', (route) => route.fulfill({ json: fakeOrders(n) }));
+    await page.goto('/board');
+    await expect(page.locator('#making li.more')).toBeVisible();
+    await expect(page.locator('#making li.more')).toBeInViewport({ ratio: 1 });
+    const many = await makingState(page);
+    expect(many.allVisible).toBe(true);
+    expect(many.moreIsLast).toBe(true);
+    expect(many.more).toEqual([`還有 ${200 - many.shown.length} 張`]);
+    expect(many.shown).toEqual(fakeOrders(many.shown.length).map((o) => o.number));
+    expect(many.shown.length).toBeGreaterThan(0);
+
+    // Capacity boundaries: exactly as many as fit -> all shown, no count;
+    // one more -> the last slot becomes 「還有 2 張」.
+    const cap = many.shown.length + 1;
+    n = cap;
+    await expect.poll(async () => (await makingState(page)).shown.length, { timeout: 5000 }).toBe(cap);
+    const full = await makingState(page);
+    expect(full.more).toEqual([]);
+    expect(full.allVisible).toBe(true);
+    n = cap + 1;
+    await expect.poll(async () => (await makingState(page)).more, { timeout: 5000 }).toEqual(['還有 2 張']);
+    const over = await makingState(page);
+    expect(over.shown.length).toBe(cap - 1);
+    expect(over.allVisible).toBe(true);
+    expect(over.moreIsLast).toBe(true);
+  });
+}
+
+test('board: stale filtering still applies when 製作中 overflows', async ({ page, request }) => {
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto('/board');
+  await page.waitForFunction(() => (window as any).__events.includes('hello'));
+  const o = await apiOrder(request);
+  let captured!: () => void;
+  const gotSnapshot = new Promise<void>((r) => (captured = r));
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  let hold = true;
+  await page.route('**/api/orders?status=pending*', async (route) => {
+    const resp = await route.fetch();
+    const real = await resp.json();
+    const all = [...real, ...fakeOrders(100)]; // real orders first, so o would be in view
+    if (hold && real.some((x: any) => x.order_id === o.order_id)) {
+      hold = false;
+      captured();
+      await gate; // the SSE ready event arrives while this response is held
+    }
+    await route.fulfill({ json: all });
+  });
+  await gotSnapshot;
+  await request.post(`/orders/${o.order_id}/ready`);
+  await expect(page.locator('#latest .big')).toHaveText(o.number);
+  release();
+  const stale = page.locator(`#making li[data-number="${o.number}"]`);
+  for (let i = 0; i < 30; i++) {
+    expect(await stale.count()).toBe(0);
+    const st = await makingState(page);
+    expect(st.allVisible).toBe(true);
+    expect(st.more).toHaveLength(1);
+    await page.waitForTimeout(100);
+  }
+});
+
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const srv = createServer();
