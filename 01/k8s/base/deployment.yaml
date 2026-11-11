@@ -50,7 +50,7 @@ spec:
       # new Pods receiving traffic before they listen (env-findings section 9).
       containers:
         - name: koupa
-          image: ghcr.io/braveantony/koupa:v1.2.0 # = KOUPA_V1_TAG in images.env (check-manifests.sh)
+          image: ghcr.io/braveantony/koupa:v1.2.1 # = KOUPA_V1_TAG in images.env (check-manifests.sh)
           ports:
             - name: http
               containerPort: 8080
