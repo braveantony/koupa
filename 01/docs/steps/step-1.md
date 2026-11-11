@@ -17,7 +17,7 @@
 |---|---|---|
 | 終端機 A | `./measure.sh step-1 --runs 2` | 必要 |
 | 終端機 B | `kubectl -n koupa get pods -w` | 建議 |
-| 瀏覽器（例如 desktop container 裡的 Firefox） | 只開 `http://<IP>/board?debug=1` | 選用，只看不操作 |
+| 瀏覽器（要連得到 Gateway IP，例如主機上的瀏覽器或課程的 desktop container） | 只開 `http://<IP>/board?debug=1` | 選用，只看不操作 |
 
 - 看板要在終端機 A 印出 `sending started` 之前打開。看板只會顯示連線期間叫到的號碼。量測前 `measure.sh` 套用設定時 Pod 也會換一輪，看板先斷線再自動連上是正常的。
 - 客人、廚房和 3 台看板都由 Rush Hour 模擬，瀏覽器只是讓你觀察。**量測期間只看看板，不要操作點餐頁和廚房頁**，因為 Rush Hour 模擬的店員會自己按「完成」，而你自己下的單不在 Rush Hour 的紀錄裡，不會算進成績單。
@@ -32,12 +32,12 @@ readinessProbe:
     path: /healthz
     port: 8080
   periodSeconds: 2      # 每 2 秒問一次
-  timeoutSeconds: 1
+  timeoutSeconds: 1     # 1 秒沒回應就算失敗
   failureThreshold: 1   # 失敗一次就不 Ready
   successThreshold: 1   # 成功一次就 Ready
 ```
 
-`/healthz` 要三件事都成立才會回應成功：HTTP 伺服器已經啟動、資料庫有回應、接收叫號通知的 `LISTEN` 已經生效。這一步沒有打開 App 的環境變數開關。
+`/healthz` 要三件事都成立才會回應成功：HTTP 伺服器已經啟動、資料庫有回應、已經向資料庫訂閱叫號通知（PostgreSQL 的 `LISTEN`，和圖上的 listen 不同）。這一步沒有打開 App 的環境變數開關。
 
 看完整的差異（只會多出上面這段）：
 
@@ -72,6 +72,8 @@ diff <(kubectl kustomize k8s/base) <(kubectl kustomize k8s/steps/step-1)
 
 **終端機 B**：新 Pod 先是 `0/1 Running`，過一會兒才變成 `1/1 Running`。新 Pod 變成 `1/1` 之後，才有一個舊 Pod 進入 `Terminating`，約 1 秒內變成 `Completed`。
 
+表中用 Pod 名稱的最後 5 碼代表，你的名稱會不同。
+
 | 時間 | 新 Pod | 舊 Pod |
 |---|---|---|
 | 第 10 秒 | `9cm2q` 建立，`0/1 Running` | |
@@ -80,7 +82,7 @@ diff <(kubectl kustomize k8s/base) <(kubectl kustomize k8s/steps/step-1)
 | 第 25 秒 | `g4mjd` `1/1` | `dz88s` `Terminating` → `Completed` |
 | 第 25～26 秒 | `bvhvp` 建立，約 1 秒後 `1/1` | `9rzgr` `Terminating` → `Completed` |
 
-`9cm2q` 和 `g4mjd` 從 `0/1` 到 `1/1` 花了 7～8 秒。App 的紀錄顯示，它們啟動後約 5 秒才連上資料庫，也就是步驟 0 那種「晚 5 秒才準備好」的 Pod。有了 `readinessProbe`，它們在這段時間一直是 `0/1`，入口不會把訂單送過去。
+`9cm2q` 和 `g4mjd` 從 `0/1` 到 `1/1` 花了 7～8 秒。App 的紀錄顯示，它們啟動後約 5 秒才連上資料庫，也就是步驟 0 那種「晚 5 秒才準備好」的 Pod；其餘 2～3 秒是在等下一次檢查（每 2 秒一次）和 Ready 狀態更新。有了 `readinessProbe`，它們在這段時間一直是 `0/1`，入口不會把訂單送過去。
 
 **瀏覽器的看板**：看畫面底部的資訊列。這次看板**斷線兩次**：
 
@@ -91,7 +93,7 @@ diff <(kubectl kustomize k8s/base) <(kubectl kustomize k8s/steps/step-1)
 | 第 26 秒 | 再一次 `SSE 連線中斷…`（`dz88s` 也被關掉） |
 | 第 29 秒 | `SSE 已連線`，`服務版本：v2.2.2`，`Pod：koupa-64d7455689-9cm2q` |
 
-每次斷線約 3 秒。重新連上後，右邊的大號碼會直接跳號（這次從 4598 跳到 4656 附近），斷線期間叫到的號碼不會出現。
+每次斷線約 3～5 秒（瀏覽器自己的預設：Chromium 3 秒、Firefox 5 秒；這次的觀察用 Chromium）。重新連上後，右邊的大號碼會直接跳號（這次從 4598 跳到 4656 附近），斷線期間叫到的號碼不會出現。
 
 ![步驟 1 的看板：第一次重連後，資訊列顯示「服務版本：v1.2.2　SSE 已連線　Pod：koupa-f467c8c4d-dz88s」，連上的仍是舊 Pod](img/step-1-reconnect-old-pod.png)
 
@@ -125,7 +127,7 @@ diff <(kubectl kustomize k8s/base) <(kubectl kustomize k8s/steps/step-1)
 
 ![步驟 1 的機制](img/step-1.svg)
 
-- **沒有 `readinessProbe` 時**：container 一啟動，Pod 就算 Ready，入口馬上把訂單送過去。在 tkha 上約 3 成的新 Pod 啟動後 5 秒才準備好（第一個 DNS 查詢被丟掉，要等 5 秒後重新查詢），這段時間送過去的訂單全部失敗。
+- **沒有 `readinessProbe` 時**：container 一啟動，Pod 就算 Ready，入口馬上把訂單送過去。在 tkha 上約 3 成的新 Pod 啟動後 5 秒才準備好（App 用名稱查資料庫位址的第一個 DNS 查詢被丟掉，要等 5 秒後重新查詢），這段時間送過去的訂單全部失敗。
 - **加上之後**：`/healthz` 通過才 Ready，入口才會把它列為可以接收訂單的 Pod。Kubernetes 的 rolling update（逐步把舊 Pod 換成新 Pod）也會等新 Pod Ready 才關下一個舊 Pod，所以升級變慢。
 - **剩下的送出失敗**：主要在**舊 Pod** 上。程式收到 SIGTERM（Kubernetes 通知程式關機的訊號）就立刻結束，但入口還沒收到更新，又把訂單送給它。這個問題留給步驟 2 處理。
 - **漏號沒有改善**：看板連在舊 Pod 上，程式一結束就斷線。看板透過入口重新連線時，可能連到另一個還沒換掉的舊 Pod，所以會斷兩次。每次重連都從「現在」開始收，斷線期間的叫號就漏掉了。這個問題留給步驟 3、4 處理。

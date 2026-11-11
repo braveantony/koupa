@@ -9,7 +9,7 @@
 ## 開始之前
 
 - 已經照 [README 2. 部署](../../README.md#2-部署)部署好。
-- **不要同時跑 `measure.sh`，也不要下單或在廚房頁按「完成」**，因為一有叫號，連線就不算閒置，也就不會被切斷。
+- **不要同時跑 `measure.sh`，也不要在廚房頁按「完成」**（下了單就會想按，所以也先不要下單），因為一有叫號，連線就不算閒置，也就不會被切斷。
 
 開好視窗（`<IP>` 的查法見 [README 2. 部署](../../README.md#2-部署)）：
 
@@ -17,9 +17,9 @@
 |---|---|---|
 | 終端機 A | 下面「怎麼做」的 `curl` | 必要 |
 | 終端機 B | 做完後查入口的紀錄 | 建議 |
-| 瀏覽器（例如 desktop container 裡的 Firefox） | 只開 `http://<IP>/board?debug=1` | 選用，只看不操作 |
+| 瀏覽器（要連得到 Gateway IP，例如主機上的瀏覽器或課程的 desktop container） | 只開 `http://<IP>/board?debug=1` | 選用，只看不操作 |
 
-瀏覽器的看板也是一條閒置的長連線，會和 `curl` 一起被切斷。
+瀏覽器的看板也是一條閒置的長連線，同樣會在它自己連上後第 300 秒被切斷。
 
 ## 改了什麼
 
@@ -56,7 +56,7 @@ kubectl apply -k k8s/idle-lab && kubectl -n koupa rollout status deploy/koupa
 curl -N --max-time 420 http://$GW/events; echo "curl 結束碼 $?"
 ```
 
-在終端機 B 查入口的紀錄（`response_flags` 是入口記下的結束原因）：
+在終端機 B 查入口的紀錄（`response_flags` 是入口記下的結束原因）。一行是一條已經結束的連線；用 `duration_ms`（約 300000 和 420000）找到你的那幾行：
 
 ```bash
 kubectl -n kube-system logs -l k8s-app=cilium-envoy --since=20m --tail=-1 --prefix | grep '"path":"/events"'
@@ -76,13 +76,13 @@ id: 156912
 data: {"version":…}
 ```
 
-第 301 秒 curl 結束，印出 `curl 結束碼 18`。
+第 301 秒 curl 結束，印出 `curl 結束碼 18`（前面還會有一行 `curl: (18) …`，是預期的）。
 
-**終端機 A，有心跳**：`hello` 之後每 15 秒多一行 `: hb`，一直到第 420 秒 curl 自己設定的 `--max-time` 時間到，印出 `curl 結束碼 28`。
+**終端機 A，有心跳**：`hello` 之後每 15 秒多一行 `: hb`，一直到第 420 秒 curl 自己設定的 `--max-time` 時間到，印出 `curl 結束碼 28`（前面同樣會有一行 `curl: (28) …`）。
 
 **瀏覽器的看板**：
 
-- 沒有心跳：第 301 秒資訊列變成 `SSE 連線中斷，瀏覽器正在重新連線…`，第 304 秒又是 `SSE 已連線`。瀏覽器會自動重連，所以畫面上只是閃一下；
+- 沒有心跳：第 301 秒資訊列變成 `SSE 連線中斷，瀏覽器正在重新連線…`，第 304 秒又是 `SSE 已連線`。中間約 3～5 秒是瀏覽器自己預設的重連等待時間（Chromium 3 秒、Firefox 5 秒；這次的觀察用 Chromium）。瀏覽器會自動重連，所以畫面上只是閃一下；
 - 有心跳：從頭到尾都是 `SSE 已連線`。
 
 **終端機 B**：沒有心跳的那兩條連線（`curl` 和瀏覽器）記成 `"response_flags":"SI"`、`"response_code_details":"stream_idle_timeout"`，`"duration_ms"` 分別是 300004 和 300007；有心跳的 `curl` 記成 `"response_flags":"DC"`（用戶端自己斷線）、`"duration_ms":420010`。

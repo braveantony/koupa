@@ -21,7 +21,7 @@
 |---|---|---|
 | 終端機 A | `./measure.sh step-0 --runs 2` | 必要 |
 | 終端機 B | `kubectl -n koupa get pods -w` | 建議 |
-| 瀏覽器（例如 desktop container 裡的 Firefox） | 只開 `http://<IP>/board?debug=1` | 選用，只看不操作 |
+| 瀏覽器（要連得到 Gateway IP，例如主機上的瀏覽器或課程的 desktop container） | 只開 `http://<IP>/board?debug=1` | 選用，只看不操作 |
 
 - 看板要在終端機 A 印出 `sending started` 之前打開。看板只會顯示連線期間叫到的號碼。量測前 `measure.sh` 套用設定時 Pod 也會換一輪，看板先斷線再自動連上是正常的。
 - 客人、廚房和 3 台看板都由 Rush Hour 模擬，瀏覽器只是讓你觀察。**量測期間只看看板，不要操作點餐頁和廚房頁**，因為 Rush Hour 模擬的店員會自己按「完成」，而你自己下的單不在 Rush Hour 的紀錄裡，不會算進成績單。
@@ -34,7 +34,7 @@
 - 沒有 `preStop`：Pod 一被刪除，程式就收到 SIGTERM（Kubernetes 通知程式關機的訊號）；
 - 沒有設定 `terminationGracePeriodSeconds`（關機寬限時間，超過就強制結束），用 Kubernetes 的預設 30 秒；
 - 沒有 `strategy`，用預設的 rolling update：3 個 Pod 時，先多開 1 個新 Pod，等它 Ready 才關掉 1 個舊 Pod；
-- 環境變數只有資料庫連線和 Pod 名稱，App 的環境變數開關（`GRACEFUL_SHUTDOWN`、`RESUME_FROM_LAST_ID`、`IDEMPOTENCY_KEY`）都沒打開。
+- 環境變數只有資料庫連線，以及 Pod 的名稱和 UID，App 的環境變數開關（`GRACEFUL_SHUTDOWN`、`RESUME_FROM_LAST_ID`、`IDEMPOTENCY_KEY`）都沒打開。
 
 看完整的 YAML：
 
@@ -65,9 +65,11 @@ kubectl kustomize k8s/base
 [measure 18:36:10] set image ghcr.io/braveantony/koupa:v2.2.2 complete at second 18.6
 ```
 
-最後還有一行 `step 0 observed: …`，列出這次量到的問題。
+最後還有一行 `step 0 observed: …`，列出這次量到的問題。結尾有 `Z` 的時間是 UTC，比台灣時間慢 8 小時；證據包的 `timeline.txt` 也用 UTC。
 
-**終端機 B**：新 Pod 從 `ContainerCreating` 直接變成 `1/1 Running`，沒有 `0/1 Running` 的階段，因為沒有 `readinessProbe`，container 一啟動就算 Ready。接著一個舊 Pod 進入 `Terminating`，1 秒內就變成 `Completed`。
+**終端機 B**：新 Pod 從 `ContainerCreating` 直接變成 `1/1 Running`（READY 欄：Pod 裡 1 個 container 中有 1 個 Ready；`0/1` 表示還不能接收流量），沒有 `0/1 Running` 的階段，因為沒有 `readinessProbe`，container 一啟動就算 Ready。接著一個舊 Pod 進入 `Terminating`，1 秒內就變成 `Completed`。
+
+表中用 Pod 名稱的最後 5 碼代表，你的名稱會不同。
 
 | 時間 | 新 Pod | 舊 Pod |
 |---|---|---|
@@ -84,7 +86,7 @@ kubectl kustomize k8s/base
 | 第 19 秒 | `SSE 連線中斷，瀏覽器正在重新連線…`（`pflqf` 被關掉） |
 | 第 22 秒 | `SSE 已連線`，`服務版本：v2.2.2`，`Pod：koupa-76c5b69579-lcvcb` |
 
-斷線約 3 秒。重新連上後，右邊的大號碼會直接跳號（這次從 3393 跳到 3479 附近），斷線期間叫到的號碼不會出現。
+斷線約 3～5 秒（瀏覽器自己的預設：Chromium 3 秒、Firefox 5 秒；這次的觀察用 Chromium）。重新連上後，右邊的大號碼會直接跳號（這次從 3393 跳到 3479 附近），斷線期間叫到的號碼不會出現。
 
 ## 你應該看到
 
@@ -111,9 +113,9 @@ kubectl kustomize k8s/base
 
 Pod 被關掉時，「通知入口別再送過來」和「通知程式關機」是同時進行的，彼此不會等對方完成：
 
-- **送出失敗**：程式收到 SIGTERM 就立刻結束，處理到一半的訂單跟著中斷；入口還沒收到更新，又把新訂單送給它。新 Pod 那一端也一樣：它一啟動就算 Ready，入口馬上把訂單送過去，但有些新 Pod 還沒準備好。
+- **送出失敗**：程式收到 SIGTERM 就立刻結束，處理到一半的訂單跟著中斷；入口還沒收到更新，又把新訂單送給它。新 Pod 那一端也一樣：它一啟動就算 Ready，入口馬上把訂單送過去，但有些新 Pod 還沒準備好（程式還沒開始接受連線，圖上寫「尚未 listen」）。
 - **漏號**：看板連在舊 Pod 上，程式一結束就斷線。看板重新連線後從「現在」開始收，斷線期間的叫號就漏掉了。
-- **重複訂單的「未知」**：訂單送到了，但客人沒收到回應時，無法判斷資料庫裡有沒有建立這張訂單，只能記成未知。
+- **重複訂單的「未知」**：客人沒收到成功回應時，量測工具沒有足夠的紀錄證明這張訂單「沒有」進資料庫，就記成未知，不會算成 0。
 
 完整說明見[設計文件 4.4 步驟 0：基準](../design-v2/04-step-mechanisms.md#44-步驟-0基準)。
 

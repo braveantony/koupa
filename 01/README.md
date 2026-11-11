@@ -37,7 +37,7 @@ Pod 是 Kubernetes 執行程式的單位；這裡每個 koupa Pod 都跑一份 A
 
 ## 一頁看懂
 
-你會套用不同的 Kubernetes YAML；程式端的修正已經寫好，各步驟會用環境變數打開。每一步都用 Rush Hour 量幾次「升級 v1 → v2」，看成績單上三個數字怎麼變：
+你會套用不同的 Kubernetes YAML；程式端的修正已經寫好，需要程式配合的步驟（3～5）會用環境變數打開。每一步都用 Rush Hour 量幾次「升級 v1 → v2」，看成績單上三個數字怎麼變：
 
 - **第一次送出沒有成功回應**（下面簡稱「送出失敗」）：客人第一次按送出卻沒拿到號碼牌的訂單張數；
 - **漏號**：每台叫號看板少收到幾個叫號（成績單上寫成「大螢幕漏號」）；
@@ -55,13 +55,13 @@ Pod 是 Kubernetes 執行程式的單位；這裡每個 koupa Pod 都跑一份 A
 
 成績單上的 0 只代表「這幾次沒觀察到」，不代表「不會發生」。數字只代表這個環境，詳見[預期結果](docs/steps/measure.md#預期結果)。
 
-照順序做：[小實驗](docs/steps/00-idle-lab.md) → [量測說明（含 control）](docs/steps/measure.md) → [步驟 0](docs/steps/step-0.md)～[5](docs/steps/step-5.md) → [最後驗證](docs/steps/final-checks.md)。每一步的文件都寫了要準備什麼、開哪些視窗、過程中看什麼、怎麼讀成績單。
+照順序做：[小實驗](docs/steps/00-idle-lab.md) → [量測說明（含 control，也就是不升級的對照組）](docs/steps/measure.md) → [步驟 0](docs/steps/step-0.md)～[5](docs/steps/step-5.md) → [最後驗證](docs/steps/final-checks.md)。每一步的文件都寫了要準備什麼、開哪些視窗、過程中看什麼、怎麼讀成績單。
 
 ---
 
 ## 1. 準備
 
-**在哪裡執行指令**：主機，也就是執行 podman 節點、而且連得到 Gateway IP 的那台電腦。先把課程的 repo clone 到主機，再進入 `01/` 目錄：
+**在哪裡執行指令**：主機，也就是叢集所在的那台電腦（叢集的節點是這台電腦上用 podman 跑的 container），而且連得到 Gateway IP。先把課程的 repo clone 到主機，再進入 `01/` 目錄：
 
 ```bash
 git clone https://github.com/braveantony/koupa.git
@@ -72,7 +72,7 @@ cd koupa/01
 
 **叢集**（課前由講師準備好）：
 
-- 3 個 worker（執行 App 的叢集節點），koupa 的 3 個 Pod 會分散到每個 worker 各一個（`drain` 模式要求每個 worker 剛好一個 Pod）；
+- 3 個 worker（執行 App 的叢集節點），koupa 的 3 個 Pod 會分散到每個 worker 各一個（最後驗證的 `drain` 量測會清空一個 worker，它要求每個 worker 剛好一個 Pod）；
 - Cilium，並啟用 Gateway API、LoadBalancer IP 池和 L2 廣播（讓主機連得到 Gateway 分配到的 IP）；
 - StorageClass `local-path`（把資料存在節點本機磁碟上；資料庫的設定 `k8s/db/cluster.yaml` 指定用它）；
 - `kubectl` 目前使用的 context（決定 kubectl 操作哪個叢集的設定）指向這個叢集。
@@ -81,12 +81,12 @@ cd koupa/01
 
 ```bash
 kubectl config current-context    # 名稱要是講師給你的叢集
-kubectl get nodes                  # 3 個 worker 都是 Ready
-kubectl get storageclass local-path
-kubectl get crd gateways.gateway.networking.k8s.io
+kubectl get nodes                  # ROLES 欄是 <none> 的 3 個是 worker，STATUS 都要是 Ready
+kubectl get storageclass local-path   # 有印出一行，沒有 NotFound
+kubectl get crd gateways.gateway.networking.k8s.io   # 有印出一行，表示已安裝 Gateway API
 ```
 
-**主機上的工具**：`kubectl`（內建 Kustomize）、`podman`、`skopeo`、`python3`（含 PyYAML）、`git`、`curl`。主機要連得到 `ghcr.io`、`docker.io` 和 `github.com`。不需要安裝 Go，因為要編譯的部分都在 podman container 裡跑。
+**主機上的工具**：`kubectl`（內建 Kustomize）、`podman`、`skopeo`、`python3`（含 PyYAML）、`git`、`curl`。主機要連得到 `ghcr.io`、`docker.io`、`github.com` 和 `proxy.golang.org`（`measure.sh` 第一次執行時，會在 podman container 裡下載 Go 工具和模組）。不需要安裝 Go，因為要編譯的部分都在 podman container 裡跑。
 
 **拉取 Rush Hour 的映像檔**（第一次量測前做一次；`measure.sh` 用主機上的這一份，不會自己拉取）：
 
@@ -108,7 +108,7 @@ App 由哪些部分組成、部署後叢集裡有什麼、怎麼清除，見[Kou
 
 `setup.sh` 分三段執行，任何一段失敗就停下來並印出原因：
 
-1. 選第一個 worker 當 infra worker（貼上標籤 `koupa.dev/infra=true`），安裝 CNPG operator（在 Kubernetes 上管理 PostgreSQL 的程式，版本固定為 v1.30.1），建立資料庫 `koupa-db`，兩者都只在 infra worker 上執行；
+1. 選第一個 worker 當 infra worker（專門放資料庫的 worker；貼上標籤 `koupa.dev/infra=true`），安裝 CNPG operator（在 Kubernetes 上管理 PostgreSQL 的程式，版本固定為 v1.30.1），建立資料庫 `koupa-db`，兩者都只在 infra worker 上執行；
 2. 用 Kubernetes Job 執行 migration（照編號建立資料表、放入菜單）；
 3. 部署 App、Service、Gateway 和 HTTPRoute（步驟 0 的設定），最後印出 Gateway 的 IP。
 
@@ -138,6 +138,6 @@ kubectl -n koupa get gateway koupa -o jsonpath='{.status.addresses[0].value}'; e
   - [量測方法](docs/design-v2/05-measurement.md)
   - [環境需求、待實測項目的結果](docs/design-v2/06-reference.md)
 - [實測紀錄 2026-11-10](docs/measurements/2026-11-10.md)：每一次的數字、證據包路徑
-- [環境盤點](docs/env-findings.md)：入口的逾時和重試、新 Pod 晚 5 秒 listen 的調查
+- [環境盤點](docs/env-findings.md)：入口的逾時和重試、新 Pod 晚 5 秒才開始接受連線（listen）的調查
 - [實作計畫](docs/plan.md)：正確性條件、必測案例
 - [講師手冊](TEACHER.md)
