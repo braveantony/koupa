@@ -1,11 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1240" height="970" viewBox="0 0 1240 970" role="img" aria-labelledby="title desc" font-family="Noto Sans TC, PingFang TC, Microsoft JhengHei, WenQuanYi Zen Hei, sans-serif">
 <title id="title">步驟 3：先通知看板，再收尾</title>
-<desc id="desc">解決：斷線時間縮短　還剩：漏號每台約 20 個、重送可能重複。時間由左往右，非等比例。</desc>
+<desc id="desc">解決：斷線時間縮短　還剩：漏號每台約 22 個、重送可能重複。時間由左往右，非等比例。</desc>
 <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#52657b"/></marker>
 <pattern id="hatch" width="9" height="9" patternUnits="userSpaceOnUse"><rect width="9" height="9" fill="#fff0f0"/><path d="M-2,2 L2,-2 M0,9 L9,0 M7,11 L11,7" stroke="#e6a9ae" stroke-width="1"/></pattern></defs>
 <rect width="1240" height="970" fill="white"/>
 <text x="32" y="49" font-size="28" fill="#26364a" text-anchor="start" font-weight="700">步驟 3：先通知看板，再收尾</text>
-<text x="32" y="86" font-size="21" fill="#26364a" text-anchor="start">解決：斷線時間縮短　還剩：漏號每台約 20 個、重送可能重複</text>
+<text x="32" y="86" font-size="21" fill="#26364a" text-anchor="start">解決：斷線時間縮短　還剩：漏號每台約 22 個、重送可能重複</text>
 <rect x="32" y="108" width="1176" height="48" rx="8" fill="#eaf3ff"/>
 <text x="50" y="140" font-size="22" fill="#26364a" text-anchor="start" font-weight="700">GRACEFUL_SHUTDOWN=1；SHUTDOWN_TIMEOUT=15s</text>
 <text x="32" y="190" font-size="19" fill="#26364a" text-anchor="start" font-weight="700">時間 →</text>
@@ -56,8 +56,8 @@
 <text x="910" y="632" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">從「現在」開始收</text>
 <path d="M910,647 H1183" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
 <text x="910" y="678" font-size="18" fill="#26364a" text-anchor="start">缺的叫號不會補回</text>
-<text x="42" y="754" font-size="20" fill="#24764c" text-anchor="start" font-weight="700">✓ 突然被切斷改成先通知；約 3 秒的斷線縮短為約 1 秒</text>
+<text x="42" y="754" font-size="20" fill="#24764c" text-anchor="start" font-weight="700">✓ 3～5 秒的斷線縮短為約 1 秒（App 用 retry: 指定 1 秒）</text>
 <text x="42" y="798" font-size="20" fill="#26364a" text-anchor="start">preStop 8 ＋ SHUTDOWN_TIMEOUT 15 ＋ 緩衝 5 ＜ 關機寬限 40 秒</text>
 <text x="42" y="834" font-size="20" fill="#26364a" text-anchor="start">看板實測：收到 shutdown／斷線後約 1 秒重連。</text>
-<text x="42" y="872" font-size="20" fill="#26364a" text-anchor="start">漏號約 20 個是每次升級、每台看板的量測值，不是保證。</text>
+<text x="42" y="872" font-size="20" fill="#26364a" text-anchor="start">漏號約 22 個是每次升級、每台看板的量測值，不是保證。</text>
 </svg>

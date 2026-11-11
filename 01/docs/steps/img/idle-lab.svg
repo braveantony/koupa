@@ -40,6 +40,7 @@
 <text x="795" y="400" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">420 秒仍連著</text>
 <path d="M795,415 H1183" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
 <text x="795" y="446" font-size="18" fill="#26364a" text-anchor="start">curl 的 --max-time 到期，結束碼 28</text>
-<text x="42" y="508" font-size="20" fill="#26364a" text-anchor="start">瀏覽器：「SSE 連線中斷…」→ 約 3 秒後重連（實測 301 → 304 秒）</text>
-<text x="42" y="550" font-size="20" fill="#24764c" text-anchor="start" font-weight="700">✓ 有心跳後：300 秒閒置斷線消失</text>
+<text x="42" y="508" font-size="20" fill="#26364a" text-anchor="start">瀏覽器：「SSE 連線中斷…」</text>
+<text x="42" y="542" font-size="20" fill="#26364a" text-anchor="start">瀏覽器約 3～5 秒後自動重連（Chromium 3 秒、Firefox 5 秒）</text>
+<text x="42" y="578" font-size="20" fill="#24764c" text-anchor="start" font-weight="700">✓ 有心跳後：300 秒閒置斷線消失</text>
 </svg>

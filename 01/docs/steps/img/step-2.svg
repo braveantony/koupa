@@ -12,7 +12,7 @@
 <path d="M210,202 H1190" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
 <text x="290" y="185" font-size="18" fill="#26364a" text-anchor="middle">終止開始：0 秒</text>
 <text x="620" y="185" font-size="18" fill="#26364a" text-anchor="middle">8 秒：SIGTERM</text>
-<text x="1030" y="185" font-size="18" fill="#26364a" text-anchor="middle">約 11 秒：重連</text>
+<text x="1030" y="185" font-size="18" fill="#26364a" text-anchor="middle">約 11～13 秒：重連</text>
 <text x="32" y="220" font-size="16" fill="#26364a" text-anchor="start">非等比例</text>
 <rect x="24" y="250" width="1192" height="104" rx="8" fill="#f5f7fa"/>
 <text x="42" y="308" font-size="22" fill="#26364a" text-anchor="start" font-weight="700">入口（Gateway）</text>
@@ -50,13 +50,14 @@
 <path d="M230,647 H558" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
 <text x="230" y="678" font-size="18" fill="#26364a" text-anchor="start">仍在原本的舊 Pod</text>
 <rect x="590" y="606" width="290" height="34" rx="8" fill="url(#hatch)"/>
-<text x="600" y="632" font-size="21" fill="#ad3945" text-anchor="start" font-weight="700">約 3 秒：漏號</text>
+<text x="600" y="632" font-size="21" fill="#ad3945" text-anchor="start" font-weight="700">約 3～5 秒：漏號</text>
 <path d="M600,647 H868" fill="none" stroke="#ad3945" stroke-width="4" marker-end="url(#arrow)"/>
-<text x="600" y="678" font-size="18" fill="#26364a" text-anchor="start">自動重連</text>
+<text x="600" y="678" font-size="18" fill="#26364a" text-anchor="start">瀏覽器預設的重連等待</text>
 <text x="910" y="632" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">從「現在」開始收</text>
 <path d="M910,647 H1183" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
 <text x="910" y="678" font-size="18" fill="#26364a" text-anchor="start">缺的叫號不會補回</text>
 <text x="42" y="754" font-size="20" fill="#24764c" text-anchor="start" font-weight="700">✓ 實測送出失敗降到 0；漏號仍約 80 個／台</text>
-<text x="42" y="798" font-size="20" fill="#26364a" text-anchor="start">實測：入口約 1.5 秒內就不再送單給舊 Pod，等 8 秒有足夠餘裕。</text>
-<text x="42" y="834" font-size="20" fill="#26364a" text-anchor="start">看板實測：斷線後約 3 秒重新連上。</text>
+<text x="42" y="798" font-size="20" fill="#26364a" text-anchor="start">實測：入口最晚約 1.5 秒後就不再送單給舊 Pod；</text>
+<text x="42" y="834" font-size="20" fill="#26364a" text-anchor="start">保守推估上限 2.127 秒，進位成 3 秒再加 5 秒緩衝 = 8 秒。</text>
+<text x="42" y="872" font-size="20" fill="#26364a" text-anchor="start">看板：斷線後約 3～5 秒重新連上（依瀏覽器）。</text>
 </svg>

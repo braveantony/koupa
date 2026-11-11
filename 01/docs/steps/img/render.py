@@ -98,8 +98,9 @@ def idle():
     d.span(0, 785, 1195, '入口切斷：閒置逾時', 'response_flags=SI；curl 結束碼 18', 'problem')
     d.span(1, 220, 770, 'hello → : hb → : hb → …', '每 15 秒一行；沒有叫號也有資料', 'change')
     d.span(1, 785, 1195, '420 秒仍連著', 'curl 的 --max-time 到期，結束碼 28')
-    d.note(508, '瀏覽器：「SSE 連線中斷…」→ 約 3 秒後重連（實測 301 → 304 秒）')
-    d.note(550, '有心跳後：300 秒閒置斷線消失', True)
+    d.note(508, '瀏覽器：「SSE 連線中斷…」')
+    d.note(542, '瀏覽器約 3～5 秒後自動重連（Chromium 3 秒、Firefox 5 秒）')
+    d.note(578, '有心跳後：300 秒閒置斷線消失', True)
     d.save('idle-lab.svg')
 
 
@@ -113,9 +114,9 @@ def baseline():
     d.span(0, 590, 950, '仍可能送給舊 Pod', '送出失敗：入口更新還沒到', 'problem')
     d.span(1, 590, 1195, 'SIGTERM → 立刻結束', '通知入口和通知程式關機同時進行，彼此不等待')
     d.span(2, 220, 570, '一啟動就 Ready', '部分 Pod 約 5 秒後才 listen', 'problem')
-    d.span(2, 590, 1195, '開始 listen → 能接單')
+    d.span(2, 590, 1195, '開始接受連線（listen）→ 能接單')
     d.span(3, 220, 570, '原本連著舊 Pod')
-    d.span(3, 590, 950, '斷線期間：漏號', '實測約 3 秒後重連', 'problem')
+    d.span(3, 590, 950, '約 3～5 秒：漏號', '瀏覽器預設的重連等待', 'problem')
     d.span(3, 970, 1195, '連到另一 Pod', '從「現在」收')
     d.note(760, '入口改送別的 Pod 只影響之後的訂單；已經連著的看板要等程式結束才斷。')
     d.save('step-0.svg')
@@ -129,15 +130,15 @@ def readiness():
                 'readinessProbe：每 2 秒檢查 /healthz',
                 [(330, '新 Pod 啟動'), (650, '/healthz 通過'), (1050, '舊 Pod 關閉後')], LANES, 970)
     d.span(0, 220, 560, '等待 Ready', '不送給尚未準備好的新 Pod', 'change')
-    d.span(0, 580, 900, '開始送給新 Pod')
-    d.span(0, 920, 1195, '送出失敗仍在', '舊 Pod 端尚未修正', 'problem')
-    d.span(1, 680, 1195, 'SIGTERM → 結束', '通知入口和關機仍同時進行')
+    d.span(0, 580, 760, '送給新 Pod')
+    d.span(0, 780, 1195, '送出失敗仍在', '舊 Pod 端尚未修正', 'problem')
+    d.span(1, 780, 1195, 'SIGTERM → 結束', '通知入口和關機仍同時進行')
     d.span(2, 220, 560, '啟動 → 等待就緒', '/healthz 還沒通過', 'change')
     d.span(2, 580, 1195, 'Ready → 接單', 'HTTP、資料庫、叫號通知都準備好了', 'change')
-    d.span(3, 220, 450, '連著舊 Pod')
-    d.span(3, 470, 740, '斷線：漏號', '重連仍從「現在」收', 'problem')
-    d.span(3, 760, 1195, '可能又連到另一個舊 Pod', '它幾秒後被換掉，看板再斷一次')
-    d.note(754, '新 Pod 還沒 listen 就接單的失敗消失', True)
+    d.span(3, 220, 760, '連著舊 Pod')
+    d.span(3, 780, 1000, '斷線：漏號', '重連仍從「現在」收', 'problem')
+    d.span(3, 1020, 1195, '再連到舊 Pod', '幾秒後再斷一次')
+    d.note(754, '新 Pod 還沒開始接受連線（listen）就接單的失敗消失', True)
     d.note(800, '看板實測（從開始送單算起）：第 18 秒斷 → 第 21 秒連到另一個舊 Pod；')
     d.note(834, '　　　　　　　　　　　　　第 26 秒再斷 → 第 29 秒連到新 Pod')
     d.note(872, '送出失敗減少，但不是 0；readinessProbe 沒有縮短看板斷線。')
@@ -150,14 +151,14 @@ def draining(step):
     # observations.md:252,272-273,359-360,448-449.
     titles = {2: '被關掉前先等 8 秒', 3: '先通知看板，再收尾', 4: '重連後，把漏掉的叫號補回來'}
     subs = {2: '解決：實測送出失敗 0　還剩：漏號每台約 80 個、重送可能重複',
-            3: '解決：斷線時間縮短　還剩：漏號每台約 20 個、重送可能重複',
+            3: '解決：斷線時間縮短　還剩：漏號每台約 22 個、重送可能重複',
             4: '解決：實測漏號 0　還剩：結果未知時，重送可能重複下單'}
     changes = {2: 'preStop：sleep 8 秒，延後 SIGTERM',
                3: 'GRACEFUL_SHUTDOWN=1；SHUTDOWN_TIMEOUT=15s',
                4: 'RESUME_FROM_LAST_ID=1：用 Last-Event-ID 接著收'}
     d = Diagram(f'步驟 {step}：{titles[step]}', subs[step], changes[step],
                 [(290, '終止開始：0 秒'), (620, '8 秒：SIGTERM'),
-                 (1030, '約 11 秒：重連' if step == 2 else '約 9 秒：重連')], LANES, 970)
+                 (1030, '約 11～13 秒：重連' if step == 2 else '約 9 秒：重連')], LANES, 970)
     d.span(0, 220, 570, '入口得知舊 Pod 要下線', 'SIGTERM 之前就不再送單給它')
     d.span(0, 590, 1195, '新訂單送給其他 Ready Pod', '已經連著的看板不受影響')
     d.span(1, 220, 570, 'preStop 等 8 秒', '程式仍運作、看板仍連著', 'change' if step == 2 else 'normal')
@@ -169,24 +170,25 @@ def draining(step):
     d.span(2, 900, 1195, '先補號，再即時推送' if step == 4 else '接受看板重連',
            '補送最後 id 之後的叫號' if step == 4 else '', 'change' if step == 4 else 'normal')
     d.span(3, 220, 570, '持續收到叫號', '仍在原本的舊 Pod')
-    d.span(3, 590, 880, '約 3 秒：漏號' if step == 2 else ('約 1 秒：暫停接收' if step == 4 else '約 1 秒：漏號'),
-           '自動重連' if step < 4 else '帶回 Last-Event-ID', 'problem' if step < 4 else 'change')
+    d.span(3, 590, 880, '約 3～5 秒：漏號' if step == 2 else ('約 1 秒：暫停接收' if step == 4 else '約 1 秒：漏號'),
+           '瀏覽器預設的重連等待' if step == 2 else ('自動重連' if step == 3 else '帶回 Last-Event-ID'), 'problem' if step < 4 else 'change')
     d.span(3, 900, 1195, '補回斷線期間叫號' if step == 4 else '從「現在」開始收',
            '實測漏號 0' if step == 4 else '缺的叫號不會補回', 'change' if step == 4 else 'normal')
     if step == 2:
         d.note(754, '實測送出失敗降到 0；漏號仍約 80 個／台', True)
-        d.note(798, '實測：入口約 1.5 秒內就不再送單給舊 Pod，等 8 秒有足夠餘裕。')
-        d.note(834, '看板實測：斷線後約 3 秒重新連上。')
+        d.note(798, '實測：入口最晚約 1.5 秒後就不再送單給舊 Pod；')
+        d.note(834, '保守推估上限 2.127 秒，進位成 3 秒再加 5 秒緩衝 = 8 秒。')
+        d.note(872, '看板：斷線後約 3～5 秒重新連上（依瀏覽器）。')
     elif step == 3:
-        d.note(754, '突然被切斷改成先通知；約 3 秒的斷線縮短為約 1 秒', True)
+        d.note(754, '3～5 秒的斷線縮短為約 1 秒（App 用 retry: 指定 1 秒）', True)
         d.note(798, 'preStop 8 ＋ SHUTDOWN_TIMEOUT 15 ＋ 緩衝 5 ＜ 關機寬限 40 秒')
         d.note(834, '看板實測：收到 shutdown／斷線後約 1 秒重連。')
-        d.note(872, '漏號約 20 個是每次升級、每台看板的量測值，不是保證。')
+        d.note(872, '漏號約 22 個是每次升級、每台看板的量測值，不是保證。')
     else:
         d.note(754, '斷線期間的漏號消失；斷線本身仍會發生', True)
-        d.note(798, 'Last-Event-ID = 最後收到的 ready_seq（叫號編號），不是號碼牌。')
+        d.note(798, 'Last-Event-ID = 最後收到的 ready_seq（叫號流水號），不是取餐號碼。')
         d.note(834, '實測：重連前收到 362 個 → 下一秒 404 個；先補送，再接即時叫號。')
-        d.note(872, '同一頁面自動重連才接續；重新整理是新連線，從「現在」收。')
+        d.note(872, '自動重連會帶上 Last-Event-ID；重新整理網頁不會帶，所以從「現在」收。')
     d.save(f'step-{step}.svg')
 
 

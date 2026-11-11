@@ -33,15 +33,15 @@
 <text x="230" y="284" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">等待 Ready</text>
 <path d="M230,299 H548" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
 <text x="230" y="330" font-size="18" fill="#26364a" text-anchor="start">不送給尚未準備好的新 Pod</text>
-<text x="590" y="284" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">開始送給新 Pod</text>
-<path d="M590,299 H888" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
-<rect x="920" y="258" width="275" height="34" rx="8" fill="url(#hatch)"/>
-<text x="930" y="284" font-size="21" fill="#ad3945" text-anchor="start" font-weight="700">送出失敗仍在</text>
-<path d="M930,299 H1183" fill="none" stroke="#ad3945" stroke-width="4" marker-end="url(#arrow)"/>
-<text x="930" y="330" font-size="18" fill="#26364a" text-anchor="start">舊 Pod 端尚未修正</text>
-<text x="690" y="400" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">SIGTERM → 結束</text>
-<path d="M690,415 H1183" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
-<text x="690" y="446" font-size="18" fill="#26364a" text-anchor="start">通知入口和關機仍同時進行</text>
+<text x="590" y="284" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">送給新 Pod</text>
+<path d="M590,299 H748" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<rect x="780" y="258" width="415" height="34" rx="8" fill="url(#hatch)"/>
+<text x="790" y="284" font-size="21" fill="#ad3945" text-anchor="start" font-weight="700">送出失敗仍在</text>
+<path d="M790,299 H1183" fill="none" stroke="#ad3945" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="790" y="330" font-size="18" fill="#26364a" text-anchor="start">舊 Pod 端尚未修正</text>
+<text x="790" y="400" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">SIGTERM → 結束</text>
+<path d="M790,415 H1183" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="790" y="446" font-size="18" fill="#26364a" text-anchor="start">通知入口和關機仍同時進行</text>
 <rect x="220" y="490" width="340" height="88" rx="8" fill="#eaf3ff"/>
 <text x="230" y="516" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">啟動 → 等待就緒</text>
 <path d="M230,531 H548" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
@@ -51,15 +51,15 @@
 <path d="M590,531 H1183" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
 <text x="590" y="562" font-size="18" fill="#26364a" text-anchor="start">HTTP、資料庫、叫號通知都準備好了</text>
 <text x="230" y="632" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">連著舊 Pod</text>
-<path d="M230,647 H438" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
-<rect x="470" y="606" width="270" height="34" rx="8" fill="url(#hatch)"/>
-<text x="480" y="632" font-size="21" fill="#ad3945" text-anchor="start" font-weight="700">斷線：漏號</text>
-<path d="M480,647 H728" fill="none" stroke="#ad3945" stroke-width="4" marker-end="url(#arrow)"/>
-<text x="480" y="678" font-size="18" fill="#26364a" text-anchor="start">重連仍從「現在」收</text>
-<text x="770" y="632" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">可能又連到另一個舊 Pod</text>
-<path d="M770,647 H1183" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
-<text x="770" y="678" font-size="18" fill="#26364a" text-anchor="start">它幾秒後被換掉，看板再斷一次</text>
-<text x="42" y="754" font-size="20" fill="#24764c" text-anchor="start" font-weight="700">✓ 新 Pod 還沒 listen 就接單的失敗消失</text>
+<path d="M230,647 H748" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<rect x="780" y="606" width="220" height="34" rx="8" fill="url(#hatch)"/>
+<text x="790" y="632" font-size="21" fill="#ad3945" text-anchor="start" font-weight="700">斷線：漏號</text>
+<path d="M790,647 H988" fill="none" stroke="#ad3945" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="790" y="678" font-size="18" fill="#26364a" text-anchor="start">重連仍從「現在」收</text>
+<text x="1030" y="632" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">再連到舊 Pod</text>
+<path d="M1030,647 H1183" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="1030" y="678" font-size="18" fill="#26364a" text-anchor="start">幾秒後再斷一次</text>
+<text x="42" y="754" font-size="20" fill="#24764c" text-anchor="start" font-weight="700">✓ 新 Pod 還沒開始接受連線（listen）就接單的失敗消失</text>
 <text x="42" y="800" font-size="20" fill="#26364a" text-anchor="start">看板實測（從開始送單算起）：第 18 秒斷 → 第 21 秒連到另一個舊 Pod；</text>
 <text x="42" y="834" font-size="20" fill="#26364a" text-anchor="start">　　　　　　　　　　　　　第 26 秒再斷 → 第 29 秒連到新 Pod</text>
 <text x="42" y="872" font-size="20" fill="#26364a" text-anchor="start">送出失敗減少，但不是 0；readinessProbe 沒有縮短看板斷線。</text>

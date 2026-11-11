@@ -44,14 +44,14 @@
 <text x="230" y="516" font-size="21" fill="#ad3945" text-anchor="start" font-weight="700">一啟動就 Ready</text>
 <path d="M230,531 H558" fill="none" stroke="#ad3945" stroke-width="4" marker-end="url(#arrow)"/>
 <text x="230" y="562" font-size="18" fill="#26364a" text-anchor="start">部分 Pod 約 5 秒後才 listen</text>
-<text x="600" y="516" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">開始 listen → 能接單</text>
+<text x="600" y="516" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">開始接受連線（listen）→ 能接單</text>
 <path d="M600,531 H1183" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
 <text x="230" y="632" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">原本連著舊 Pod</text>
 <path d="M230,647 H558" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
 <rect x="590" y="606" width="360" height="34" rx="8" fill="url(#hatch)"/>
-<text x="600" y="632" font-size="21" fill="#ad3945" text-anchor="start" font-weight="700">斷線期間：漏號</text>
+<text x="600" y="632" font-size="21" fill="#ad3945" text-anchor="start" font-weight="700">約 3～5 秒：漏號</text>
 <path d="M600,647 H938" fill="none" stroke="#ad3945" stroke-width="4" marker-end="url(#arrow)"/>
-<text x="600" y="678" font-size="18" fill="#26364a" text-anchor="start">實測約 3 秒後重連</text>
+<text x="600" y="678" font-size="18" fill="#26364a" text-anchor="start">瀏覽器預設的重連等待</text>
 <text x="980" y="632" font-size="21" fill="#26364a" text-anchor="start" font-weight="700">連到另一 Pod</text>
 <path d="M980,647 H1183" fill="none" stroke="#52657b" stroke-width="4" marker-end="url(#arrow)"/>
 <text x="980" y="678" font-size="18" fill="#26364a" text-anchor="start">從「現在」收</text>
