@@ -33,25 +33,25 @@ Pod 是 Kubernetes 執行程式的單位；這裡每個 koupa Pod 都跑一份 A
 6. 看板 1 重新連上 Pod 3，從「現在」開始收 → 0058、0059 永遠不會出現在看板 1
 ```
 
-**一句話**：Pod 被關掉時，「通知入口別再送過來」和「通知程式關機」是同時進行的，彼此不會等對方完成；這個階段用 5 個步驟一一補上漏洞，並用量測數字確認每一步的效果。
+**一句話**：Pod 被關掉時，「通知入口別再送過來」和「通知程式關機」是同時進行的，彼此不會等對方完成。這個階段用 5 個步驟一一補上漏洞，並用量測數字確認每一步的效果。
 
 ## 一頁看懂
 
 你會套用不同的 Kubernetes YAML；程式端的修正已經寫好，各步驟會用環境變數打開。每一步都用 Rush Hour 量幾次「升級 v1 → v2」，看成績單上三個數字怎麼變：
 
-- **第一次送出沒有成功回應**（下面簡稱「送出失敗」）：客人第一次按送出，沒拿到號碼牌的張數；
-- **大螢幕漏號**：每台看板少收到幾個叫號；
+- **第一次送出沒有成功回應**（下面簡稱「送出失敗」）：客人第一次按送出卻沒拿到號碼牌的訂單張數；
+- **漏號**：每台叫號看板少收到幾個叫號（成績單上寫成「大螢幕漏號」）；
 - **重複訂單**：同一次點餐在資料庫裡變成兩張以上。
 
 | 步驟 | 改什麼 | 你應該看到（2026-11-10 實測，每個條件 5 次） |
 |---|---|---|
 | [小實驗](docs/steps/00-idle-lab.md) | 打開看板心跳（定期送出的短訊息） | 沒有心跳時，閒置的看板在第 300 秒被入口切斷；打開心跳就不會斷 |
-| [0](docs/steps/step-0.md) | 什麼都不做 | 送出失敗中位數 51 張、每台看板漏號數十個 |
-| [1](docs/steps/step-1.md) | `readinessProbe` | 送出失敗降到中位數 7 張；漏號沒有改善 |
+| [0](docs/steps/step-0.md) | 什麼都不做 | 送出失敗中位數 51 張；每台看板漏號數十個 |
+| [1](docs/steps/step-1.md) | `readinessProbe` | 送出失敗的中位數降到 7 張；漏號沒有改善 |
 | [2](docs/steps/step-2.md) | `preStop` 等 8 秒 | 送出失敗變成 0；漏號仍然每台約 80 個 |
 | [3](docs/steps/step-3.md) | 優雅關閉（graceful shutdown：關機前先收尾） | 漏號降到每台約 22 個 |
 | [4](docs/steps/step-4.md) | 重連後補號 | 漏號變成 0 |
-| [5](docs/steps/step-5.md) | 重送不重複下單 | 成績單和步驟 4 一樣（這次預設負載下沒有確認到重複訂單）；效果由講師用關鍵時機實驗示範 |
+| [5](docs/steps/step-5.md) | 重送不重複下單 | 成績單和步驟 4 一樣（這次預設負載下沒有觀察到重複訂單）；效果由講師用關鍵時機實驗示範 |
 
 成績單上的 0 只代表「這幾次沒觀察到」，不代表「不會發生」。數字只代表這個環境，詳見[預期結果](docs/steps/measure.md#預期結果)。
 
@@ -61,7 +61,7 @@ Pod 是 Kubernetes 執行程式的單位；這裡每個 koupa Pod 都跑一份 A
 
 ## 1. 準備
 
-**指令都在哪裡執行**：在主機（跑 podman 節點、連得到 Gateway IP 的那台電腦）上。先把課程的 repo clone 到主機，再進入 `01/` 目錄：
+**在哪裡執行指令**：主機，也就是執行 podman 節點、而且連得到 Gateway IP 的那台電腦。先把課程的 repo clone 到主機，再進入 `01/` 目錄：
 
 ```bash
 git clone https://github.com/braveantony/koupa.git
@@ -72,10 +72,10 @@ cd koupa/01
 
 **叢集**（課前由講師準備好）：
 
-- 3 個 worker（執行 App 的叢集節點）。koupa 的 3 個 Pod 每個 worker 放一個；`drain` 模式要求每個 worker 剛好一個 Pod；
+- 3 個 worker（執行 App 的叢集節點），koupa 的 3 個 Pod 會分散到每個 worker 各一個（`drain` 模式要求每個 worker 剛好一個 Pod）；
 - Cilium，並啟用 Gateway API、LoadBalancer IP 池和 L2 廣播（讓主機連得到 Gateway 分配到的 IP）；
 - StorageClass `local-path`（把資料存在節點本機磁碟上；資料庫的設定 `k8s/db/cluster.yaml` 指定用它）；
-- `kubectl` 的目前 context（kubectl 要操作哪個叢集的設定）指向這個叢集。
+- `kubectl` 目前使用的 context（決定 kubectl 操作哪個叢集的設定）指向這個叢集。
 
 確認方式：
 
@@ -96,7 +96,7 @@ podman pull ghcr.io/braveantony/rush-hour:0.1.0
 
 只有修改 Rush Hour 程式的人才需要自己建置（`make images` 會連 App 映像檔一起建置）。
 
-App 的映像檔是 ghcr 上公開的 `ghcr.io/braveantony/koupa`，節點會自己拉取，不用建置。用哪個版本寫在 [`images.env`](images.env)（v1、v2 各一個版本號，例如 `v1.2.0`、`v2.2.0`），講師發布後才會公告新版本；`setup.sh` 一開始會確認這兩個版本都已經在 ghcr 上，還沒發布就停下來，叢集不會被改動。版本號的規則見[設計文件 6.2](docs/design-v2/06-reference.md#62-映像檔)。
+App 的映像檔是 ghcr 上公開的 `ghcr.io/braveantony/koupa`，節點會自己拉取，不用建置。用哪個版本寫在 [`images.env`](images.env)（v1、v2 各一個版本號，例如 `v1.2.0`、`v2.2.0`），講師發布後才會公告新版本；`setup.sh` 一開始會確認這兩個版本都已經在 ghcr 上，還沒發布就停下來，不會動到叢集。版本號的規則見[設計文件 6.2](docs/design-v2/06-reference.md#62-映像檔)。
 
 ## 2. 部署
 
@@ -108,7 +108,7 @@ App 由哪些部分組成、部署後叢集裡有什麼、怎麼清除，見[Kou
 
 `setup.sh` 分三段執行，任何一段失敗就停下來並印出原因：
 
-1. 選第一個 worker 當 infra worker（貼上標籤 `koupa.dev/infra=true`），安裝 CNPG operator（在 Kubernetes 上管理 PostgreSQL 的程式，固定 v1.30.1），建立資料庫 `koupa-db`，兩者都固定在 infra worker 上；
+1. 選第一個 worker 當 infra worker（貼上標籤 `koupa.dev/infra=true`），安裝 CNPG operator（在 Kubernetes 上管理 PostgreSQL 的程式，版本固定為 v1.30.1），建立資料庫 `koupa-db`，兩者都只在 infra worker 上執行；
 2. 用 Kubernetes Job 執行 migration（照編號建立資料表、放入菜單）；
 3. 部署 App、Service、Gateway 和 HTTPRoute（步驟 0 的設定），最後印出 Gateway 的 IP。
 
@@ -128,7 +128,7 @@ App 由哪些部分組成、部署後叢集裡有什麼、怎麼清除，見[Kou
 kubectl -n koupa get gateway koupa -o jsonpath='{.status.addresses[0].value}'; echo
 ```
 
-量測時要開哪些視窗，寫在每一步文件的「做之前」。
+量測時要開哪些視窗，寫在每一步文件的「開始之前」。
 
 ## 參考資料
 
