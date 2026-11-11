@@ -148,7 +148,7 @@ func TestHelloIDCountsForLastEventID(t *testing.T) {
 
 func TestShutdownThenDisconnectRecorded(t *testing.T) {
 	s := &script{bodies: []string{
-		"id: 5\nevent: hello\ndata: {\"version\":\"v2\"}\n\nid: 6\nevent: ready\ndata: {\"number\":\"0058\"}\n\n: hb\n\nretry: 20\n\nevent: shutdown\ndata:\n\n",
+		"id: 5\nevent: hello\ndata: {\"version\":\"v2\",\"pod_name\":\"koupa-abc\",\"pod_uid\":\"uid-1\"}\n\nid: 6\nevent: ready\ndata: {\"number\":\"0058\"}\n\n: hb\n\nretry: 20\n\nevent: shutdown\ndata:\n\n",
 		"id: 6\nevent: hello\ndata: {\"version\":\"v2\"}\n\n",
 		"HOLD",
 	}}

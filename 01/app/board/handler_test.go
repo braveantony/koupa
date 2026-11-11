@@ -98,6 +98,8 @@ func newEnv(t *testing.T, poll time.Duration) *env {
 func baseCfg(resume bool) config.Config {
 	return config.Config{
 		Version:          "v2",
+		PodName:          "pod-a",
+		PodUID:           "uid-a",
 		ResumeFromLastID: resume,
 		SSERetry:         1500 * time.Millisecond,
 		WriteDeadline:    2 * time.Second,
@@ -770,7 +772,7 @@ func TestEventWireFormat(t *testing.T) {
 			return l
 		}
 	}
-	expect("event: hello", "id: 0", `data: {"version":"v2"}`, "")
+	expect("event: hello", "id: 0", `data: {"version":"v2","pod_name":"pod-a","pod_uid":"uid-a"}`, "")
 	seq := e.mark()
 	var num int
 	var oid int64

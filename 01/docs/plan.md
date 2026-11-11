@@ -80,7 +80,7 @@
 
 | 事件 | `id` | `data` |
 |---|---|---|
-| `hello` | 起點 | `{"version":"v2"}` |
+| `hello` | 起點 | `{"version":"v2","pod_name":"koupa-…","pod_uid":"…"}`（這條連線所在的 Pod，欄位名稱同 `/api/whoami`） |
 | `ready` | `ready_seq` | `{"number":"0058","order_id":…}` |
 | `shutdown` | 不帶 | 一行空的 `data:`（沒有 `data:` 行的事件，瀏覽器不會觸發） |
 | 心跳 | 不帶 | 不是事件，是 `:` 開頭的註解行 |

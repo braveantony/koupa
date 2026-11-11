@@ -45,10 +45,12 @@ const DEBUG = new URLSearchParams(location.search).get('debug') === '1';
 function initDebug(page) {
   if (!DEBUG) return;
   $('debug').hidden = false;
+  // On the board both fields come from each SSE hello instead, so they name
+  // the Pod holding the stream now, also after a reconnect to another Pod.
+  if (page === 'board') return;
   getJSON('/api/whoami')
     .then((who) => {
-      // On the board the version comes from the SSE hello event instead.
-      if (page !== 'board') $('version').textContent = '服務版本：' + who.version;
+      $('version').textContent = '服務版本：' + who.version;
       $('pod').textContent = 'Pod：' + (who.pod_name || who.pod_uid || '?');
     })
     .catch(() => { $('pod').textContent = 'Pod：查詢失敗'; });
@@ -462,7 +464,9 @@ function initBoard() {
   });
   es.addEventListener('hello', (e) => {
     window.__events.push('hello');
-    $('version').textContent = '服務版本：' + JSON.parse(e.data).version;
+    const h = JSON.parse(e.data);
+    $('version').textContent = '服務版本：' + h.version;
+    $('pod').textContent = 'Pod：' + (h.pod_name || h.pod_uid || '?');
   });
   es.addEventListener('ready', (e) => {
     // Ignore a ready_seq already shown (a duplicate or an older event) so it
