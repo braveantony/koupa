@@ -17,6 +17,18 @@ function el(tag, className, text) {
   return e;
 }
 
+// A random (version 4) UUID. crypto.randomUUID exists only in secure
+// contexts (HTTPS or localhost); the course opens the pages over plain HTTP
+// at the Gateway IP, so build one from crypto.getRandomValues there.
+function uuid() {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40; // version 4
+  b[8] = (b[8] & 0x3f) | 0x80; // RFC 4122 variant
+  const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+  return h.slice(0, 8) + '-' + h.slice(8, 12) + '-' + h.slice(12, 16) + '-' + h.slice(16, 20) + '-' + h.slice(20);
+}
+
 // Teaching info (service version, which Pod answered, SSE state) is only
 // shown with ?debug=1 in the URL.
 const DEBUG = new URLSearchParams(location.search).get('debug') === '1';
@@ -164,7 +176,7 @@ function initOrder() {
     try {
       const r = await fetch('/orders', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Koupa-Attempt': crypto.randomUUID() },
+        headers: { 'Content-Type': 'application/json', 'X-Koupa-Attempt': uuid() },
         body: p.body,
       });
       return { status: r.status, data: await r.json().catch(() => ({})) };
@@ -188,7 +200,7 @@ function initOrder() {
         return;
       }
       // One client_ref per order; a retry reuses it and the same body.
-      const ref = crypto.randomUUID();
+      const ref = uuid();
       pending = { ref, body: JSON.stringify({ client_ref: ref, items }), items };
     }
     sending = true;
