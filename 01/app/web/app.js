@@ -110,29 +110,32 @@ function initOrder() {
       img.width = 800;
       img.height = 800;
       img.decoding = 'async';
-      if (i >= 3) img.loading = 'lazy'; // the first cards are above the fold
-      li.appendChild(img);
-      const info = el('div', 'info');
+      if (i >= 4) img.loading = 'lazy'; // the first row of cups is above the fold
+      // The cup (photo in a round film rim) and its label sticker.
+      const cup = el('div', 'cup');
+      cup.appendChild(img);
+      li.appendChild(cup);
+      const info = el('div', 'label');
       info.appendChild(el('span', 'name', m.name));
       info.appendChild(el('span', 'price', 'NT$ ' + m.price));
       li.appendChild(info);
       const stepper = el('div', 'stepper');
-      const dec = el('button', 'dec', '−');
+      const dec = el('button', 'dec'); // the − and + marks are drawn in CSS
       dec.type = 'button';
       dec.setAttribute('aria-label', '減少一杯 ' + m.name);
       dec.addEventListener('click', () => step(m.id, -1));
       const q = el('span', 'qty', '0');
       q.setAttribute('aria-live', 'polite');
-      const inc = el('button', 'inc', '+');
+      const inc = el('button', 'inc');
       inc.type = 'button';
       inc.setAttribute('aria-label', '增加一杯 ' + m.name);
       inc.addEventListener('click', () => step(m.id, 1));
       stepper.append(dec, q, inc);
-      li.appendChild(stepper);
       if (!m.available) {
         li.classList.add('sold-out');
         info.appendChild(el('span', 'sold-label', '今日售完'));
       }
+      info.appendChild(stepper);
       ul.appendChild(li);
     });
     updateTotal();
@@ -258,8 +261,10 @@ function initKitchen() {
         li.dataset.orderId = o.order_id;
         li.dataset.number = o.number;
         const meta = el('div', 'meta');
-        meta.append(el('span', '', '號碼牌'), el('span', '', 'NT$ ' + o.total));
-        li.append(meta, el('span', 'number num', o.number));
+        const no = el('div');
+        no.append(el('span', 'tag', '號碼牌'), el('span', 'number num', o.number));
+        meta.append(no, el('span', 'total', 'NT$ ' + o.total));
+        li.appendChild(meta);
         const items = el('ul', 'items');
         for (const it of o.items || []) {
           const row = el('li');
@@ -341,7 +346,7 @@ function initKitchen() {
 
 function initBoard() {
   const MAX_RECENT = 5; // the latest number plus 4 earlier ones
-  const MAX_MAKING = 30; // the screen has room for about this many
+  const MAX_MAKING = 16; // label strips that fit a 16:9 screen (8 rows of 2)
   window.__events = []; // names of the events seen, for tests and debugging
   const recent = [];
   let lastSeq = 0; // highest ready_seq (SSE event id) shown so far
@@ -355,13 +360,16 @@ function initBoard() {
   function renderMaking(orders) {
     const ul = $('making');
     ul.textContent = '';
-    for (const o of orders.slice(0, MAX_MAKING)) {
-      const li = el('li', 'num', o.number);
+    // When there are more, the last strip says how many are not shown.
+    const fit = orders.length > MAX_MAKING ? MAX_MAKING - 1 : MAX_MAKING;
+    for (const o of orders.slice(0, fit)) {
+      const li = el('li');
+      li.append(el('span', 'no num', o.number), el('span', 'st', '準備中'));
       li.dataset.number = o.number;
       li.dataset.orderId = o.order_id;
       ul.appendChild(li);
     }
-    if (orders.length > MAX_MAKING) ul.appendChild(el('li', '', '…'));
+    if (orders.length > fit) ul.appendChild(el('li', 'more', '還有 ' + (orders.length - fit) + ' 張'));
     $('no-making').hidden = orders.length > 0;
   }
   // Same 2 s interval as the kitchen page, but one poll at a time: the next
@@ -407,7 +415,12 @@ function initBoard() {
     called.set(d.order_id, polls);
     const latest = $('latest');
     latest.textContent = '';
-    latest.append(el('span', 'big num', d.number), el('span', 'caption', '請 ' + d.number + ' 號取餐 🧋'));
+    // A new sticker each call, so the press-on motion plays once per number.
+    // Its text reads 「請 0058 號取餐」.
+    const sticker = el('div', 'sticker press');
+    sticker.append(el('span', 'pre', '請'), document.createTextNode(' '), el('span', 'big num', d.number),
+      document.createTextNode(' '), el('span', 'post', '號取餐'));
+    latest.appendChild(sticker);
     recent.unshift(d.number);
     recent.length = Math.min(recent.length, MAX_RECENT);
     const ul = $('list');

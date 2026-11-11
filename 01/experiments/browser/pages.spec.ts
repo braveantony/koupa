@@ -38,7 +38,7 @@ test('order, kitchen done, board calls the number', async ({ browser, page }) =>
   await row.getByRole('button', { name: '完成' }).click();
   await expect(row).toHaveCount(0);
 
-  await expect(board.locator('#latest')).toContainText(`請 ${number} 號取餐 🧋`);
+  await expect(board.locator('#latest')).toContainText(`請 ${number} 號取餐`);
   await expect(board.locator('#latest .big')).toHaveText(number);
   await expect(board.locator(`#making li[data-number="${number}"]`)).toHaveCount(0);
 });
