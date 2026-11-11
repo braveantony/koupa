@@ -61,14 +61,17 @@ echo "podman $*" >>"$FAKE/calls.log"
 case $1 in
 login) [ -f "$FAKE/no-login" ] && { echo "Error: not logged into ghcr.io" >&2; exit 125; }; echo tester ;;
 build)
-	ver="" tag=""
+	ver="" tag="" cf=""
 	while [ $# -gt 0 ]; do
 		case $1 in
 		--build-arg) ver=${2#VERSION=}; shift ;;
 		-t) tag=${2##*:}; shift ;;
+		-f) cf=$2; shift ;;
 		esac
 		shift
 	done
+	# Like the real podman: the Containerfile must exist in the export.
+	[ -n "$cf" ] && [ -f "$cf" ] || { echo "Error: the specified Containerfile or Dockerfile does not exist, $cf" >&2; exit 125; }
 	echo "$ver" >"$FAKE/built-$tag" ;;
 run) img=${@: -2:1}; cat "$FAKE/built-${img##*:}" ;;
 push)
