@@ -35,6 +35,13 @@ done
 printf '        image: ghcr.io/braveantony/koupa-experiments:app-1\n' >"$T/none.yaml"
 set_koupa_image "$NEW" <"$T/none.yaml" >/dev/null 2>"$T/err"
 check "nothing to replace fails (rc=$?)" grep -q "no image:" "$T/err"
+# The target image already appears in an unrelated entry: still nothing
+# was replaced, so it fails.
+# (The experiments image, as critical/lib.sh swaps it in.)
+EXP=ghcr.io/braveantony/koupa-experiments:app-1
+printf '        image: %s\n        image: ghcr.io/braveantony/rush-hour:0.1.0\n' "$EXP" >"$T/already.yaml"
+set_koupa_image "$EXP" <"$T/already.yaml" >/dev/null 2>"$T/err"
+check "target image already present elsewhere, nothing replaced: fails (rc=$?)" grep -q "no image:" "$T/err"
 set_koupa_image 'x#y&z' <"$T/in.yaml" >/dev/null 2>&1
 check "an image with sed metacharacters is refused (rc=$?)" [ $? -ne 0 ]
 

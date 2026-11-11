@@ -30,7 +30,9 @@
 #
 # Immutability is enforced by this procedure, not by the registry: ghcr has
 # no atomic "create this tag only if absent". So only one publisher (the
-# teacher) may publish at a time; a lock file serializes runs on one host.
+# teacher) may publish at a time. The fixed lock file
+# /tmp/koupa-publish-images.lock serializes runs on one host; across hosts
+# the serialization is operational (one teacher publishes, from one place).
 # Each tag's absence is checked again right before its push or copy, and
 # right after it the registry digest must equal the digest just pushed
 # (podman --digestfile) or the recorded one; anything else stops loudly.
@@ -39,8 +41,8 @@
 # `podman login ghcr.io` stored (REGISTRY_AUTH_FILE or the default
 # auth.json); nothing is ever passed on a command line.
 #
-# Environment (tests): PODMAN, SKOPEO, PUBLISH_STAGE (the 01/ directory),
-# PUBLISH_LOCK (lock file).
+# Environment (tests only): PODMAN, SKOPEO, PUBLISH_STAGE (the 01/
+# directory), PUBLISH_LOCK (instead of the fixed lock file).
 # Exit: 0 done; 1 refused or failed; 64 usage.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -90,7 +92,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 # One publisher at a time on this host (the registry cannot enforce it).
-lock=${PUBLISH_LOCK:-${XDG_RUNTIME_DIR:-/tmp}/koupa-publish-images.lock}
+lock=${PUBLISH_LOCK:-/tmp/koupa-publish-images.lock}
 exec 9>"$lock"
 flock -n 9 || die "another publish-images.sh is running (lock $lock)"
 

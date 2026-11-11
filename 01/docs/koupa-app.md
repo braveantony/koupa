@@ -226,6 +226,8 @@ git pull
 
 `setup.sh` 在改動叢集之前，會先確認 `images.env` 的兩個版本都已經在 ghcr 上。如果講師還沒發布，它會停下來並顯示「映像檔 v1.2.0 還沒發布」，叢集維持原狀；等發布公告後再跑一次就好。
 
+離線環境或開發用的叢集，如果映像檔是自己載入節點的（不從 ghcr 拉），可以用 `KOUPA_SKIP_REGISTRY_CHECK=1 ./setup.sh` 跳過這個檢查；`setup.sh` 會印出警告，節點上必須已經有 `images.env` 那兩個版本的映像檔，否則 Pod 會卡在拉不到映像檔。
+
 確認 3 個 Pod 跑的是新版本，而且 digest 和[設計文件 6.2](design-v2/06-reference.md#62-映像檔) 的版本表一樣：
 
 ```bash

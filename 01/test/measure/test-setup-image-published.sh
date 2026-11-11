@@ -43,6 +43,14 @@ check "registry unreachable: fails (rc=$rc)" [ "$rc" -ne 0 ]
 check "says it cannot tell" grep -q "無法確認映像檔 $IMG_V1 是否已發布" "$T/out"
 check "nothing changed in the cluster" unchanged
 
+# Opt-out for offline/dev clusters: no lookup, a warning, setup goes on.
+echo "$IMG_V1" >"$FAKE/unpublished"
+: >"$FAKE/calls.log"; KOUPA_SKIP_REGISTRY_CHECK=1 "$STAGE/setup.sh" >"$T/out" 2>&1
+check "KOUPA_SKIP_REGISTRY_CHECK=1: warns" grep -q "WARNING: KOUPA_SKIP_REGISTRY_CHECK=1" "$T/out"
+check "KOUPA_SKIP_REGISTRY_CHECK=1: no registry lookup" bash -c '! grep -q "^skopeo" "$1"' _ "$FAKE/calls.log"
+check "KOUPA_SKIP_REGISTRY_CHECK=1: goes on" grep -q '^kubectl label node tkha-worker-1' "$FAKE/calls.log"
+rm -f "$FAKE/unpublished"
+
 rm -f "$FAKE/registry-down"
 run_setup
 check "both published: goes on to the infra worker label" grep -q '^kubectl label node tkha-worker-1' "$FAKE/calls.log"

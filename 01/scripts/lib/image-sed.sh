@@ -9,13 +9,19 @@ ere_escape() { printf '%s' "$1" | sed 's/[][\.^$*+?(){}|/#]/\\&/g'; }
 # is KOUPA_REPO:vMAJOR[.MINOR[.PATCH]] becomes IMAGE. Neighbouring names
 # (koupa-experiments, rush-hour), longer tags (v1.2.0-rc1) and the text
 # elsewhere (env values, comments) are left alone. Fails when IMAGE has
-# characters an image reference cannot have, or when nothing was replaced.
+# characters an image reference cannot have, or when no line was replaced
+# (counted on the input: an IMAGE already present elsewhere does not count).
 set_koupa_image() {
-	local new=$1 re out
+	local new=$1 re pat in n
 	[[ $new =~ ^[A-Za-z0-9._/:@-]+$ ]] || { echo "set_koupa_image: bad image $new" >&2; return 1; }
 	re=$(ere_escape "${KOUPA_REPO:?KOUPA_REPO is not set}")
-	out=$(sed -E "s#^([[:space:]]*(- )?image:[[:space:]]+)\"?${re}:v[0-9]+(\\.[0-9]+){0,2}\"?[[:space:]]*\$#\\1${new}#") || return 1
-	printf '%s\n' "$out"
-	grep -qE "^[[:space:]]*(- )?image:[[:space:]]+$(ere_escape "$new")\$" <<<"$out" ||
-		{ echo "set_koupa_image: no image: $KOUPA_REPO:v... line to replace" >&2; return 1; }
+	pat="^([[:space:]]*(- )?image:[[:space:]]+)\"?${re}:v[0-9]+(\\.[0-9]+){0,2}\"?[[:space:]]*\$"
+	in=$(cat) || return 1
+	n=$(grep -cE "$pat" <<<"$in") || n=0
+	if [ "$n" -eq 0 ]; then
+		printf '%s\n' "$in"
+		echo "set_koupa_image: no image: $KOUPA_REPO:v... line to replace" >&2
+		return 1
+	fi
+	sed -E "s#${pat}#\\1${new}#" <<<"$in"
 }

@@ -40,7 +40,7 @@ YAML 不寫死 IP，`measure.sh` 會自動查 Gateway 的 IP。
 - 目前的版本只寫在 `01/images.env`（`KOUPA_V1_TAG`、`KOUPA_V2_TAG`）。`k8s/base` 用 `KOUPA_V1_TAG`（`scripts/check-manifests.sh` 會檢查兩者一致），`measure.sh`、`scripts/preflight.sh`、`scripts/evidence.sh` 和實驗腳本都從這裡讀；
 - App 的版本字串就是完整的 tag（建置時 `VERSION=v1.2.0`），`/api/whoami`、看板的 hello 事件和 `/koupa --version` 都會顯示；有沒有售完功能看 MAJOR（2 以上才有），不是比對整個字串；
 - 發布用 `scripts/publish-images.sh`（`make publish`）：從 HEAD 的乾淨匯出建置兩條線，tag 已經在 ghcr 上就拒絕推送；`--retag-history` 把下表較早的版本號補到既有的 digest 上，同樣不覆蓋。登入資訊用 `podman login` 存的那一份，不放在命令列上；
-- 「不覆蓋」是靠這個發布流程做到的，**registry 本身不會擋**：ghcr 沒有「tag 不存在才建立」的原子操作。所以同一時間只能有一個人（講師）發布，腳本也用鎖檔擋住同一台主機上的第二個執行；每個 tag 推送或複製前會再查一次確實不存在（只有 registry 對這個 tag 回「manifest unknown」才算不存在，連不上、沒有權限等其他錯誤一律拒絕），推送後馬上確認 registry 上的 digest 就是剛推的那一個，不一致就大聲報錯停下來。
+- 「不覆蓋」是靠這個發布流程做到的，**registry 本身不會擋**：ghcr 沒有「tag 不存在才建立」的原子操作。所以同一時間只能有一個人（講師）發布。腳本用固定的鎖檔 `/tmp/koupa-publish-images.lock` 擋住同一台主機上的第二個執行；不同主機之間沒有鎖，靠作業規定（只由講師從一個地方發布）；每個 tag 推送或複製前會再查一次確實不存在（只有 registry 對這個 tag 回「manifest unknown」才算不存在，連不上、沒有權限等其他錯誤一律拒絕），推送後馬上確認 registry 上的 digest 就是剛推的那一個，不一致就大聲報錯停下來。
 
 **發布順序**（`k8s/base` 和 `images.env` 合併後就指向新版本號，所以中間不能拖）：
 

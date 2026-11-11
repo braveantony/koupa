@@ -9,6 +9,10 @@
 #   3. app, Service, Gateway, HTTPRoute (k8s/base); wait for the rollout
 #      and for the Gateway to be Programmed, then print its address
 #
+# Before anything is changed it checks that the koupa images of images.env
+# are on the registry (KOUPA_SKIP_REGISTRY_CHECK=1 skips that, with a
+# warning, for clusters with locally loaded images).
+#
 # Uses the current kubectl context. The database and the operator live on
 # the infra worker so another worker can be drained without
 # --delete-emptydir-data (plan A15; measure.sh drain never picks it).
@@ -25,7 +29,6 @@ die() { echo "setup.sh: $*" >&2; exit 1; }
 
 command -v kubectl >/dev/null || die "kubectl not found"
 command -v python3 >/dev/null || die "python3 not found"
-command -v skopeo >/dev/null || die "skopeo not found"
 log "context: $(kubectl config current-context)"
 
 log "checking the step-0 manifest"
@@ -35,11 +38,20 @@ scripts/check-manifests.sh base >/dev/null || { scripts/check-manifests.sh base 
 # uses KOUPA_V1_TAG (check-manifests.sh), measure.sh upgrades to KOUPA_V2_TAG.
 # shellcheck source=images.env
 . ./images.env
+# KOUPA_SKIP_REGISTRY_CHECK=1 skips it (offline or development clusters
+# with locally loaded images); a warning says so.
 # shellcheck source=scripts/lib/registry.sh
 . scripts/lib/registry.sh
-log "checking that the koupa images are published"
+if [ "${KOUPA_SKIP_REGISTRY_CHECK:-0}" = 1 ]; then
+  log "WARNING: KOUPA_SKIP_REGISTRY_CHECK=1: not checking that $KOUPA_REPO:$KOUPA_V1_TAG and :$KOUPA_V2_TAG are published; the nodes must already have them"
+  tags=()
+else
+  command -v skopeo >/dev/null || die "skopeo not found (or set KOUPA_SKIP_REGISTRY_CHECK=1 for a cluster with locally loaded images)"
+  log "checking that the koupa images are published"
+  tags=("$KOUPA_V1_TAG" "$KOUPA_V2_TAG")
+fi
 reg_err=$(mktemp)
-for tag in "$KOUPA_V1_TAG" "$KOUPA_V2_TAG"; do
+for tag in "${tags[@]}"; do
   if ! d=$(registry_digest "$KOUPA_REPO:$tag" "$reg_err"); then
     e=$(cat "$reg_err"); rm -f "$reg_err"
     die "無法確認映像檔 $KOUPA_REPO:$tag 是否已發布（連得到 ghcr.io 嗎？）：$e"

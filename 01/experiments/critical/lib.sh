@@ -13,8 +13,9 @@
 # Sourcing this file has no side effect on any cluster: it installs no trap.
 # An entry point calls crit_init to install the EXIT/INT/TERM traps; the
 # cleanup restores step 5 only once crit_arm has run, which every helper
-# that changes the cluster (apply_overlay, pull_secret_up, crit_test_pod)
-# calls before its first write. Scripts that change the cluster with their
+# that changes the cluster (apply_overlay, pull_secret_up, pull_secret_down,
+# crit_test_pod) calls in this shell (never in a pipeline or subshell,
+# where the assignment would be lost) before its first write. Scripts that change the cluster with their
 # own kubectl calls call crit_arm first.
 
 set -uo pipefail
@@ -213,6 +214,7 @@ pull_secret_up() {
 		pull_secret_down
 		return
 	fi
+	crit_arm # here, in this shell: not inside the pipeline below (a subshell)
 	python3 -I - "$NS" "$PULL_SECRET" "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/containers/auth.json" <<'PY' |
 import base64, json, sys
 ns, name, path = sys.argv[1:]
@@ -222,11 +224,12 @@ print(json.dumps({"apiVersion": "v1", "kind": "Secret", "type": "kubernetes.io/d
     "metadata": {"name": name, "namespace": ns, "labels": {"app.kubernetes.io/name": "crit-experiments"}},
     "data": {".dockerconfigjson": base64.b64encode(cfg).decode()}}))
 PY
-		{ crit_arm; timeout 30 kubectl apply -f - >/dev/null; } || { log "cannot create pull secret $PULL_SECRET"; return 1; }
+		timeout 30 kubectl apply -f - >/dev/null || { log "cannot create pull secret $PULL_SECRET"; return 1; }
 	log "pull secret $PULL_SECRET created (images are private)"
 }
 
 pull_secret_down() {
+	crit_arm
 	timeout 30 kubectl -n "$NS" delete secret "$PULL_SECRET" --ignore-not-found >/dev/null
 }
 
