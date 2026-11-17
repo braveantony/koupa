@@ -45,6 +45,7 @@ Pod 是 Kubernetes 執行程式的單位；這裡每個 koupa Pod 都跑一份 A
 
 | 步驟 | 改什麼 | 你應該看到（2026-11-10 實測，每個條件 5 次） |
 |---|---|---|
+| [網路](docs/steps/00-network.md) | 不改設定，只看封包怎麼走 | 一個請求會經過兩條 TCP 連線（主機 ↔ 入口、入口 ↔ Pod）；舊 Pod 被標成 terminating 後，入口的名單不到 1 秒就更新（2026-11-17 實測一次，當時沒有流量；步驟 2 的校正看到最晚約 1.5 秒） |
 | [小實驗](docs/steps/00-idle-lab.md) | 打開看板心跳（定期送出的短訊息） | 沒有心跳時，閒置的看板在第 300 秒被入口切斷；打開心跳就不會斷 |
 | [0](docs/steps/step-0.md) | 什麼都不做 | 送出失敗中位數 51 張；每台看板漏號數十個 |
 | [1](docs/steps/step-1.md) | `readinessProbe` | 送出失敗的中位數降到 7 張；漏號沒有改善 |
@@ -55,7 +56,7 @@ Pod 是 Kubernetes 執行程式的單位；這裡每個 koupa Pod 都跑一份 A
 
 成績單上的 0 只代表「這幾次沒觀察到」，不代表「不會發生」。數字只代表這個環境，詳見[預期結果](docs/steps/measure.md#預期結果)。
 
-照順序做：[小實驗](docs/steps/00-idle-lab.md) → [量測說明（含 control，也就是不升級的對照組）](docs/steps/measure.md) → [步驟 0](docs/steps/step-0.md)～[5](docs/steps/step-5.md) → [最後驗證](docs/steps/final-checks.md)。每一步的文件都寫了要準備什麼、開哪些視窗、過程中看什麼、怎麼讀成績單。
+照順序做：[網路](docs/steps/00-network.md) → [小實驗](docs/steps/00-idle-lab.md) → [量測說明（含 control，也就是不升級的對照組）](docs/steps/measure.md) → [步驟 0](docs/steps/step-0.md)～[5](docs/steps/step-5.md) → [最後驗證](docs/steps/final-checks.md)。每一步的文件都寫了要準備什麼、開哪些視窗、過程中看什麼、怎麼讀成績單。
 
 ---
 
@@ -132,7 +133,7 @@ kubectl -n koupa get gateway koupa -o jsonpath='{.status.addresses[0].value}'; e
 
 ## 參考資料
 
-- [每一步的操作說明](docs/steps/)：小實驗、量測說明、步驟 0～5、最後驗證
+- [每一步的操作說明](docs/steps/)：網路、小實驗、量測說明、步驟 0～5、最後驗證
 - [設計文件](docs/design-v2/README.md)：問題從哪裡來、每一步的機制、量測方法
   - [每一步修正的機制](docs/design-v2/04-step-mechanisms.md)
   - [量測方法](docs/design-v2/05-measurement.md)
