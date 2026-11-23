@@ -27,7 +27,7 @@ control 和[最後驗證](final-checks.md)在第 10 秒的動作不同，見各�
 | 終端機 B | `kubectl -n koupa get pods -w`（`-w` 會持續印出變化，按 Ctrl+C 結束） | 建議 |
 | 瀏覽器（要連得到 Gateway IP，例如主機上的瀏覽器或課程的 desktop container） | 只開 `http://<IP>/board?debug=1` | 選用，只看不操作 |
 
-- 看板要在終端機 A 印出 `sending started` 之前打開。看板只會顯示連線期間叫到的號碼。量測前 `measure.sh` 套用設定時 Pod 也會換一輪，看板先斷線再自動連上是正常的。
+- 看板要在終端機 A 印出 `sending started` 之前打開。看板只會顯示連線期間叫到的號碼。量測前 `measure.sh` 套用設定時，如果設定或映像檔和叢集上的不同（例如換了一步，或上一次升到了 v2），Pod 會先換一輪，看板先斷線再自動連上是正常的。
 - 客人、廚房和 3 台看板都由 Rush Hour 模擬，瀏覽器只是讓你觀察。**量測期間只看看板，不要操作點餐頁和廚房頁**，因為 Rush Hour 模擬的店員會自己按「完成」，而你自己下的單不在 Rush Hour 的紀錄裡，不會算進成績單。
 - `?debug=1` 讓看板底部多一條資訊列：SSE（Server-Sent Events，看板收叫號用的長連線）的連線狀態、服務版本和連著的 Pod。
 
