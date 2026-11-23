@@ -88,7 +88,7 @@ diff <(kubectl kustomize k8s/steps/step-1) <(kubectl kustomize k8s/steps/step-2)
 | 第 22 秒 | `SSE 連線中斷，瀏覽器正在重新連線…`（`v87v9` 等完 8 秒，程式結束） |
 | 第 25 秒 | `SSE 已連線`，`服務版本：v2.2.2`，`Pod：koupa-5bf9d54d7f-bqxp2` |
 
-看板在舊 Pod 變成 `Completed` 前後才斷線，不是 `Terminating` 一開始就斷，因為等待的 8 秒內連線還在。斷線約 3～5 秒（瀏覽器自己的預設：Chromium 3 秒、Firefox 5 秒；這次的觀察用 Chromium），和步驟 0、1 一樣。
+看板在舊 Pod 變成 `Completed` 前後才斷線，不是 `Terminating` 一開始就斷，因為等待的 8 秒內連線還在。斷線約 3～5 秒（瀏覽器預設的重連等待時間：Chromium 3 秒、Firefox 5 秒；這次用 Chromium 觀察），和步驟 0、1 一樣。
 
 ## 你應該看到
 

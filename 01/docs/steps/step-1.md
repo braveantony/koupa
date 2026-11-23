@@ -72,7 +72,7 @@ diff <(kubectl kustomize k8s/base) <(kubectl kustomize k8s/steps/step-1)
 
 **終端機 B**：新 Pod 先是 `0/1 Running`，過一會兒才變成 `1/1 Running`。新 Pod 變成 `1/1` 之後，才有一個舊 Pod 進入 `Terminating`，約 1 秒內變成 `Completed`。
 
-表中用 Pod 名稱的最後 5 碼代表，你的名稱會不同。
+表中用名稱的最後 5 碼代表各個 Pod，你看到的名稱會不同。
 
 | 時間 | 新 Pod | 舊 Pod |
 |---|---|---|
@@ -93,7 +93,7 @@ diff <(kubectl kustomize k8s/base) <(kubectl kustomize k8s/steps/step-1)
 | 第 26 秒 | 再一次 `SSE 連線中斷…`（`dz88s` 也被關掉） |
 | 第 29 秒 | `SSE 已連線`，`服務版本：v2.2.2`，`Pod：koupa-64d7455689-9cm2q` |
 
-每次斷線約 3～5 秒（瀏覽器自己的預設：Chromium 3 秒、Firefox 5 秒；這次的觀察用 Chromium）。重新連上後，右邊的大號碼會直接跳號（這次從 4598 跳到 4656 附近），斷線期間叫到的號碼不會出現。
+每次斷線約 3～5 秒（瀏覽器預設的重連等待時間：Chromium 3 秒、Firefox 5 秒；這次用 Chromium 觀察）。重新連上後，右邊的大號碼會直接跳號（這次從 4598 跳到 4656 附近），斷線期間叫到的號碼不會出現。
 
 ![步驟 1 的看板：第一次重連後，資訊列顯示「服務版本：v1.2.2　SSE 已連線　Pod：koupa-f467c8c4d-dz88s」，連上的仍是舊 Pod](img/step-1-reconnect-old-pod.png)
 
