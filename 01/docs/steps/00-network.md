@@ -15,7 +15,7 @@
 ## 開始之前
 
 - 已經照 [README 2. 部署](../../README.md#2-部署)部署好。
-- 在 `01/` 目錄開一個終端機，先記下 Gateway 的 IP：
+- 在 `01/` 目錄開一個終端機，先記下 Gateway 的 IP。每開一個新的終端機都要重新設定；下面每段指令都已經附上設定的那幾行：
 
 ```bash
 GW=$(kubectl -n koupa get gateway koupa -o jsonpath='{.status.addresses[0].value}'); echo $GW
@@ -41,56 +41,116 @@ koupa-db-1（在其中一台 worker 上，這台稱為 infra worker）
 
 **自己查：真的是兩條連線**（選用）
 
-先找出入口在哪個節點。節點是主機上的 podman container，名稱和節點名稱相同：
+做法一和做法二擇一即可，兩種都要開兩個終端機。每開一個新的終端機都要重新設定變數，下面每段指令的開頭都已經附上。
+
+**做法一：用 `ss` 看連線**
+
+`ss` 會列出這台機器上的網路連線，一行代表一條連線。
+
+**終端機 1**：開一條看板連線，保持開著（Ctrl+C 結束）
 
 ```bash
-NODE=$(kubectl -n kube-system get lease cilium-l2announce-koupa-cilium-gateway-koupa -o jsonpath='{.spec.holderIdentity}'); echo $NODE
-```
-
-做法一，用 `ss` 看連線。開兩個終端機，兩邊都要先設好 `$GW` 和 `$NODE`：
-
-```bash
-# 終端機 1：開一條看板連線，保持開著（Ctrl+C 結束）
+GW=$(kubectl -n koupa get gateway koupa -o jsonpath='{.status.addresses[0].value}')
+echo "GW=$GW"
 curl -sN http://$GW/events
 ```
 
+**終端機 2**：另開一個終端機，先設好兩個變數。`NODE` 是入口所在的節點；節點是主機上的 podman container，名稱和節點名稱相同。
+
 ```bash
-# 終端機 2：主機這一端，再看入口節點上的連線
+GW=$(kubectl -n koupa get gateway koupa -o jsonpath='{.status.addresses[0].value}')
+NODE=$(kubectl -n kube-system get lease cilium-l2announce-koupa-cilium-gateway-koupa -o jsonpath='{.spec.holderIdentity}')
+echo "GW=$GW NODE=$NODE"
+```
+
+應該印出類似 `GW=172.22.0.201 NODE=tkha-control-plane-1` 的一行。等號後面是空的，就表示那個變數沒設好，先看[出問題時](#出問題時)，不要往下做。
+
+接著在同一個終端機 2，先看**主機**上的連線：
+
+```bash
 ss -tn dst $GW
-sudo podman exec $NODE ss -tnp | grep -E ':80 |:8080 '
 ```
 
-講師在 2026-11-23 看到的（埠號每次不同）：
-
 ```
-主機：      172.22.0.254:43066 → 172.22.0.201:80
-入口節點：  172.22.0.201:80   ← 172.22.0.254:43066   cilium-envoy
-            10.244.0.24:37501 → 10.244.4.66:8080    cilium-envoy
+State Recv-Q Send-Q Local Address:Port  Peer Address:Port
+ESTAB 0      0       172.22.0.254:51810 172.22.0.201:80
 ```
 
-入口節點上的同一個程式 `cilium-envoy` 同時拿著兩條連線：一條接主機，一條連到 Pod 的 8080 埠，兩條的位址和埠都不同。curl 結束後，兩條一起消失。
+怎麼讀：
 
-做法二，用 termshark（在終端機裡用的 Wireshark）看封包。它在入口節點的網路裡抓封包，只看、不修改：
+- `ESTAB`：連線已經建立。
+- `Local Address:Port`：自己這一端，冒號前是 IP，冒號後是埠號（port，同一台機器上用來區分不同連線的號碼）。
+- `Peer Address:Port`：連線的另一端。
+- `Recv-Q`、`Send-Q`：這裡不用看。
+
+這一行的意思是：主機 `172.22.0.254` 用埠 `51810` 連到 Gateway IP `172.22.0.201` 的 `80` 埠，這就是**連線 ①**。`51810` 是 curl 隨機挑的號碼，每次都不同，記下你看到的號碼，下一步要用。
+
+再看**入口節點**上的連線：
 
 ```bash
-# 終端機 2：第一次會下載映像檔（約 1 GB）
+sudo podman exec $NODE ss -tnp '( sport = :80 or dport = :8080 )'
+```
+
+```
+State Recv-Q Send-Q Local Address:Port  Peer Address:Port Process
+ESTAB 0      0        10.244.0.24:41839 10.244.3.104:8080  users:(("cilium-envoy",pid=556,fd=86))
+ESTAB 0      0       172.22.0.201:80    172.22.0.254:51810 users:(("cilium-envoy",pid=556,fd=73))
+```
+
+最後一欄 `Process` 是「哪個程式拿著這條連線」，兩行都是 `cilium-envoy`，也就是入口。
+
+| 行 | 自己這一端 | 另一端 | 代表什麼 |
+|---|---|---|---|
+| 第 2 行 | Gateway IP `172.22.0.201:80` | 主機 `172.22.0.254:51810` | **連線 ①** 在入口這一頭。埠號和主機那一行一樣，所以是同一條連線的兩端 |
+| 第 1 行 | 入口自己的位址 `10.244.0.24` | Pod `10.244.3.104` 的 `8080` 埠 | **連線 ②**：入口另外開的，連到 App |
+
+怎麼判斷成立：
+
+- 第 1 行裡完全沒有主機的 IP `172.22.0.254`，也就是說，Pod 只看得到入口，看不到主機。
+- 想確認 `10.244.3.104` 是 koupa 的 Pod，執行 `kubectl -n koupa get pods -o wide`，看 IP 欄。
+- 在終端機 1 按 Ctrl+C 結束 curl，再跑一次上面的指令，這兩行會一起消失。
+
+上面的輸出是講師在 2026-11-23 的實測，IP 和埠號在你的環境裡會不同。
+
+**做法二：用 termshark 看封包**
+
+termshark 是在終端機裡用的 Wireshark（抓封包、看封包內容的工具）。它在入口節點的網路裡抓封包，只看、不修改。
+
+**終端機 2**：先設好 `NODE`，再啟動 termshark。第一次會下載映像檔（約 1 GB）。
+
+```bash
+NODE=$(kubectl -n kube-system get lease cilium-l2announce-koupa-cilium-gateway-koupa -o jsonpath='{.spec.holderIdentity}')
+echo "NODE=$NODE"
 sudo podman run --rm -it --net container:$NODE --cap-add NET_ADMIN,NET_RAW \
   ghcr.io/braveantony/koupa-termshark:v0.1.0 termshark -i eth0 -f 'tcp port 80 or tcp port 8080'
 ```
 
-畫面停在 `Termshark is initializing` 是正常的，抓到封包才會出現介面。在終端機 1 執行 `curl -sN http://$GW/events`，幾秒後按 Ctrl+C，然後在 termshark 裡（滑鼠和鍵盤都可以）：
+`NODE=` 後面是空的時，podman 會直接報錯、不會啟動，先看[出問題時](#出問題時)。畫面停在 `Termshark is initializing` 是正常的，抓到封包才會出現介面。
 
-1. 點最上面的 `Filter:` 欄（或按 `/`），輸入 `http.request`，按 Enter。清單只剩 HTTP 請求，這次的 curl 會出現**兩行**：
+**終端機 1**：送一個看板連線，幾秒後按 Ctrl+C 結束
 
-   ```
-   Source         Dest           Info
-   172.22.0.254   172.22.0.201   GET /events HTTP/1.1    ← 連線 ①：主機 → Gateway IP:80
-   10.244.0.24    10.244.4.66    GET /events HTTP/1.1    ← 連線 ②：入口 → Pod:8080
-   ```
+```bash
+GW=$(kubectl -n koupa get gateway koupa -o jsonpath='{.status.addresses[0].value}')
+echo "GW=$GW"
+curl -sN http://$GW/events
+```
+
+回到 termshark（滑鼠和鍵盤都可以）：
+
+1. 點最上面的 `Filter:` 欄（或按 `/`），輸入 `http.request`，按 Enter。清單只剩 HTTP 請求，同一次 curl 會出現兩行：
+
+   | Source（誰送的） | Dest（送給誰） | Info（內容摘要） | 代表什麼 |
+   |---|---|---|---|
+   | `172.22.0.254` | `172.22.0.201` | `GET /events HTTP/1.1` | 主機送給 Gateway IP，走**連線 ①** |
+   | `10.244.0.24` | `10.244.3.104` | `GET /events HTTP/1.1` | 入口把同一個請求**重新送一次**給 Pod，走**連線 ②** |
+
+   兩行的 Info 一樣，表示是同一個請求，但送的人和收的人都換了。
 
 2. 點第二行（Source 是 `10.244.x.x` 的那一行）。鍵盤：方向鍵選行，Tab 切到下一個窗格。
-3. 在中間的窗格點 `[+] Hypertext Transfer Protocol` 展開（鍵盤：Enter）。
-4. 看 Envoy 加上的標頭：`x-forwarded-for: 172.22.0.254`（原本的用戶端是主機），以及 `x-envoy-internal`、`x-request-id`。點第一行再展開一次，就會看到主機送出的請求沒有這幾個標頭。
+3. 在中間的窗格點 `[+] Hypertext Transfer Protocol` 展開（鍵盤：Enter），會看到入口加上的幾行標頭（header，附在請求前面的說明文字）：
+   - `x-forwarded-for: 172.22.0.254`：入口幫 App 記下「原本是誰送來的」。Pod 收到的連線來源是入口，只能從這一行知道真正的用戶端是主機。
+   - `x-envoy-internal`、`x-request-id`：入口自己加的記號，不用細看。
+4. 再點第一行展開比較，主機送出的請求沒有這幾行標頭。
 
 看完按 `q`，在跳出的確認框選 Yes 離開。
 
