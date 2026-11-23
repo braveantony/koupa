@@ -1,0 +1,15 @@
+# termshark (Wireshark in the terminal) for 01/docs/steps/00-network.md:
+# capture inside a node's network namespace and browse the packets there.
+#
+#   podman build -t ghcr.io/braveantony/koupa-termshark:v0.1.0 01/tools/termshark
+#   sudo podman run --rm -it --net container:<node> --cap-add NET_ADMIN,NET_RAW \
+#     ghcr.io/braveantony/koupa-termshark:v0.1.0 termshark -i eth0 -f 'tcp port 80 or tcp port 8080'
+#
+# The base is the toolbox image (tcpdump, tshark, dumpcap), pinned by digest.
+FROM ghcr.io/braveantony/deep-dive-into-cilium/toolbox@sha256:259f219a24c3a9ee6531c16897f3013c285e1d0bfc571e0cdb76b75f1103f644
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends termshark=2.4.0-2+b8 \
+ && rm -rf /var/lib/apt/lists/*
+ENV TERM=xterm-256color
+LABEL org.opencontainers.image.source=https://github.com/braveantony/koupa \
+      org.opencontainers.image.description="termshark for the Koupa course network walkthrough"

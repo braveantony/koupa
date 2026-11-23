@@ -39,6 +39,61 @@ koupa-db-1（在其中一台 worker 上，這台稱為 infra worker）
 - 三種用戶端走的路完全一樣，差別只在連線維持多久：下單和按完成是**短連線**（送一個請求、收到回應就結束）；看板是**長連線**（SSE，Server-Sent Events：連上後不關，App 有新叫號就推給看板）。
 - 一個請求會經過**兩條 TCP 連線**：主機只連到入口，入口再另外連到 Pod。所以 Pod 看到的連線來源是入口，不是主機。
 
+**自己查：真的是兩條連線**（選用）
+
+先找出入口在哪個節點。節點是主機上的 podman container，名稱和節點名稱相同：
+
+```bash
+NODE=$(kubectl -n kube-system get lease cilium-l2announce-koupa-cilium-gateway-koupa -o jsonpath='{.spec.holderIdentity}'); echo $NODE
+```
+
+做法一，用 `ss` 看連線。開兩個終端機，兩邊都要先設好 `$GW` 和 `$NODE`：
+
+```bash
+# 終端機 1：開一條看板連線，保持開著（Ctrl+C 結束）
+curl -sN http://$GW/events
+```
+
+```bash
+# 終端機 2：主機這一端，再看入口節點上的連線
+ss -tn dst $GW
+sudo podman exec $NODE ss -tnp | grep -E ':80 |:8080 '
+```
+
+講師在 2026-11-23 看到的（埠號每次不同）：
+
+```
+主機：      172.22.0.254:43066 → 172.22.0.201:80
+入口節點：  172.22.0.201:80   ← 172.22.0.254:43066   cilium-envoy
+            10.244.0.24:37501 → 10.244.4.66:8080    cilium-envoy
+```
+
+入口節點上的同一個程式 `cilium-envoy` 同時拿著兩條連線：一條接主機，一條連到 Pod 的 8080 埠，兩條的位址和埠都不同。curl 結束後，兩條一起消失。
+
+做法二，用 termshark（在終端機裡用的 Wireshark）看封包。它在入口節點的網路裡抓封包，只看、不修改：
+
+```bash
+# 終端機 2：第一次會下載映像檔（約 1 GB）
+sudo podman run --rm -it --net container:$NODE --cap-add NET_ADMIN,NET_RAW \
+  ghcr.io/braveantony/koupa-termshark:v0.1.0 termshark -i eth0 -f 'tcp port 80 or tcp port 8080'
+```
+
+畫面停在 `Termshark is initializing` 是正常的，抓到封包才會出現介面。在終端機 1 執行 `curl -sN http://$GW/events`，幾秒後按 Ctrl+C，然後在 termshark 裡（滑鼠和鍵盤都可以）：
+
+1. 點最上面的 `Filter:` 欄（或按 `/`），輸入 `http.request`，按 Enter。清單只剩 HTTP 請求，這次的 curl 會出現**兩行**：
+
+   ```
+   Source         Dest           Info
+   172.22.0.254   172.22.0.201   GET /events HTTP/1.1    ← 連線 ①：主機 → Gateway IP:80
+   10.244.0.24    10.244.4.66    GET /events HTTP/1.1    ← 連線 ②：入口 → Pod:8080
+   ```
+
+2. 點第二行（Source 是 `10.244.x.x` 的那一行）。鍵盤：方向鍵選行，Tab 切到下一個窗格。
+3. 在中間的窗格點 `[+] Hypertext Transfer Protocol` 展開（鍵盤：Enter）。
+4. 看 Envoy 加上的標頭：`x-forwarded-for: 172.22.0.254`（原本的用戶端是主機），以及 `x-envoy-internal`、`x-request-id`。點第一行再展開一次，就會看到主機送出的請求沒有這幾個標頭。
+
+看完按 `q`，在跳出的確認框選 Yes 離開。
+
 ## 路徑 1：主機 → 入口 → Pod
 
 ![看板連線從主機經過入口到 Pod 的 7 個步驟](img/network-path.png)
